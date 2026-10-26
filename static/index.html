@@ -173,28 +173,32 @@
   </main>
 </div>
 
-<!-- 工作流选择弹窗 -->
+<!-- 工作流选择弹窗：固定尺寸，左导航 + 右内容 -->
 <div id="modal" class="hidden">
   <div class="sheet">
     <header>
       <strong>选择工作流</strong>
       <button id="modalClose">✕</button>
     </header>
-    <nav id="modalTabs">
-      <button class="tab active" data-tab="preset">内置预设</button>
-      <button class="tab" data-tab="library">我的工作流库</button>
-      <button class="tab" data-tab="history">ComfyUI 运行记录</button>
-      <button class="tab" data-tab="paste">＋ 添加工作流</button>
-    </nav>
-    <div class="pane" id="pane-preset"></div>
-    <div class="pane hidden" id="pane-library"></div>
-    <div class="pane hidden" id="pane-history"></div>
-    <div class="pane hidden" id="pane-paste">
-      <p class="tip">粘贴 <b>API 格式</b>工作流（ComfyUI 菜单：工作流 → 导出(API)），或选择本地文件。</p>
-      <textarea id="pasteBox" placeholder='{"1": {"class_type": "UNETLoader", "inputs": {…}}}'></textarea>
-      <div class="row">
-        <input type="file" id="filePick" accept=".json,application/json" />
-        <button id="pasteGo" class="primary">载入</button>
+    <div class="modal-body">
+      <nav id="modalTabs">
+        <button class="tab active" data-tab="preset">内置预设</button>
+        <button class="tab" data-tab="library">我的工作流库</button>
+        <button class="tab" data-tab="history">ComfyUI 运行记录</button>
+        <button class="tab" data-tab="paste">＋ 添加工作流</button>
+      </nav>
+      <div class="modal-panes">
+        <div class="pane" id="pane-preset"></div>
+        <div class="pane hidden" id="pane-library"></div>
+        <div class="pane hidden" id="pane-history"></div>
+        <div class="pane hidden" id="pane-paste">
+          <p class="tip">粘贴 <b>API 格式</b>工作流（ComfyUI 菜单：工作流 → 导出(API)），或选择本地文件。</p>
+          <textarea id="pasteBox" placeholder='{"1": {"class_type": "UNETLoader", "inputs": {…}}}'></textarea>
+          <div class="row">
+            <input type="file" id="filePick" accept=".json,application/json" />
+            <button id="pasteGo" class="primary">载入</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

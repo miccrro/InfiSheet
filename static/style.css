@@ -577,10 +577,25 @@ select option { background: #1f1f1f; color: var(--text); }
 .sheet header { display: flex; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .sheet header strong { flex: 1; font-size: 13px; }
 .sheet header button { border: none; background: transparent; color: var(--dim); font-size: 14px; }
-#modalTabs { display: flex; gap: 4px; padding: 9px 12px 0; border-bottom: 1px solid var(--line); }
-.tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim); padding: 6px 10px; }
-.tab.active { color: var(--text); border-bottom-color: var(--accent); }
-.pane { padding: 12px 14px 16px; overflow: auto; }
+
+/* 工作流弹窗：尺寸写死 + 左导航右内容。
+   以前是「顶部横向 tab + 内容自适应高度」——4 个预设把窗口撑到 78vh，切到「添加工作流」
+   内容变少，窗口又缩回去，同一个弹窗跳两次。现在固定 880×560，内容自己滚。 */
+#modal .sheet { width: 880px; height: 560px; max-width: 94vw; max-height: 86vh; }
+.modal-body { flex: 1; display: grid; grid-template-columns: 188px 1fr; min-height: 0; }
+#modalTabs {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px;
+  border-right: 1px solid var(--line); overflow: auto;
+}
+#modalTabs .tab {
+  background: transparent; border: none; border-radius: 8px; text-align: left;
+  color: var(--dim); padding: 8px 10px; font-size: 12.5px;
+  transition: background 0.15s, color 0.15s;
+}
+#modalTabs .tab:hover { background: var(--panel-2); color: var(--text); }
+#modalTabs .tab.active { background: var(--panel-2); color: #fff; box-shadow: inset 2px 0 0 var(--accent); }
+.modal-panes { display: flex; min-width: 0; min-height: 0; }
+.pane { flex: 1; min-height: 0; padding: 14px 16px 18px; overflow: auto; }
 .list { display: flex; flex-direction: column; gap: 7px; }
 .card {
   display: flex; align-items: center; gap: 10px; padding: 9px 11px;
@@ -1804,8 +1819,9 @@ button.primary, .card .primary, #setOpenLib, #pasteGo,
 
 /* 圆角统一：除大卡片外的按钮都用胶囊/正圆。
    参数弹层里的比例卡 / 分段选项例外：里面已经有一个表示画幅的小方框，
-   卡片再做成圆的会跟它打架（也分不清「这是在选比例」）。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt) {
+   卡片再做成圆的会跟它打架（也分不清「这是在选比例」）。
+   工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。 */
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }

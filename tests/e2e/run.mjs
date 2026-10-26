@@ -881,6 +881,38 @@ try {
   check('dock / 视图工具为胶囊、白色加号为正圆',
     shapes.bar === '999px' && shapes.vt === '999px' && shapes.prime === '999px', JSON.stringify(shapes));
 
+  // ---- 工作流弹窗：固定尺寸 + 左导航右内容 ----
+  // 以前是顶部横向 tab + 内容自适应高度：4 个预设把窗口撑到 78vh，切到「添加工作流」内容变少，
+  // 窗口又缩回去。这里盯两件事：尺寸不随 tab 变、导航真的在左边。
+  await page.evaluate(`document.querySelector('#projectBar [data-act="add-workflow"]').click()`);
+  await page.waitFor(`!document.querySelector('#modal').classList.contains('hidden')`, 6000);
+  await new Promise((r) => setTimeout(r, 350));
+  const modalBox = () => page.evaluate(`(() => {
+    const s = document.querySelector('#modal .sheet').getBoundingClientRect();
+    const nav = document.querySelector('#modalTabs').getBoundingClientRect();
+    const panes = document.querySelector('.modal-panes').getBoundingClientRect();
+    const tab = document.querySelector('#modalTabs .tab');
+    return {
+      w: Math.round(s.width), h: Math.round(s.height),
+      sideBySide: Math.round(nav.right) <= Math.round(panes.left) + 1,
+      navW: Math.round(nav.width), panesW: Math.round(panes.width),
+      tabRadius: parseFloat(getComputedStyle(tab).borderRadius),
+    };
+  })()`);
+  const mPreset = await modalBox();
+  await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="paste"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const mPaste = await modalBox();
+  check('工作流弹窗尺寸固定：切到内容更少的「添加工作流」不变',
+    mPreset.w === mPaste.w && mPreset.h === mPaste.h && mPreset.h > 400,
+    `${mPreset.w}×${mPreset.h} → ${mPaste.w}×${mPaste.h}`);
+  check('工作流弹窗是左右双栏：导航在左、内容在右，导航项不是胶囊',
+    mPreset.sideBySide && mPreset.navW >= 140 && mPreset.navW <= 240
+      && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
+    JSON.stringify(mPreset));
+  await page.evaluate(`document.querySelector('#modalClose').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+
   // 回首页：列表里应有夹具画布，hash 改成 #home
   await page.click('#projectBar [data-act="home"]', { settle: 900 });
   const backHome = await page.evaluate(`(() => ({
