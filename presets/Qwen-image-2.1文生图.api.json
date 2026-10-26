@@ -1,0 +1,286 @@
+{
+ "title": "Qwen-image-2.1文生图",
+ "note": "",
+ "graph": {
+  "461": {
+   "inputs": {
+    "filename_prefix": "Qwen_image_2.1",
+    "format": "png",
+    "format.bit_depth": "8-bit",
+    "format.input_color_space": "sRGB",
+    "images": [
+     "483:473",
+     0
+    ]
+   },
+   "class_type": "SaveImageAdvanced",
+   "_meta": {
+    "title": "保存图像(高级)",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "480": {
+   "inputs": {
+    "styles": "krea2_397styles-anime_动漫",
+    "select_styles": "Solo Leveling Art"
+   },
+   "class_type": "easy stylesSelector",
+   "_meta": {
+    "title": "风格提示词选择器"
+   }
+  },
+  "481": {
+   "inputs": {
+    "filter_empty_line": false,
+    "filter_comment": false,
+    "separator": "\\n",
+    "input": "",
+    "string_1": [
+     "480",
+     0
+    ],
+    "string_2": [
+     "482",
+     0
+    ]
+   },
+   "class_type": "1hew_MultiStringJoin",
+   "_meta": {
+    "title": "多字符串连接"
+   }
+  },
+  "482": {
+   "inputs": {
+    "value": "你是顾星阑，31岁，独立星际战舰“玄鸢号”舰长，前星汉帝国第三舰队上校。玄鸢号是未来科技量子突击舰。你是赛博朋克国风世界中的御姐型女舰长，外冷内热。\n\n【整体形象】\n身高172cm，肩背挺拔，御姐气场，线条利落。黑长直，发尾挑染暗红，常以玉簪盘发，几缕碎发落颊。冷白皮，凤眼薄唇，红唇，神情常年冷淡。\n\n【面部与视觉系统】\n右眼深棕，左眼为无边框虚拟智能单边眼睛“金乌瞳”，平时近乎隐形，启动时眼周浮现极细的琥珀金色数据纹，可接入舰船系统、扫描、战术投影。过载时会短暂失明或流鼻血。\n\n【全身穿搭 · 未来科幻赛博军装风夏日版】\n风格：白+黑+鎏金+紫宝石点缀，干练华丽，融合战术机能与高级礼服感，轻薄透气，露肤适度。\n配色占比：白色50%，黑色25%，金色15%，紫色10%。\n\n上衣：白色纳米云纱短款战术胸衣，小立领，领口微敞，外层薄纱，内层同色密纱衬；肩线鎏金镶边，衣身印细小科技标识；胸口镶嵌紫色晶体能量核心，收腰露腰设计；袖口卷至小臂中段，露出腕部义体接口与银色数据线。\n外搭：玄色纳米暗纹纱短款披肩，仅覆肩背，前襟敞开，内衬朱红纱；肩部集成紫色发光模块化肩甲，外骨骼挂载件；披肩边缘鎏金镶边，紫色飘带从肩后垂落。\n下装：白色纳米轻纱A字短裙，大腿中段，前侧微开衩；单层轻纱外罩，内衬薄战术纱；裙侧印有科技文字，暗藏数据接口与微型刃槽。\n腿部：黑色纳米战术纱丝袜，即黑丝，表面有暗红电路云纹，防弹、抗辐射、体温调节，大腿外侧藏数据接口；大腿配黑色战术绑带、紫色晶石腿环；单腿黑色纳米战术纱薄长筒腿套，不对称设计。\n手套：半指黑白战术手套，指尖白色，手背黑色。\n鞋履：白色高跟机能凉靴，金色包边与金属卡扣，靴筒绑带结构，露趾或镂空设计，细高跟。\n配饰：紫晶护目镜（NEOTECH VISOR），半透明紫色光学镜片，架在额前；长款金属+紫晶石吊坠耳坠；右腕银色数据手环可投影全息屏；玉簪盘发。\n武器：等离子能量刃（ENERGY BLADE），长剑，剑身流淌紫色光效，剑柄黑金紫机甲结构。\n\n【性格】\n外冷内热，御姐式克制。话少，命令清晰，不解释，不笑，毒舌。对犯错者冷酷到不近人情。但记得每个船员的生日和口味，偷偷给夜班加餐，为阵亡者写悼词，受伤时自己扛。控制欲强，失眠，情感表达障碍。\n\n【语言风格】\n简短、冷、古雅、命令式。关心人时也像在下军令。\n\n【口头禅】\n“舰规不是摆设。”“活着回来。”“别让我说第二遍。”“我不是善良，只是不喜欢无谓的死亡。”\n\n【关系】\n副舰长陆沉是唯一敢在你失控时按住你的人；医疗官白露唯一敢顶嘴；轮机长老鬼把玄鸢号当女儿；AI阿墨负责吐槽你；追捕官萧彻是前同僚，对你执念复杂。\n\n【目标】\n带玄鸢号寻找“归墟航道”，保护船员，对抗天工集团与帝国追杀。\n\n【禁止】\n甜妹化、恋爱脑、过度解释、轻易示弱。"
+   },
+   "class_type": "PrimitiveStringMultiline",
+   "_meta": {
+    "title": "提示词输入"
+   }
+  },
+  "483:468": {
+   "inputs": {
+    "unet_name": "Qwen_image2.1\\qwen_image_2.1_int8_convrot.safetensors",
+    "weight_dtype": "default"
+   },
+   "class_type": "UNETLoader",
+   "_meta": {
+    "title": "UNET加载器",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:470": {
+   "inputs": {
+    "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+    "type": "qwen_image",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader",
+   "_meta": {
+    "title": "加载CLIP",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:471": {
+   "inputs": {
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+   },
+   "class_type": "VAELoader",
+   "_meta": {
+    "title": "加载VAE",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:13": {
+   "inputs": {
+    "aspect_ratio": "9:16 (Portrait Widescreen)",
+    "megapixels": 4.000000000000002,
+    "multiple": 8
+   },
+   "class_type": "ResolutionSelector",
+   "_meta": {
+    "title": "分辨率选择器",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:472": {
+   "inputs": {
+    "width": [
+     "483:13",
+     0
+    ],
+    "height": [
+     "483:13",
+     1
+    ],
+    "batch_size": 1
+   },
+   "class_type": "EmptyLatentImage",
+   "_meta": {
+    "title": "空Latent",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:476": {
+   "inputs": {
+    "prompt": [
+     "481",
+     0
+    ],
+    "max_length": 512,
+    "sampling_mode": "on",
+    "sampling_mode.temperature": 0.7,
+    "sampling_mode.top_k": 64,
+    "sampling_mode.top_p": 0.95,
+    "sampling_mode.min_p": 0.05,
+    "sampling_mode.repetition_penalty": 1.05,
+    "sampling_mode.seed": 0,
+    "sampling_mode.presence_penalty": 0,
+    "thinking": false,
+    "use_default_template": false,
+    "mtp": "auto",
+    "clip": [
+     "483:478",
+     0
+    ]
+   },
+   "class_type": "TextGenerateLTX2Prompt",
+   "_meta": {
+    "title": "生成LTX2提示词"
+   }
+  },
+  "483:478": {
+   "inputs": {
+    "clip_name": "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+    "type": "qwen_image",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader",
+   "_meta": {
+    "title": "加载CLIP"
+   }
+  },
+  "483:469": {
+   "inputs": {
+    "prompt": [
+     "483:476",
+     0
+    ],
+    "negative_prompt": "",
+    "resolution": 1024,
+    "clip": [
+     "483:470",
+     0
+    ]
+   },
+   "class_type": "TextEncodeQwenImage21",
+   "_meta": {
+    "title": "文本编码 Qwen Image 2.1",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:479": {
+   "inputs": {
+    "text_0": "Style: cinematic sci-fi fantasy illustration in a high-impact Korean manhwa and video-game key-art style, combining hyper-detailed digital rendering with dramatic low-angle action framing. The scene centers on Gu Xinglan, an adult East Asian-presenting woman depicted as the captain of the quantum assault warship Xuan Yuan in a cyberpunk Chinese-futurist setting. She is shown from a powerful low viewpoint inside or near the entrance of a futuristic spacecraft, with the camera looking upward so her posture appears commanding, tall, and authoritative. Her build is slim yet athletic, her skin is cool pale, and her expression is cold, controlled, and severe rather than smiling.\n\nHer hair is long, black, straight, and glossy, with dark red挑染 at the ends. A traditional jade-like hairpin holds part of her updo while loose strands fall across her cheek and neck. Her face has sharp brows, narrow phoenix-like eyes, defined eyeliner, long lashes, subtle contouring, and deep red lipstick. One natural eye reads as deep brown, while the other is a virtual smart eye system called Jinwu Pupil; when activated, extremely fine amber-gold data patterns appear around the eyelid area, linking visually to ship systems, scanning, and tactical projection. A translucent purple optical visor rests above her forehead, and long metallic earrings with violet crystal drops hang beside her face.\n\nShe wears a white, black, gold, and purple cyber-military summer uniform that blends tactical function with ceremonial elegance. The upper garment is a cropped white nano-silk tactical bodice with a small standing collar, sheer layered fabric, gold trim along the shoulders, and a glowing purple crystal energy core embedded at the chest. A black nano-patterned shawl covers only her shoulders and back, left open at the front with a dark red inner lining, edged in gold and carrying purple ribbons trailing behind. Her short white skirt is made of light transparent tactical gauze with gold hardware, side slits, printed technical markings, hidden data ports, and blade-like structural accents. Black nano-tactical sheer tights cover her legs, patterned with faint dark red circuit-cloud lines; one thigh carries a black tactical strap and a violet crystal leg ring, while the opposite leg uses a black nano tactical sheer thigh-high stocking with asymmetrical design. She wears half-finger black-and-white tactical gloves, silver wrist data interfaces, purple crystal goggles, and white high-heeled tech sandals with gold edging, metal buckles, straps, open",
+    "text": [
+     "483:476",
+     0
+    ]
+   },
+   "class_type": "ShowText|pysssss",
+   "_meta": {
+    "title": "展示文本🐍"
+   }
+  },
+  "483:473": {
+   "inputs": {
+    "samples": [
+     "483:474",
+     0
+    ],
+    "vae": [
+     "483:471",
+     0
+    ]
+   },
+   "class_type": "VAEDecode",
+   "_meta": {
+    "title": "VAE解码",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:474": {
+   "inputs": {
+    "seed": 187677917754032,
+    "steps": 25,
+    "cfg": 1,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1,
+    "model": [
+     "483:484",
+     0
+    ],
+    "positive": [
+     "483:469",
+     0
+    ],
+    "negative": [
+     "483:469",
+     1
+    ],
+    "latent_image": [
+     "483:472",
+     0
+    ]
+   },
+   "class_type": "KSampler",
+   "_meta": {
+    "title": "K采样器",
+    "cnr_id": "comfy-core",
+    "ver": "0.36.0"
+   }
+  },
+  "483:484": {
+   "inputs": {
+    "device": "auto",
+    "dtype": "default",
+    "model": [
+     "483:485",
+     0
+    ]
+   },
+   "class_type": "QwenImage21Cache",
+   "_meta": {
+    "title": "Qwen Image 2.1 缓存"
+   }
+  },
+  "483:485": {
+   "inputs": {
+    "attention": "kitchen_int8",
+    "step_cache": "te_predictor",
+    "reuse_threshold": 0.06,
+    "start_percent": 0,
+    "end_percent": 0,
+    "predictor_error_limit": 0.08,
+    "verbose": true,
+    "model": [
+     "483:468",
+     0
+    ]
+   },
+   "class_type": "TESpeedQwenImage21",
+   "_meta": {
+    "title": "TE-Speed Qwen Image 2.1"
+   }
+  }
+ }
+}

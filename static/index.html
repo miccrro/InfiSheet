@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Comfy 无限画布</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='5' fill='%231a1a1a'/%3E%3Ccircle cx='10' cy='10' r='4' fill='%2309caf5'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+  <!-- 顶部：项目栏（左）+ 运行状态（右） -->
+  <div id="topBar">
+    <div id="projectBar">
+      <button class="icon tiny" data-act="home" title="返回首页">
+        <span class="ico" data-icon="home" aria-hidden="true"></span>
+      </button>
+      <input id="projectName" aria-label="项目名称" value="未命名画布" spellcheck="false" />
+      <button id="canvasMenuBtn" class="ghost" title="画布菜单">画布 1<span class="caret">▾</span></button>
+      <span class="vsep"></span>
+      <button class="icon tiny" data-act="workflows" title="工作流库">
+        <span class="ico" data-icon="layers" aria-hidden="true"></span>
+      </button>
+      <button class="icon tiny" data-act="assets" title="资产：所有生成结果与上传素材">
+        <span class="ico" data-icon="material" aria-hidden="true"></span>
+      </button>
+      <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点">
+        <span class="ico" data-icon="film" aria-hidden="true"></span>
+      </button>
+      <button class="icon tiny" data-act="add-workflow" title="添加工作流（粘贴 API JSON / 选文件）">
+        <span class="ico" data-icon="plus" aria-hidden="true"></span>
+      </button>
+      <button class="icon tiny" data-act="settings" title="设置：默认工作流 / 工作流库">
+        <span class="ico" data-icon="setting" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div id="statusChip">
+      <span id="saveState" class="chip-dim">已保存</span>
+      <span class="chip-sep"></span>
+      <span class="dot" id="healthDot"></span>
+      <span id="healthText">正在连接 ComfyUI…</span>
+    </div>
+  </div>
+
+  <!-- 首页 -->
+  <div id="home">
+    <div class="home-wrap">
+      <div class="home-top">
+        <div class="home-brand">
+          <span class="logo-orb"></span>
+          <div>
+            <b>Comfy 无限画布</b>
+            <span>本地 ComfyUI 的可视化创作台</span>
+          </div>
+        </div>
+        <div class="home-status">
+          <span class="dot" id="homeDot"></span>
+          <span id="homeStatus">检测中…</span>
+        </div>
+      </div>
+
+      <button class="new-canvas" id="newCanvas">
+        <span class="plus">+</span>
+        <span class="label">新建画布创作</span>
+      </button>
+
+      <section class="home-row">
+        <h3>快速开始</h3>
+        <div class="quick" id="quickStart"></div>
+      </section>
+
+      <section class="home-row" id="recentRow" hidden>
+        <h3>最近项目</h3>
+        <div class="recent-grid" id="recentList"></div>
+      </section>
+
+      <footer class="home-foot">
+        <span>ComfyUI <a href="http://127.0.0.1:8188" target="_blank" rel="noreferrer">127.0.0.1:8188</a></span>
+        <span class="sep-dot">·</span>
+        <button class="link" data-home-act="help">快捷键</button>
+        <span class="sep-dot">·</span>
+        <button class="link" data-home-act="workflows">工作流库</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 底部悬浮工具条 -->
+  <div id="dockWrap">
+  <header id="bar" class="floating">
+    <button class="icon prime" data-act="add-menu" title="添加节点（也可双击空白处）">
+      <span class="ico" data-icon="plus" aria-hidden="true"></span>
+    </button>
+    <button class="icon active" data-act="select-mode" title="框选（默认）：拖画布空白处框选节点，Shift 加选">
+      <span class="ico" data-icon="select" aria-hidden="true"></span>
+    </button>
+    <button class="icon" data-act="pan-mode" title="移动（抓手模式：拖任意位置平移画布）">
+      <span class="ico" data-icon="hand" aria-hidden="true"></span>
+    </button>
+    <button class="icon" data-act="add-wf" title="素材库 / 工作流库">
+      <span class="ico" data-icon="grid4" aria-hidden="true"></span>
+    </button>
+    <button class="icon" data-act="all-tools" title="全部功能">
+      <span class="ico" data-icon="more" aria-hidden="true"></span>
+    </button>
+    <button class="icon" data-act="history" title="生成历史（ComfyUI 运行记录）">
+      <span class="ico" data-icon="time" aria-hidden="true"></span>
+    </button>
+    <span class="vsep"></span>
+    <button class="icon" data-act="help" title="快捷键">
+      <span class="ico" data-icon="help" aria-hidden="true"></span>
+    </button>
+    <button class="icon" data-act="tutorial" title="教程与说明">
+      <span class="ico" data-icon="book" aria-hidden="true"></span>
+    </button>
+  </header>
+  <button class="icon orb dock-orb" data-act="home" title="返回首页"><span class="orb-dot"></span></button>
+  </div>
+
+  <main id="stage">
+    <div id="world">
+      <div id="groups"></div>
+      <svg id="links" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="nodes"></div>
+    </div>
+    <!-- 空画布起始页：新建画布后出现，有节点即隐藏 -->
+    <div id="canvasEmpty">
+      <div class="cap-hint">
+        <span class="ico" data-icon="pointer" aria-hidden="true"></span>
+        <span>双击画布 自由生成节点</span>
+      </div>
+      <div class="cap-row" id="capRow"></div>
+    </div>
+    <div id="addMenu" class="hidden"></div>
+    <div id="viewTools">
+      <button class="vt" data-vt="fit" title="整理画布（适配视图，Alt+Shift+F）">
+        <span class="ico" data-icon="fit" aria-hidden="true"></span>
+      </button>
+      <button class="vt" data-vt="minimap" title="切换小地图">
+        <span class="ico" data-icon="map" aria-hidden="true"></span>
+      </button>
+      <button class="vt" data-vt="links" title="隐藏 / 显示节点连线">
+        <span class="ico" data-icon="link" aria-hidden="true"></span>
+      </button>
+      <button class="vt" data-vt="snap" title="网格吸附">
+        <span class="ico" data-icon="snap" aria-hidden="true"></span>
+      </button>
+      <button class="vt zoom" id="zoomBtn" title="缩放选项">100%</button>
+    </div>
+    <div id="zoomMenu" class="hidden">
+      <button data-zoom="0.5">50%</button>
+      <button data-zoom="1">100%</button>
+      <button data-zoom="1.5">150%</button>
+      <button data-zoom="2">200%</button>
+      <button data-zoom="4">400%</button>
+      <button data-zoom="8">800%</button>
+      <button data-zoom="fit">适配画布</button>
+    </div>
+    <canvas id="minimap" class="hidden" width="220" height="150"></canvas>
+    <div id="helpSheet" class="hidden">
+      <header><strong>教程与快捷键</strong><button id="helpClose">✕</button></header>
+      <div class="help-body">
+        <p><b>建节点</b>　双击画布空白，或底部 <b>＋</b>；也可把图片文件拖进来。</p>
+        <p><b>连线</b>　从节点右侧圆点拖到另一节点左侧圆点（文本→文本插槽、图片→图片插槽、工作流→输出）。</p>
+        <p><b>运行</b>　工作流节点上的「运行」；图片节点选中后在下方生成器里直接出图。</p>
+        <p><b>框选</b>　拖画布空白处直接框选（<b>Shift</b> 拖为加选）；点空白取消选择。</p>
+        <p><b>平移 / 缩放</b>　<b>空格拖</b> 或 <b>中键拖</b> 平移，也可开底部的「移动」模式；滚轮缩放、<b>F</b> 适配。</p>
+        <p><b>复制节点</b>　<b>Alt + 左键拖动</b> 直接拖出一个副本（原节点留在原地，松手落位）；也可以 <b>Ctrl+C / V</b>、<b>Ctrl+D</b> 创建副本。</p>
+        <p><b>多选 / 打组</b>　Shift 点选加选，<b>Ctrl+G</b> 打组，<b>Delete</b> 删除。</p>
+        <p class="dim">工作流要用 API 格式：在 ComfyUI 里跑一次，再从「生成历史」导入最稳。</p>
+      </div>
+    </div>
+    <div id="queueBadge" class="hidden"></div>
+  </main>
+</div>
+
+<!-- 工作流选择弹窗 -->
+<div id="modal" class="hidden">
+  <div class="sheet">
+    <header>
+      <strong>选择工作流</strong>
+      <button id="modalClose">✕</button>
+    </header>
+    <nav id="modalTabs">
+      <button class="tab active" data-tab="preset">内置预设</button>
+      <button class="tab" data-tab="library">我的工作流库</button>
+      <button class="tab" data-tab="history">ComfyUI 运行记录</button>
+      <button class="tab" data-tab="paste">＋ 添加工作流</button>
+    </nav>
+    <div class="pane" id="pane-preset"></div>
+    <div class="pane hidden" id="pane-library"></div>
+    <div class="pane hidden" id="pane-history"></div>
+    <div class="pane hidden" id="pane-paste">
+      <p class="tip">粘贴 <b>API 格式</b>工作流（ComfyUI 菜单：工作流 → 导出(API)），或选择本地文件。</p>
+      <textarea id="pasteBox" placeholder='{"1": {"class_type": "UNETLoader", "inputs": {…}}}'></textarea>
+      <div class="row">
+        <input type="file" id="filePick" accept=".json,application/json" />
+        <button id="pasteGo" class="primary">载入</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" class="hidden">
+  <img id="lightboxImg" alt="" />
+  <button class="lb-btn lb-prev" type="button" title="上一张（←）">‹</button>
+  <button class="lb-btn lb-next" type="button" title="下一张（→）">›</button>
+  <span class="lb-count"></span>
+</div>
+<script src="/icons.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

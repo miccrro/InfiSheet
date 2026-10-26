@@ -1,0 +1,72 @@
+{
+ "title": "Krea2 Turbo · 文生图",
+ "note": "对应本机 E:\\Comfy-Desktop 内的 Krea2-Turbo-int8。步数默认 14（8 步随机性偏大）。",
+ "graph": {
+  "1": {
+   "_meta": { "title": "加载 UNET · Krea2-Turbo" },
+   "class_type": "UNETLoader",
+   "inputs": {
+    "unet_name": "Krea2\\Krea2-Turbo-int8.safetensors",
+    "weight_dtype": "default"
+   }
+  },
+  "2": {
+   "_meta": { "title": "加载文本编码器 · Qwen3-VL" },
+   "class_type": "CLIPLoader",
+   "inputs": {
+    "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+    "type": "krea2",
+    "device": "default"
+   }
+  },
+  "3": {
+   "_meta": { "title": "加载 VAE" },
+   "class_type": "VAELoader",
+   "inputs": { "vae_name": "qwen_image_vae.safetensors" }
+  },
+  "4": {
+   "_meta": { "title": "正向提示词" },
+   "class_type": "CLIPTextEncode",
+   "inputs": {
+    "text": "a cinematic portrait of a woman standing in rain-soaked neon alley, shallow depth of field, film grain",
+    "clip": ["2", 0]
+   }
+  },
+  "5": {
+   "_meta": { "title": "负向提示词" },
+   "class_type": "CLIPTextEncode",
+   "inputs": { "text": "", "clip": ["2", 0] }
+  },
+  "6": {
+   "_meta": { "title": "画幅" },
+   "class_type": "EmptyLatentImage",
+   "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+  },
+  "7": {
+   "_meta": { "title": "采样器" },
+   "class_type": "KSampler",
+   "inputs": {
+    "seed": 20261023,
+    "steps": 14,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1.0,
+    "model": ["1", 0],
+    "positive": ["4", 0],
+    "negative": ["5", 0],
+    "latent_image": ["6", 0]
+   }
+  },
+  "8": {
+   "_meta": { "title": "VAE 解码" },
+   "class_type": "VAEDecode",
+   "inputs": { "samples": ["7", 0], "vae": ["3", 0] }
+  },
+  "9": {
+   "_meta": { "title": "保存图片" },
+   "class_type": "SaveImage",
+   "inputs": { "images": ["8", 0], "filename_prefix": "comfy-canvas/krea2" }
+  }
+ }
+}
