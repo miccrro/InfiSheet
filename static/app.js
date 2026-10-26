@@ -4011,7 +4011,8 @@
     await refreshWorkflows();                 // 打开时重新拉库，别显示开局时的旧列表
     renderPresets(state.workflows.presets);
     renderLibrary(state.workflows.items);
-    renderHistory();
+    // 运行记录要打 ComfyUI 的 /history：离线时是 502。以前一开弹窗就拉，控制台先红一条，
+    // 而用户多半只是想看看内置预设。改成点开那个标签页才拉（见下面的 tab 点击）。
   }
 
   function renderPresets(list) {
@@ -4551,6 +4552,8 @@
       ['preset', 'library', 'history', 'paste'].forEach((name) => {
         $(`#pane-${name}`).classList.toggle('hidden', name !== tab.dataset.tab);
       });
+      // 只有真的要看运行记录时才去问 ComfyUI（离线时这一步会 502，没必要在开弹窗时就撞上）
+      if (tab.dataset.tab === 'history') renderHistory();
     };
   });
   $('#pasteGo').onclick = async () => {
