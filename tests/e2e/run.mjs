@@ -399,6 +399,11 @@ try {
   })()`);
   check('点选图片节点', picked);
 
+  // 面板是同步建的，但「底部渐隐」的 has-more 要等一帧（app.js 里是 requestAnimationFrame 里算的，
+  // 因为要先有布局才知道 scrollHeight）。以前这里直接读，偶尔会抢在那一帧之前 → 偶发红。
+  await page.waitFor(`!!document.querySelector('.gen-panel .gen-prompt')`, 5000);
+  await new Promise((r) => setTimeout(r, 180));
+
   const panel = await page.evaluate(`(() => {
     const p = document.querySelector('.gen-panel');
     if (!p) return null;
@@ -990,6 +995,10 @@ try {
               wf: 'preset:krea2-txt2img.api.json', items: [0, 1, 2, 3].map(mk) },
             { at: Date.now() - 60000, prompt: '第一版：晴天街角', seed: 111, w: 768, h: 768, batch: 2,
               wf: 'preset:krea2-txt2img.api.json', items: [1, 2].map(mk) },
+            { at: Date.now() - 180000, prompt: '更早：胶片质感', seed: 99, w: 512, h: 512, batch: 1,
+              wf: 'preset:krea2-txt2img.api.json', items: [3].map(mk) },
+            { at: Date.now() - 600000, prompt: '最早：白底静物', seed: 7, w: 512, h: 512, batch: 1,
+              wf: 'preset:krea2-txt2img.api.json', items: [0].map(mk) },
           ] },
       }],
     };
@@ -1054,7 +1063,7 @@ try {
   check('大图预览也能翻页（1/4 → 2/4），Esc 关闭',
     lb1.open && lb1.count === '1 / 4' && lb2 === '2 / 4' && lbClosed, `${lb1.count} → ${lb2} closed=${lbClosed}`);
 
-  // ---- 生成历史：每次生成留一条，能看回任意一次，也能从那次派生 ----
+  // ---- 生成历史：宫格缩略图，单击看大图 + 分辨率/提示词/参数 ----
   // 以前 gen.gallery 是覆盖式的：试到第 4 版最好，但已经回不去了。
   const hb = await page.evaluate(`(() => {
     const b = document.querySelector('.node[data-id="${galId}"] .img-hist');
@@ -1063,30 +1072,71 @@ try {
     return { text: b.textContent, right: cs.right, bottom: cs.bottom };
   })()`);
   check('生成过就出现「N 次」角标（右下角，和左下角的 1 / 4 对称）',
-    hb.text === '2 次' && hb.right !== 'auto' && hb.bottom !== 'auto', JSON.stringify(hb));
+    hb.text === '4 次' && hb.right !== 'auto' && hb.bottom !== 'auto', JSON.stringify(hb));
 
   const openRuns = async () => {
     await page.evaluate(`document.querySelector('.node[data-id="${galId}"] .img-hist').click()`);
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 350));
   };
-  const runRows = () => page.evaluate(`[...document.querySelectorAll('.run-list .run-row')].map((r) => ({
-    on: r.classList.contains('on'),
-    time: (r.querySelector('.run-time') || {}).textContent,
-    prompt: (r.querySelector('.run-prompt') || {}).textContent,
-    meta: (r.querySelector('.run-meta') || {}).textContent,
-    acts: [...r.querySelectorAll('.run-acts button')].map((b) => b.textContent),
-  }))`);
+  const gridState = () => page.evaluate(`(() => {
+    const g = document.querySelector('.run-list .run-grid');
+    if (!g) return { missing: true };
+    const cells = [...g.querySelectorAll('.run-cell')];
+    const r = cells.map((c) => c.getBoundingClientRect());
+    const box = cells.map((c) => c.querySelector('.rc-img').getBoundingClientRect());
+    return {
+      cols: getComputedStyle(g).gridTemplateColumns.split(' ').length,
+      n: cells.length,
+      w: Math.round(box[0].width), h: Math.round(box[0].height),   // 缩略图要方，不是整个格子（格子还含时间行）
+      step: r[3] ? Math.round(r[3].top - r[0].top) : 0,
+      on: cells.map((c) => c.classList.contains('on')),
+      badges: cells.map((c) => (c.querySelector('.rc-n') || {}).textContent || ''),
+      times: cells.map((c) => (c.querySelector('.rc-time') || {}).textContent || ''),
+    };
+  })()`);
 
   await openRuns();
-  const hRows0 = await runRows();
-  check('点角标列出每次生成：新的在上、当前那次标「当前」、参数写清楚',
-    hRows0.length === 2 && hRows0[0].on && hRows0[0].prompt.includes('雨夜霓虹') && /种子 222/.test(hRows0[0].meta)
-      && hRows0[1].prompt.includes('晴天街角') && hRows0[0].acts.join() === '看,派生',
-    JSON.stringify(hRows0));
+  const grid0 = await gridState();
+  check('生成历史是宫格：3 列、格子是正方形、第二行整行落在第一行之下',
+    grid0.cols === 3 && grid0.n === 4 && Math.abs(grid0.w - grid0.h) <= 2 && grid0.step >= grid0.h + 6,
+    JSON.stringify(grid0));
+  check('宫格按新→旧排，当前那格标「当前」，多图的格子带张数角标',
+    grid0.on[0] === true && grid0.on.slice(1).every((x) => !x)
+      && grid0.badges[0] === '4 张' && grid0.times[0].includes('当前'),
+    JSON.stringify({ on: grid0.on, badges: grid0.badges, times: grid0.times }));
 
-  // 「看」第 2 行：把那一批（2 张）换回节点上
-  await page.evaluate(`[...document.querySelectorAll('.run-list .run-row')][1]
-    .querySelectorAll('.run-acts button')[0].click()`);
+  // 单击第一格 → 大图 + 信息卡
+  await page.evaluate(`document.querySelector('.run-list .run-cell').click()`);
+  await new Promise((r) => setTimeout(r, 550));
+  const info = await page.evaluate(`(() => {
+    const box = document.querySelector('#lightboxInfo');
+    if (!box || box.classList.contains('hidden')) return { hidden: true };
+    return {
+      dim: (box.querySelector('.lbi-dim') || {}).textContent,
+      rows: [...box.querySelectorAll('.lbi-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()),
+      prompt: (box.querySelector('.lbi-prompt') || {}).textContent,
+      acts: [...box.querySelectorAll('.lbi-btn')].map((b) => b.textContent),
+      count: (document.querySelector('#lightbox .lb-count') || {}).textContent,
+    };
+  })()`);
+  check('单击宫格里的图 → 大图打开，旁边列出分辨率 / 参数 / 提示词',
+    !info.hidden && /^\d+ × \d+$/.test(info.dim) && /种子\s*222/.test(info.rows.join('|'))
+      && info.prompt === '第二版：雨夜霓虹' && info.acts.join() === '换回节点,派生到新节点'
+      && info.count === '1 / 4', JSON.stringify(info));
+
+  // 点信息卡（选文字 / 点按钮）不该把大图关掉
+  await page.evaluate(`document.querySelector('#lightboxInfo .lbi-prompt').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+  const stillOpen = await page.evaluate(`!document.querySelector('#lightbox').classList.contains('hidden')`);
+  check('点信息卡不会顺手关掉大图', stillOpen);
+  await page.evaluate(`document.querySelector('#lightbox').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+
+  // 「换回节点」：第 2 格（2 张）换回后，节点从 1 / 4 变成 1 / 2
+  await openRuns();
+  await page.evaluate(`document.querySelectorAll('.run-list .run-cell')[1].click()`);
+  await new Promise((r) => setTimeout(r, 550));
+  await page.evaluate(`document.querySelector('#lightboxInfo .lbi-btn').click()`);
   await new Promise((r) => setTimeout(r, 450));
   const afterView = await page.evaluate(`(() => {
     const c = document.querySelector('.node[data-id="${galId}"]');
@@ -1094,14 +1144,15 @@ try {
       dots: c.querySelectorAll('.dots .dot-i').length };
   })()`);
   await openRuns();
-  const hRows1 = await runRows();
-  check('「看」把那一批换回节点：4 张变 2 张，「当前」标记跟着移过去',
-    afterView.count === '1 / 2' && afterView.dots === 2 && hRows1[1].on && !hRows1[0].on,
-    JSON.stringify({ afterView, on: hRows1.map((x) => x.on) }));
+  const grid1 = await gridState();
+  check('「换回节点」把那一批换回节点：4 张变 2 张，「当前」标记跟着移过去',
+    afterView.count === '1 / 2' && afterView.dots === 2 && grid1.on[1] === true && grid1.on[0] === false,
+    JSON.stringify({ afterView, on: grid1.on }));
 
-  // 「派生」第 1 行：参数整套复制到新节点，种子钉住那次
-  await page.evaluate(`[...document.querySelectorAll('.run-list .run-row')][0]
-    .querySelectorAll('.run-acts button')[1].click()`);
+  // 「派生到新节点」：参数整套复制，种子钉住那次
+  await page.evaluate(`document.querySelectorAll('.run-list .run-cell')[0].click()`);
+  await new Promise((r) => setTimeout(r, 550));
+  await page.evaluate(`document.querySelectorAll('#lightboxInfo .lbi-btn')[1].click()`);
   await new Promise((r) => setTimeout(r, 1100));
   const derived = await page.evaluate(`(async () => {
     const id = localStorage.getItem('comfy-canvas-project');

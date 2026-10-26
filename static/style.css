@@ -478,29 +478,32 @@ select option { background: #1f1f1f; color: var(--text); }
   border-bottom: 1px solid var(--line); margin-bottom: 3px;
 }
 
-/* 生成历史列表：一行一次生成（时间 / 提示词摘要 / 参数 + 看 / 派生） */
-.run-list { min-width: 308px; max-width: 348px; }
-.run-rows { display: flex; flex-direction: column; gap: 2px; }
-.run-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; border-radius: 7px;
+/* 生成历史：三列宫格。
+   ⚠ 不能用 aspect-ratio 撑正方形（见 ARCHITECTURE「资产抽屉」那节踩过的坑）：
+   grid 算行高时单元格宽度还没定，会和 aspect-ratio 互相等对方，Chromium 退化成按内容定高，
+   行高塌成文件名那一行、每行盖住上一行。用 padding-bottom: 100%（百分比相对栅格区域宽度）
+   + 绝对定位铺满，不存在这层循环。 */
+.run-list { min-width: 424px; max-width: 464px; }
+.run-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 2px 8px 10px; }
+.run-cell {
+  cursor: pointer; overflow: hidden;
+  background: #141414; border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color 0.15s;
 }
-.run-row:hover { background: var(--panel-2); }
-.run-row.on { box-shadow: inset 2px 0 0 var(--accent); }
-.run-main { flex: 1; min-width: 0; }
-.run-time { font-size: 10px; color: var(--faint); }
-.run-prompt {
-  font-size: 11.5px; color: var(--text); margin-top: 1px;
+.run-cell:hover { border-color: #a8a8a8; }
+.run-cell.on { border-color: #e6e6e6; }
+.rc-img { position: relative; height: 0; padding-bottom: 100%; background: #0f0f0f; }
+.rc-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.rc-n {
+  position: absolute; right: 4px; bottom: 4px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.68); border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff; font-size: 10px;
+}
+.rc-time {
+  padding: 4px 6px 5px; font-size: 10px; color: var(--faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.run-meta { font-size: 10px; color: var(--faint); margin-top: 2px; }
-.run-acts { display: flex; gap: 4px; flex: none; }
-.run-acts button {
-  border: 1px solid var(--line); background: transparent; color: var(--text);
-  border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-.run-acts button:hover { background: var(--panel-2); border-color: var(--line-strong); }
+.run-cell.on .rc-time { color: #fff; }
 
 #helpSheet {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -618,6 +621,39 @@ select option { background: #1f1f1f; color: var(--text); }
 
 #lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 80; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
 #lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
+/* 大图左侧的信息卡：分辨率 / 参数 / 提示词 / 一个动作（派生）。
+   #lightbox 本身挂着「点一下就关」，所以这张卡要 stopPropagation（见 app.js）。 */
+#lightboxInfo {
+  position: absolute; left: 22px; bottom: 22px; width: min(380px, 42vw); max-height: 76vh;
+  overflow: auto; cursor: default; text-align: left;
+  background: rgba(20, 20, 20, 0.88); border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px; padding: 12px 14px 14px; color: #e8e8e8;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+}
+#lightboxInfo .lbi-dim { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: #fff; }
+#lightboxInfo .lbi-row { display: flex; gap: 10px; margin-top: 5px; font-size: 11.5px; color: #9a9a9a; }
+#lightboxInfo .lbi-row b { color: #f2f2f2; font-weight: 500; word-break: break-all; }
+#lightboxInfo .lbi-label {
+  margin-top: 11px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 10.5px; color: #8a8a8a;
+}
+#lightboxInfo .lbi-prompt {
+  margin-top: 4px; font-size: 12px; line-height: 1.55; color: #dcdcdc;
+  white-space: pre-wrap; word-break: break-word; max-height: 26vh; overflow: auto;
+  user-select: text;
+}
+#lightboxInfo .lbi-acts { display: flex; gap: 6px; margin-top: 12px; }
+#lightboxInfo .lbi-btn {
+  flex: 1; padding: 7px 10px; border: none; border-radius: 999px;
+  background: #ffffffe6; color: #141414; font-size: 12px; cursor: pointer;
+  transition: background 0.15s;
+}
+#lightboxInfo .lbi-btn:hover { background: #ffffffb3; }
+#lightboxInfo .lbi-btn.ghost {
+  background: transparent; border: 1px solid rgba(255, 255, 255, 0.2); color: #e8e8e8;
+}
+#lightboxInfo .lbi-btn.ghost:hover { background: rgba(255, 255, 255, 0.08); }
 /* 大图里也能翻页：多张结果以前只能看到第一张，想看第二张毫无入口 */
 #lightbox .lb-btn {
   position: absolute; top: 50%; transform: translateY(-50%);

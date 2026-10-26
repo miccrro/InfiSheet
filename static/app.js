@@ -3738,6 +3738,9 @@
     return born;
   }
 
+  // 生成历史：宫格（三列缩略图）+ 单击看大图，大图旁边是这张的详细信息。
+  // 以前是竖排文字行（时间/提示词/参数 + 看/派生），信息全但看不到图；宫格先把图摆出来，
+  // 参数挪进大图的信息卡——「这张长什么样」和「它是什么参数」分开回答。
   function openRunList(anchor, n) {
     closePopMenu();
     const runs = runsOf(n);
@@ -3745,60 +3748,78 @@
     menu.className = 'popmenu run-list';
     const head = document.createElement('div');
     head.className = 'popmenu-title';
-    head.textContent = `生成历史 · ${runs.length} 次（新的在最上面）`;
+    head.textContent = `生成历史 · ${runs.length} 次（点缩略图看大图与参数）`;
     menu.appendChild(head);
-    const list = document.createElement('div');
-    list.className = 'run-rows';
-    // 哪一条是「当前」不靠位置判断，靠内容比对：点过「看」之后 gallery 会换成老那一批，
-    // 位置标记就会指错行。
+
     const sameItems = (a, b) => !!(a && b) && a.length === b.length && a.every((x, i) => x.url === b[i].url);
+    const grid = document.createElement('div');
+    grid.className = 'run-grid';
     runs.forEach((run, i) => {
-      const row = document.createElement('div');
-      const on = sameItems(run.items, n.gen && n.gen.gallery);
-      row.className = 'run-row' + (on ? ' on' : '');
-      const main = document.createElement('div');
-      main.className = 'run-main';
-      const t = document.createElement('div');
-      t.className = 'run-time';
-      t.textContent = runTime(run.at) + (on ? ' · 当前' : '');
-      const p = document.createElement('div');
-      p.className = 'run-prompt';
-      const raw = (run.prompt || '').replace(/\s+/g, ' ').trim();
-      p.textContent = raw ? raw.slice(0, 44) + (raw.length > 44 ? '…' : '') : '（没有提示词）';
-      p.title = run.prompt || '';
-      const m = document.createElement('div');
-      m.className = 'run-meta';
-      const bits = [];
-      if (run.w && run.h) bits.push(`${run.w}×${run.h}`);
-      if (run.items && run.items.length > 1) bits.push(`${run.items.length} 张`);
-      if (run.seed != null) bits.push(`种子 ${run.seed}`);
-      m.textContent = bits.join(' · ') || '—';
-      main.append(t, p, m);
-      const acts = document.createElement('div');
-      acts.className = 'run-acts';
-      const bView = document.createElement('button');
-      bView.type = 'button';
-      bView.textContent = '看';
-      bView.title = '把这一批图换回节点上';
-      bView.onclick = (ev) => { ev.stopPropagation(); viewRun(n, i); closePopMenu(); };
-      const bDer = document.createElement('button');
-      bDer.type = 'button';
-      bDer.textContent = '派生';
-      bDer.title = '复制这次的参数（含种子）到新节点';
-      bDer.onclick = (ev) => { ev.stopPropagation(); deriveRun(n, i); closePopMenu(); };
-      acts.append(bView, bDer);
-      row.append(main, acts);
-      list.appendChild(row);
+      const items = run.items || [];
+      if (!items.length) return;
+      const on = sameItems(items, n.gen && n.gen.gallery);
+      const cell = document.createElement('div');
+      cell.className = 'run-cell' + (on ? ' on' : '');
+      cell.tabIndex = 0;
+      cell.setAttribute('role', 'button');
+      cell.title = `${runTime(run.at)} · ${items.length} 张${run.seed == null ? '' : ' · 种子 ' + run.seed}`;
+
+      const box = document.createElement('div');
+      box.className = 'rc-img';
+      const img = document.createElement('img');
+      img.src = items[0].url;
+      img.alt = '';
+      img.draggable = false;
+      box.appendChild(img);
+      if (items.length > 1) {
+        const badge = document.createElement('span');
+        badge.className = 'rc-n';
+        badge.textContent = `${items.length} 张`;
+        box.appendChild(badge);
+      }
+      const time = document.createElement('div');
+      time.className = 'rc-time';
+      time.textContent = runTime(run.at) + (on ? ' · 当前' : '');
+
+      cell.append(box, time);
+      const open = () => {
+        closePopMenu();
+        openLightbox(items[0].url, items, 0, runInfo(n, i, run));
+      };
+      cell.onclick = open;
+      cell.onkeydown = (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
+      };
+      grid.appendChild(cell);
     });
-    menu.appendChild(list);
+    menu.appendChild(grid);
     document.body.appendChild(menu);
     placePopMenu(menu, anchor);
     popAnchor = anchor;
     armPopClose(anchor);
   }
 
+  // 大图旁边那张信息卡：分辨率取图片真实像素，参数取那一次生成的记录
+  function runInfo(n, i, run) {
+    return {
+      prompt: run.prompt || '',
+      rows: [
+        ['张数', `${(run.items || []).length} 张`],
+        ['种子', run.seed == null ? '随机' : String(run.seed)],
+        ['工作流', (run.wf || '').replace(/^preset:/, '') || '—'],
+        ['时间', runTime(run.at)],
+      ],
+      // 两个动作都留着：「换回节点」= 把这一批图换成节点当前的图；「派生」= 复制参数到新节点
+      actions: [
+        { label: '换回节点', fn: () => viewRun(n, i) },
+        { label: '派生到新节点', fn: () => deriveRun(n, i) },
+      ],
+    };
+  }
+
   let lbList = null;      // 大图预览里能翻的那一组
   let lbIdx = 0;
+  let lbInfo = null;      // 可选：大图左侧的信息卡（分辨率 / 提示词 / 参数 / 一个动作）
   function paintLightbox() {
     const gal = lbList;
     const img = $('#lightboxImg');
@@ -3812,10 +3833,43 @@
     const multi = !!(gal && gal.length > 1);
     $('#lightbox').querySelector('.lb-prev').classList.toggle('hidden', !multi);
     $('#lightbox').querySelector('.lb-next').classList.toggle('hidden', !multi);
+    paintLightboxInfo();
   }
-  function openLightbox(url, list, idx) {
+  // 分辨率优先用图片真实像素（工作流可能不按面板尺寸出图），拿不到才回落到记录值
+  function paintLightboxInfo() {
+    const box = $('#lightboxInfo');
+    if (!lbInfo) {
+      box.classList.add('hidden');
+      box.innerHTML = '';
+      return;
+    }
+    box.classList.remove('hidden');
+    const img = $('#lightboxImg');
+    const real = img.naturalWidth && img.naturalHeight ? `${img.naturalWidth} × ${img.naturalHeight}` : '';
+    const rows = (lbInfo.rows || []).filter(([, v]) => v != null && v !== '');
+    box.innerHTML = `
+      <div class="lbi-dim">${esc(real || '尺寸读取中…')}</div>
+      ${rows.map(([k, v]) => `<div class="lbi-row"><span>${esc(k)}</span><b>${esc(String(v))}</b></div>`).join('')}
+      <div class="lbi-label">提示词</div>
+      <div class="lbi-prompt">${esc(lbInfo.prompt || '（这一张没有留下提示词）')}</div>
+      ${(lbInfo.actions || []).length
+        ? `<div class="lbi-acts">${lbInfo.actions.map((a, i) => `<button type="button" class="lbi-btn${i ? ' ghost' : ''}" data-i="${i}">${esc(a.label)}</button>`).join('')}</div>`
+        : ''}`;
+    box.querySelectorAll('.lbi-btn').forEach((btn) => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const a = (lbInfo && lbInfo.actions || [])[Number(btn.dataset.i)];
+        const fn = a && a.fn;      // 先取出来：下面会把 lbInfo 清掉
+        $('#lightbox').classList.add('hidden');
+        lbInfo = null;
+        if (fn) fn();
+      };
+    });
+  }
+  function openLightbox(url, list, idx, info) {
     lbList = Array.isArray(list) && list.length ? list : null;
     lbIdx = lbList ? Math.min(Math.max(0, idx | 0), lbList.length - 1) : 0;
+    lbInfo = info || null;
     if (!lbList) $('#lightboxImg').src = url;
     paintLightbox();
     $('#lightbox').classList.remove('hidden');
@@ -3825,7 +3879,10 @@
     lbIdx = ((lbIdx + delta) % lbList.length + lbList.length) % lbList.length;
     paintLightbox();
   }
-  $('#lightbox').onclick = () => $('#lightbox').classList.add('hidden');
+  $('#lightbox').onclick = () => { $('#lightbox').classList.add('hidden'); lbInfo = null; };
+  // 信息卡里要能选文字、点按钮，不能顺手把大图关掉
+  $('#lightboxInfo').onclick = (ev) => ev.stopPropagation();
+  $('#lightboxImg').addEventListener('load', () => paintLightboxInfo());
   $('#lightbox').querySelector('.lb-prev').onclick = (ev) => { ev.stopPropagation(); stepLightbox(-1); };
   $('#lightbox').querySelector('.lb-next').onclick = (ev) => { ev.stopPropagation(); stepLightbox(1); };
 
