@@ -4210,36 +4210,123 @@
     pane.appendChild(box);
   }
 
+  // 从一次运行记录里挖出人看得懂的东西：提示词 + 采样参数 + 尺寸。
+  // /history 只给 API 图和产物，提示词得自己从图里找：
+  // 先踢掉被 KSampler.negative 引用的节点（那是负面词），再踢掉 LLM 扩写节点的系统提示，
+  // 剩下的取最长的那个当正向提示词——正向词通常比负面词长，比系统提示更像人写的。
+  function historyMeta(e) {
+    const graph = (e && e.graph) || {};
+    const nodes = Object.entries(graph).map(([id, n]) => ({ id, ...(n || {}) }));
+    const inp = (n) => (n && n.inputs) || {};
+
+    const negative = new Set();
+    nodes.forEach((n) => {
+      const neg = inp(n).negative;
+      if (Array.isArray(neg)) negative.add(String(neg[0]));
+    });
+
+    const texts = [];
+    nodes.forEach((n) => {
+      if (negative.has(n.id)) return;
+      const inputs = inp(n);
+      ['text', 'prompt', 'string'].forEach((k) => {
+        const v = inputs[k];
+        if (typeof v !== 'string') return;
+        const t = v.trim();
+        if (t.length < 2) return;
+        if (/^You are an expert/i.test(t)) return;     // LLM 扩写节点的系统提示，不是人写的
+        texts.push(t);
+      });
+    });
+    texts.sort((a, b) => b.length - a.length);
+
+    const sampler = nodes.find((n) => /KSampler/i.test(n.class_type || '')) || null;
+    const si = inp(sampler);
+    const latent = nodes.find((n) => {
+      const x = inp(n);
+      return Number.isFinite(x.width) && Number.isFinite(x.height);
+    });
+    const li = inp(latent);
+    const seed = si.seed != null ? si.seed : si.noise_seed;
+    const arts = (e && e.artifacts) || [];
+
+    return {
+      prompt: texts[0] || '',
+      rows: [
+        ['节点', `${nodes.length} 个`],
+        ['产物', `${arts.length} 个`],
+        ['采样', sampler ? `${si.steps == null ? '?' : si.steps} 步 · CFG ${si.cfg == null ? '?' : si.cfg} · ${si.sampler_name || '?'}` : '—'],
+        ['种子', seed == null ? '—' : String(seed)],
+        ['尺寸', li.width ? `${li.width} × ${li.height}` : '—'],
+      ],
+    };
+  }
+
+  // 运行记录：宫格（一格 = 一次运行，封面取第一张产物），单击看大图 + 详情。
+  // 没有产物的记录也要在：它们照样能导入工作流，所以给个占位块，点了直接导入。
+  function openHistory(e, imgs) {
+    const meta = historyMeta(e);
+    const importIt = () => useGraph(e.graph, `历史 ${e.prompt_id.slice(0, 8)}`);
+    if (!imgs.length) { importIt(); return; }        // 没图可看，直接导入
+    openLightbox(artifactURL(imgs[0]), imgs.map((a) => ({ url: artifactURL(a) })), 0, {
+      prompt: meta.prompt,
+      rows: meta.rows,
+      actions: [{ label: '用这个工作流', fn: importIt }],
+    });
+  }
+
   async function renderHistory() {
     const pane = $('#pane-history');
     pane.innerHTML = '<p class="tip">读取中…</p>';
     const res = await api('/api/history?limit=15');
     const list = (res.entries || []).filter((e) => e.has_graph);
     pane.innerHTML = '';
-    const box = document.createElement('div');
-    box.className = 'list';
     if (!list.length) {
-      box.innerHTML = '<p class="tip">ComfyUI 里还没有带 API 图的运行记录。先在 ComfyUI 里跑一次任意工作流，这里就能抓到它的 API 图。</p>';
+      pane.innerHTML = '<p class="tip">ComfyUI 里还没有带 API 图的运行记录。先在 ComfyUI 里跑一次任意工作流，这里就能抓到它的 API 图。</p>';
+      return;
     }
+    const grid = document.createElement('div');
+    grid.className = 'hist-grid';
     list.forEach((e) => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      const thumb = (e.artifacts || []).find((a) => a.kind === 'image');
-      card.innerHTML = `<div class="info"><b>${esc(e.prompt_id.slice(0, 12))}</b><span>${e.node_count} 个节点 · ${e.artifacts.length} 个产物</span></div>`;
-      if (thumb) {
+      const imgs = (e.artifacts || []).filter((a) => a.kind === 'image');
+      const cell = document.createElement('div');
+      cell.className = 'run-cell';
+      cell.tabIndex = 0;
+      cell.setAttribute('role', 'button');
+      cell.title = `${e.prompt_id.slice(0, 12)} · ${e.node_count} 个节点 · ${(e.artifacts || []).length} 个产物`;
+
+      const box = document.createElement('div');
+      box.className = 'rc-img';
+      if (imgs.length) {
         const img = document.createElement('img');
-        img.src = artifactURL(thumb);
-        img.style.cssText = 'width:44px;height:44px;object-fit:cover;border-radius:6px;border:1px solid #2e333d';
-        card.appendChild(img);
+        img.src = artifactURL(imgs[0]);
+        img.alt = '';
+        img.draggable = false;
+        box.appendChild(img);
+        if (imgs.length > 1) {
+          const badge = document.createElement('span');
+          badge.className = 'rc-n';
+          badge.textContent = `${imgs.length} 图`;
+          box.appendChild(badge);
+        }
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'rc-empty';
+        ph.innerHTML = `${icon('layers')}<span>${e.node_count} 个节点</span><span>无产物</span>`;
+        box.appendChild(ph);
       }
-      card.onclick = async () => {
-        // 列表里已经带了 API 图（history_summary 一并返回），不用再拉一次全量
-        if (e.graph) await useGraph(e.graph, `历史 ${e.prompt_id.slice(0, 8)}`);
-        else flash('该记录没有 API 图');
+      const meta = document.createElement('div');
+      meta.className = 'rc-time';
+      meta.textContent = imgs.length ? `${imgs.length} 图 · ${e.node_count} 节点` : `${e.node_count} 节点`;
+
+      cell.append(box, meta);
+      cell.onclick = () => openHistory(e, imgs);
+      cell.onkeydown = (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openHistory(e, imgs); }
       };
-      box.appendChild(card);
+      grid.appendChild(cell);
     });
-    pane.appendChild(box);
+    pane.appendChild(grid);
   }
 
   async function useGraph(graph, title) {

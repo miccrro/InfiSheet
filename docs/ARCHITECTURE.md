@@ -173,6 +173,22 @@
 - 大图（`#lightbox`）也带翻页：`openLightbox(url, list, idx)` 收一个数组，翻页翻的是**这一组**——
   从资产抽屉点开的，翻的就是抽屉当前筛选结果，不是画布上那个节点的相册。
 
+### 「资产库」里的运行记录（`/api/history`）
+
+弹窗标题是「资产库」，四个标签页里「ComfyUI 运行记录」用的是宫格：一格 = 一次执行，
+封面取第一张产物（多图带 `N 图` 角标），没有产物的记录给一个占位块——它们照样能导入工作流。
+
+详情卡的内容**不是接口给的**：`/history` 只有 API 图和产物，提示词和采样参数得从图里挖
+（`historyMeta()`）：
+
+- 提示词：先收集所有 `inputs.text / prompt / string` 的字面量，**踢掉被 `KSampler.negative` 引用的节点**
+  （那是负面词），再踢掉 LLM 扩写节点的系统提示（`You are an expert…`），剩下的取最长的那个；
+- 参数：找第一个 `KSampler*` 节点取 `steps / cfg / sampler_name / seed|noise_seed`，
+  再找第一个同时有 `width/height` 的节点当尺寸；
+- 分辨率仍以图片真实像素为准（`naturalWidth`），节点里的 `width/height` 只作兜底。
+
+没有产物的记录点了**直接导入工作流**（没有图可看，弹大图没意义）。
+
 ### 生成历史（`gen.runs`）与宫格
 
 `gen.gallery` 只装「当前显示的那一批」，`gen.runs` 是旁路记录：每生成一次压一条

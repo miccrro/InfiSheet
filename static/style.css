@@ -504,6 +504,15 @@ select option { background: #1f1f1f; color: var(--text); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .run-cell.on .rc-time { color: #fff; }
+/* 运行记录宫格（弹窗里的「资产库」页）：列数自适应，缩略图沿用 .rc-img 的正方形撑法 */
+.hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.hist-grid .run-cell { border-radius: 10px; }
+.rc-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 2px;
+  align-items: center; justify-content: center;
+  color: var(--faint); font-size: 10.5px; text-align: center;
+}
+.rc-empty .oi { width: 20px; height: 20px; opacity: 0.4; margin-bottom: 3px; }
 
 #helpSheet {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);

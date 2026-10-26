@@ -67,6 +67,30 @@ try {
     runsOf(manyNode).length === 30 && runsOf(manyNode)[0].prompt === 'p34'
       && runsOf(manyNode)[29].prompt === 'p5', `${runsOf(manyNode).length} 条`);
 
+  // 运行记录的「详情」是纯逻辑：从 /history 的 API 图里挖提示词和采样参数。
+  // 这段在 Node 里直接验——CI 没有 ComfyUI，浏览器里造不出历史记录。
+  const { historyMeta } = new Function(`${pickFn(appSrc, 'historyMeta')}\nreturn { historyMeta };`)();
+  const histEntry = {
+    graph: {
+      '1': { class_type: 'CLIPTextEncode', inputs: { text: 'masterpiece, a cat on a windowsill, soft light', clip: ['2', 0] } },
+      '2': { class_type: 'CLIPLoader', inputs: {} },
+      '3': { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality, blurry', clip: ['2', 0] } },
+      '4': { class_type: 'EmptyLatentImage', inputs: { width: 768, height: 1024, batch_size: 1 } },
+      '5': { class_type: 'KSampler', inputs: { seed: 42, steps: 20, cfg: 4.5, sampler_name: 'euler',
+        positive: ['1', 0], negative: ['3', 0], latent_image: ['4', 0] } },
+    },
+    artifacts: [{ kind: 'image' }, { kind: 'image' }],
+  };
+  const hm = historyMeta(histEntry);
+  const rowOf = (rows, k) => (rows.find(([a]) => a === k) || [])[1];
+  check('运行记录详情：提示词取正向那句（负面词被 KSampler.negative 排掉）',
+    hm.prompt === 'masterpiece, a cat on a windowsill, soft light', hm.prompt);
+  check('运行记录详情：参数取到步数 / CFG / 采样器 / 种子 / 尺寸 / 节点数',
+    rowOf(hm.rows, '采样') === '20 步 · CFG 4.5 · euler' && rowOf(hm.rows, '种子') === '42'
+      && rowOf(hm.rows, '尺寸') === '768 × 1024' && rowOf(hm.rows, '节点') === '5 个'
+      && rowOf(hm.rows, '产物') === '2 个',
+    JSON.stringify(hm.rows));
+
   // Qwen-image-2.1 编辑流的真实结构：4 个 LoadImage 挤在同一个 images.image_N 组里。
   // 后 3 张是导出者本地的 023.jpg，用户看不见却参与条件编码。
   const qwenGraph = {
@@ -937,6 +961,8 @@ try {
   await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="paste"]').click()`);
   await new Promise((r) => setTimeout(r, 300));
   const mPaste = await modalBox();
+  check('弹窗标题改成「资产库」',
+    (await page.evaluate(`document.querySelector('#modal .sheet header strong').textContent`)) === '资产库');
   check('工作流弹窗尺寸固定 1200×780：切到内容更少的「添加工作流」不变',
     mPreset.w === mPaste.w && mPreset.h === mPaste.h
       && Math.abs(mPreset.w - mPreset.expectW) <= 2 && Math.abs(mPreset.h - mPreset.expectH) <= 2,
