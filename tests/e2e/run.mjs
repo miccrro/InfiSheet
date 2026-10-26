@@ -891,25 +891,37 @@ try {
     const s = document.querySelector('#modal .sheet').getBoundingClientRect();
     const nav = document.querySelector('#modalTabs').getBoundingClientRect();
     const panes = document.querySelector('.modal-panes').getBoundingClientRect();
-    const tab = document.querySelector('#modalTabs .tab');
+    const tabs = [...document.querySelectorAll('#modalTabs .tab')];
+    const tab = tabs[0];
     return {
       w: Math.round(s.width), h: Math.round(s.height),
+      // 期望值按视口算：窗口够大时就是 1200×780，小屏被 max-width/max-height 兜底
+      expectW: Math.min(1200, Math.round(innerWidth * 0.94)),
+      expectH: Math.min(780, Math.round(innerHeight * 0.92)),
       sideBySide: Math.round(nav.right) <= Math.round(panes.left) + 1,
       navW: Math.round(nav.width), panesW: Math.round(panes.width),
       tabRadius: parseFloat(getComputedStyle(tab).borderRadius),
+      tabDisplay: getComputedStyle(tab).display,
+      icons: tabs.filter((t) => t.querySelector('.ico .oi')).length,
+      labels: tabs.map((t) => (t.querySelector('span:last-child') || {}).textContent),
     };
   })()`);
   const mPreset = await modalBox();
   await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="paste"]').click()`);
   await new Promise((r) => setTimeout(r, 300));
   const mPaste = await modalBox();
-  check('工作流弹窗尺寸固定：切到内容更少的「添加工作流」不变',
-    mPreset.w === mPaste.w && mPreset.h === mPaste.h && mPreset.h > 400,
-    `${mPreset.w}×${mPreset.h} → ${mPaste.w}×${mPaste.h}`);
+  check('工作流弹窗尺寸固定 1200×780：切到内容更少的「添加工作流」不变',
+    mPreset.w === mPaste.w && mPreset.h === mPaste.h
+      && Math.abs(mPreset.w - mPreset.expectW) <= 2 && Math.abs(mPreset.h - mPreset.expectH) <= 2,
+    `${mPreset.w}×${mPreset.h} → ${mPaste.w}×${mPaste.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
   check('工作流弹窗是左右双栏：导航在左、内容在右，导航项不是胶囊',
-    mPreset.sideBySide && mPreset.navW >= 140 && mPreset.navW <= 240
+    mPreset.sideBySide && mPreset.navW >= 180 && mPreset.navW <= 260
       && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
     JSON.stringify(mPreset));
+  check('左侧导航是「图标 + 名称」：4 个 tab 的图标都填上了，文字没被吃掉',
+    mPreset.icons === 4 && mPreset.tabDisplay === 'flex'
+      && mPreset.labels.join('|') === '内置预设|我的工作流库|ComfyUI 运行记录|添加工作流',
+    JSON.stringify({ icons: mPreset.icons, display: mPreset.tabDisplay, labels: mPreset.labels }));
   // 开弹窗不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
   // 这里只验「没预加载」，不点 history 标签——CI 里没有 ComfyUI，点了反而会真报错。
   const histPreload = await page.evaluate(`document.querySelector('#pane-history').children.length`);
