@@ -182,10 +182,18 @@
     </header>
     <div class="modal-body">
       <nav id="modalTabs">
-        <button class="tab active" data-tab="preset">内置预设</button>
-        <button class="tab" data-tab="library">我的工作流库</button>
-        <button class="tab" data-tab="history">ComfyUI 运行记录</button>
-        <button class="tab" data-tab="paste">＋ 添加工作流</button>
+        <button class="tab active" data-tab="preset">
+          <span class="ico" data-icon="layers" aria-hidden="true"></span><span>内置预设</span>
+        </button>
+        <button class="tab" data-tab="library">
+          <span class="ico" data-icon="book" aria-hidden="true"></span><span>我的工作流库</span>
+        </button>
+        <button class="tab" data-tab="history">
+          <span class="ico" data-icon="time" aria-hidden="true"></span><span>ComfyUI 运行记录</span>
+        </button>
+        <button class="tab" data-tab="paste">
+          <span class="ico" data-icon="plus" aria-hidden="true"></span><span>添加工作流</span>
+        </button>
       </nav>
       <div class="modal-panes">
         <div class="pane" id="pane-preset"></div>

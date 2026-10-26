@@ -581,19 +581,24 @@ select option { background: #1f1f1f; color: var(--text); }
 /* 工作流弹窗：尺寸写死 + 左导航右内容。
    以前是「顶部横向 tab + 内容自适应高度」——4 个预设把窗口撑到 78vh，切到「添加工作流」
    内容变少，窗口又缩回去，同一个弹窗跳两次。现在固定 880×560，内容自己滚。 */
-#modal .sheet { width: 880px; height: 560px; max-width: 94vw; max-height: 86vh; }
-.modal-body { flex: 1; display: grid; grid-template-columns: 188px 1fr; min-height: 0; }
+#modal .sheet { width: 1200px; height: 780px; max-width: 94vw; max-height: 92vh; }
+.modal-body { flex: 1; display: grid; grid-template-columns: 200px 1fr; min-height: 0; }
 #modalTabs {
   display: flex; flex-direction: column; gap: 2px; padding: 10px;
   border-right: 1px solid var(--line); overflow: auto;
 }
 #modalTabs .tab {
-  background: transparent; border: none; border-radius: 8px; text-align: left;
-  color: var(--dim); padding: 8px 10px; font-size: 12.5px;
+  display: flex; align-items: center; gap: 9px; text-align: left;
+  background: transparent; border: none; border-radius: 8px;
+  color: var(--dim); padding: 9px 10px; font-size: 12.5px;
   transition: background 0.15s, color 0.15s;
 }
+/* 导航项：图标 + 名称。图标默认压一点亮度，选中才和文字一起提亮 */
+#modalTabs .tab .oi { width: 16px; height: 16px; opacity: 0.75; }
 #modalTabs .tab:hover { background: var(--panel-2); color: var(--text); }
+#modalTabs .tab:hover .oi { opacity: 1; }
 #modalTabs .tab.active { background: var(--panel-2); color: #fff; box-shadow: inset 2px 0 0 var(--accent); }
+#modalTabs .tab.active .oi { opacity: 1; }
 .modal-panes { display: flex; min-width: 0; min-height: 0; }
 .pane { flex: 1; min-height: 0; padding: 14px 16px 18px; overflow: auto; }
 .list { display: flex; flex-direction: column; gap: 7px; }
