@@ -51,6 +51,22 @@ try {
   const { buildGenGraph, dimsTarget, promptPlan, planSeed, refMarks, batchShortfall } = new Function(
     `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
 
+  // 生成历史的存档逻辑：上限 30 条、旧档兼容。这两件事在浏览器里造不出来（要真跑 35 次生成），
+  // 所以在 Node 里直接验；测的仍然是 app.js 里那份实现。
+  const { runsOf, pushRun } = new Function(
+    `const RUN_CAP = 30;\n${pickFn(appSrc, 'runsOf')}\n${pickFn(appSrc, 'pushRun')}\nreturn { runsOf, pushRun };`)();
+  const noGenNode = { id: 'x', type: 'image', gen: null };
+  const legacyNode = { id: 'y', type: 'image', gen: { prompt: '旧画布', seed: 5, batch: 2, gallery: [{ url: 'a' }] } };
+  const manyNode = { id: 'z', type: 'image', gen: { runs: [] } };
+  for (let i = 0; i < 35; i++) pushRun(manyNode, { at: i, prompt: 'p' + i, items: [] });
+  check('生成历史：没有 gen 的节点不会炸', runsOf(noGenNode).length === 0);
+  check('生成历史：旧存档只有 gallery 时合成一条「更早」（不是显示 0 次）',
+    runsOf(legacyNode).length === 1 && runsOf(legacyNode)[0].legacy === true
+      && runsOf(legacyNode)[0].items.length === 1);
+  check('生成历史：超过 30 条丢最旧的，新的排最前',
+    runsOf(manyNode).length === 30 && runsOf(manyNode)[0].prompt === 'p34'
+      && runsOf(manyNode)[29].prompt === 'p5', `${runsOf(manyNode).length} 条`);
+
   // Qwen-image-2.1 编辑流的真实结构：4 个 LoadImage 挤在同一个 images.image_N 组里。
   // 后 3 张是导出者本地的 023.jpg，用户看不见却参与条件编码。
   const qwenGraph = {
@@ -897,7 +913,14 @@ try {
       nodes: [{
         id: 'g9', type: 'image', title: '多图', x: 40, y: 40, dataURL: null, uploaded: null,
         gen: { prompt: '多图', wf: 'preset:krea2-txt2img.api.json', aspect: '1:1', size: '1k', batch: 4,
-          seedMode: 'fixed', seed: 7, gallery: [0, 1, 2, 3].map(mk), idx: 0, extras: [] },
+          seedMode: 'fixed', seed: 7, gallery: [0, 1, 2, 3].map(mk), idx: 0, extras: [],
+          // 生成历史：两条，第一条的 items 与 gallery 相同（所以它会被标成「当前」）
+          runs: [
+            { at: Date.now() - 1000, prompt: '第二版：雨夜霓虹', seed: 222, w: 1024, h: 1024, batch: 4,
+              wf: 'preset:krea2-txt2img.api.json', items: [0, 1, 2, 3].map(mk) },
+            { at: Date.now() - 60000, prompt: '第一版：晴天街角', seed: 111, w: 768, h: 768, batch: 2,
+              wf: 'preset:krea2-txt2img.api.json', items: [1, 2].map(mk) },
+          ] },
       }],
     };
     cv.nodes[0].dataURL = cv.nodes[0].gen.gallery[0].url;
@@ -960,6 +983,71 @@ try {
   const lbClosed = await page.evaluate(`document.querySelector('#lightbox').classList.contains('hidden')`);
   check('大图预览也能翻页（1/4 → 2/4），Esc 关闭',
     lb1.open && lb1.count === '1 / 4' && lb2 === '2 / 4' && lbClosed, `${lb1.count} → ${lb2} closed=${lbClosed}`);
+
+  // ---- 生成历史：每次生成留一条，能看回任意一次，也能从那次派生 ----
+  // 以前 gen.gallery 是覆盖式的：试到第 4 版最好，但已经回不去了。
+  const hb = await page.evaluate(`(() => {
+    const b = document.querySelector('.node[data-id="${galId}"] .img-hist');
+    if (!b) return { missing: true };
+    const cs = getComputedStyle(b);
+    return { text: b.textContent, right: cs.right, bottom: cs.bottom };
+  })()`);
+  check('生成过就出现「N 次」角标（右下角，和左下角的 1 / 4 对称）',
+    hb.text === '2 次' && hb.right !== 'auto' && hb.bottom !== 'auto', JSON.stringify(hb));
+
+  const openRuns = async () => {
+    await page.evaluate(`document.querySelector('.node[data-id="${galId}"] .img-hist').click()`);
+    await new Promise((r) => setTimeout(r, 300));
+  };
+  const runRows = () => page.evaluate(`[...document.querySelectorAll('.run-list .run-row')].map((r) => ({
+    on: r.classList.contains('on'),
+    time: (r.querySelector('.run-time') || {}).textContent,
+    prompt: (r.querySelector('.run-prompt') || {}).textContent,
+    meta: (r.querySelector('.run-meta') || {}).textContent,
+    acts: [...r.querySelectorAll('.run-acts button')].map((b) => b.textContent),
+  }))`);
+
+  await openRuns();
+  const hRows0 = await runRows();
+  check('点角标列出每次生成：新的在上、当前那次标「当前」、参数写清楚',
+    hRows0.length === 2 && hRows0[0].on && hRows0[0].prompt.includes('雨夜霓虹') && /种子 222/.test(hRows0[0].meta)
+      && hRows0[1].prompt.includes('晴天街角') && hRows0[0].acts.join() === '看,派生',
+    JSON.stringify(hRows0));
+
+  // 「看」第 2 行：把那一批（2 张）换回节点上
+  await page.evaluate(`[...document.querySelectorAll('.run-list .run-row')][1]
+    .querySelectorAll('.run-acts button')[0].click()`);
+  await new Promise((r) => setTimeout(r, 450));
+  const afterView = await page.evaluate(`(() => {
+    const c = document.querySelector('.node[data-id="${galId}"]');
+    return { count: (c.querySelector('.img-count') || {}).textContent,
+      dots: c.querySelectorAll('.dots .dot-i').length };
+  })()`);
+  await openRuns();
+  const hRows1 = await runRows();
+  check('「看」把那一批换回节点：4 张变 2 张，「当前」标记跟着移过去',
+    afterView.count === '1 / 2' && afterView.dots === 2 && hRows1[1].on && !hRows1[0].on,
+    JSON.stringify({ afterView, on: hRows1.map((x) => x.on) }));
+
+  // 「派生」第 1 行：参数整套复制到新节点，种子钉住那次
+  await page.evaluate(`[...document.querySelectorAll('.run-list .run-row')][0]
+    .querySelectorAll('.run-acts button')[1].click()`);
+  await new Promise((r) => setTimeout(r, 1100));
+  const derived = await page.evaluate(`(async () => {
+    const id = localStorage.getItem('comfy-canvas-project');
+    const j = await (await fetch('/api/projects/' + id)).json();
+    const ns = j.canvas.nodes;
+    const born = ns.filter((x) => x.type === 'image' && x.gen && x.gen.seed === 222)[0];
+    return {
+      total: ns.length,
+      born: born ? { prompt: born.gen.prompt, seed: born.gen.seed, seedMode: born.gen.seedMode,
+        runs: (born.gen.runs || []).length, gallery: (born.gen.gallery || []).length } : null,
+    };
+  })()`);
+  check('「派生」把参数复制到新节点：种子钉住那次、历史跟着带一条、原节点不动',
+    !!derived.born && derived.born.seed === 222 && derived.born.seedMode === 'fixed'
+      && derived.born.prompt.includes('雨夜霓虹') && derived.born.runs === 1 && derived.born.gallery === 4,
+    JSON.stringify(derived));
 
   // ---- 资产管理：生成结果 / 上传素材 / 画布上的图，一个抽屉里收齐 ----
   // 断言一律用「相对」关系（徽章全是什么、筛选后剩下几项），因为 /api/assets 在本机

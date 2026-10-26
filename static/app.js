@@ -461,6 +461,18 @@
         });
         body.appendChild(dots);
       }
+      // 生成历史入口：只在这个节点真生成过时出现，空节点上不摆没用的按钮。
+      // 位置和左下角的「1 / 4」对称——左下管「这一批里的第几张」，右下管「第几次生成」。
+      const runs = runsOf(n);
+      if (runs.length) {
+        const hist = document.createElement('button');
+        hist.type = 'button';
+        hist.className = 'img-hist';
+        hist.textContent = `${runs.length} 次`;
+        hist.title = '生成历史：看回任意一次，或从那次派生';
+        hist.onclick = (ev) => { ev.stopPropagation(); openRunList(hist, n); };
+        thumb.appendChild(hist);
+      }
       card.appendChild(buildGenPanel(n));
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
@@ -1994,6 +2006,13 @@
           g.idx = 0;
           n.dataURL = g.gallery[0].url;
           n.uploaded = null;
+          // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
+          // 这里记的是「这次用的什么参数、出了哪几张」，gallery 仍然是「当前显示的那一批」。
+          pushRun(n, {
+            at: Date.now(), prompt: rawPrompt || '', seed: built.seed ? built.seed.value : null,
+            w: dims.width, h: dims.height, batch: Number(g.batch) || 1, wf: g.wf || '',
+            items: g.gallery.slice(),
+          });
           g.status = `完成 · ${secs}s · ${imgs.length} 张`;
           // 面板上选了 4 张、图里只回来 1 张：这不是"多图生成坏了"，而是**图提交上去了、
           // 工作流自己把批量抹平了**（二次采样链、ImageBatch、单张后处理之类）。不吭声的话
@@ -3643,6 +3662,141 @@
     return setGallery(n, (n.gen.idx || 0) + delta);
   }
 
+  /* ---------------- 生成历史：同一节点每次生成留一条 ---------------- */
+  // 以前 gen.gallery 每次生成直接覆盖，「试到第 4 版最好，但已经回不去」是常态。
+  // 现在每次生成往 gen.runs 里压一条（新的在前，最多 RUN_CAP 条）。
+  // gallery 仍然是「当前显示的那一批」——渲染、翻页、提交全走老路径，这里只多一层记录，
+  // 所以下游（参考图、资产抽屉、导出）一个都不用改。
+  const RUN_CAP = 30;
+
+  function runsOf(n) {
+    const g = n && n.gen;
+    if (!g) return [];
+    if (!Array.isArray(g.runs)) {
+      // 旧存档只有 gallery：合成一条「更早」，否则打开老画布会显示 0 次、点开是空的
+      g.runs = g.gallery && g.gallery.length
+        ? [{
+            at: 0, prompt: g.prompt || '', seed: g.seed == null ? null : g.seed,
+            w: null, h: null, batch: g.batch || 1, wf: g.wf || '',
+            items: g.gallery.slice(), legacy: true,
+          }]
+        : [];
+    }
+    return g.runs;
+  }
+
+  function pushRun(n, run) {
+    const runs = runsOf(n);
+    runs.unshift(run);
+    if (runs.length > RUN_CAP) runs.length = RUN_CAP;
+    return run;
+  }
+
+  function runTime(at) {
+    if (!at) return '更早的一次';
+    const d = new Date(at);
+    const p = (x) => String(x).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  // 「看」：把这一批换回节点上。gallery 就是"当前这批"，换掉它下游逻辑自动跟上
+  function viewRun(n, i) {
+    const run = runsOf(n)[i];
+    if (!run || !run.items || !run.items.length) return false;
+    n.gen.gallery = run.items.slice();
+    n.gen.idx = 0;
+    n.dataURL = run.items[0].url;
+    n.uploaded = null;
+    rerenderNode(n.id, true);
+    queueSave();
+    return true;
+  }
+
+  // 「派生」：把这套参数复制到新节点，原节点不动。
+  // 「从这一版接着改」比「原地覆盖重来」安全——想回头随时还能看到原图。
+  function deriveRun(n, i) {
+    const run = runsOf(n)[i];
+    if (!run) return null;
+    const gal = (run.items || []).slice();
+    const born = addImageNode(n.x + 60, n.y + 60, {
+      dataURL: gal.length ? gal[0].url : null,
+      gen: {
+        prompt: run.prompt || '',
+        wf: run.wf || defaultWorkflowId(),
+        aspect: (n.gen && n.gen.aspect) || '1:1',
+        size: (n.gen && n.gen.size) || '1k',
+        custom: (n.gen && n.gen.custom) || null,
+        batch: run.batch || 1,
+        seedMode: run.seed == null ? 'random' : 'fixed',   // 派生默认钉住那次的种子，才好复现
+        seed: run.seed == null ? null : run.seed,
+        gallery: gal, idx: 0,
+        extras: ((n.gen && n.gen.extras) || []).slice(),
+        runs: [{ ...run, items: gal }],
+      },
+    });
+    flash(run.seed == null ? '已派生：参数已复制（种子随机）' : `已派生：种子固定为 ${run.seed}`);
+    return born;
+  }
+
+  function openRunList(anchor, n) {
+    closePopMenu();
+    const runs = runsOf(n);
+    const menu = document.createElement('div');
+    menu.className = 'popmenu run-list';
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = `生成历史 · ${runs.length} 次（新的在最上面）`;
+    menu.appendChild(head);
+    const list = document.createElement('div');
+    list.className = 'run-rows';
+    // 哪一条是「当前」不靠位置判断，靠内容比对：点过「看」之后 gallery 会换成老那一批，
+    // 位置标记就会指错行。
+    const sameItems = (a, b) => !!(a && b) && a.length === b.length && a.every((x, i) => x.url === b[i].url);
+    runs.forEach((run, i) => {
+      const row = document.createElement('div');
+      const on = sameItems(run.items, n.gen && n.gen.gallery);
+      row.className = 'run-row' + (on ? ' on' : '');
+      const main = document.createElement('div');
+      main.className = 'run-main';
+      const t = document.createElement('div');
+      t.className = 'run-time';
+      t.textContent = runTime(run.at) + (on ? ' · 当前' : '');
+      const p = document.createElement('div');
+      p.className = 'run-prompt';
+      const raw = (run.prompt || '').replace(/\s+/g, ' ').trim();
+      p.textContent = raw ? raw.slice(0, 44) + (raw.length > 44 ? '…' : '') : '（没有提示词）';
+      p.title = run.prompt || '';
+      const m = document.createElement('div');
+      m.className = 'run-meta';
+      const bits = [];
+      if (run.w && run.h) bits.push(`${run.w}×${run.h}`);
+      if (run.items && run.items.length > 1) bits.push(`${run.items.length} 张`);
+      if (run.seed != null) bits.push(`种子 ${run.seed}`);
+      m.textContent = bits.join(' · ') || '—';
+      main.append(t, p, m);
+      const acts = document.createElement('div');
+      acts.className = 'run-acts';
+      const bView = document.createElement('button');
+      bView.type = 'button';
+      bView.textContent = '看';
+      bView.title = '把这一批图换回节点上';
+      bView.onclick = (ev) => { ev.stopPropagation(); viewRun(n, i); closePopMenu(); };
+      const bDer = document.createElement('button');
+      bDer.type = 'button';
+      bDer.textContent = '派生';
+      bDer.title = '复制这次的参数（含种子）到新节点';
+      bDer.onclick = (ev) => { ev.stopPropagation(); deriveRun(n, i); closePopMenu(); };
+      acts.append(bView, bDer);
+      row.append(main, acts);
+      list.appendChild(row);
+    });
+    menu.appendChild(list);
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
   let lbList = null;      // 大图预览里能翻的那一组
   let lbIdx = 0;
   function paintLightbox() {
@@ -3726,6 +3880,8 @@
           prompt: n.gen.prompt, wf: n.gen.wf, aspect: n.gen.aspect, size: n.gen.size,
           custom: n.gen.custom || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
           batch: n.gen.batch, wide: !!n.gen.wide, gallery: n.gen.gallery, idx: n.gen.idx || 0,
+          // 生成历史：每次一条（时间/提示词/种子/尺寸/产物）。上限见 RUN_CAP，别让存档无限长
+          runs: n.gen.runs || [],
           // 种子：seedMode=random 时每次生成换一个，fixed 时钉住（复现某一张靠它）
           seedMode: n.gen.seedMode || 'random', seed: n.gen.seed == null ? null : n.gen.seed,
           extras: n.gen.extras || [],   // @ 引用来的图（只存节点 id，图本身还是走 /api/view）
