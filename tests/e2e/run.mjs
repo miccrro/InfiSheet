@@ -910,6 +910,10 @@ try {
     mPreset.sideBySide && mPreset.navW >= 140 && mPreset.navW <= 240
       && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
     JSON.stringify(mPreset));
+  // 开弹窗不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
+  // 这里只验「没预加载」，不点 history 标签——CI 里没有 ComfyUI，点了反而会真报错。
+  const histPreload = await page.evaluate(`document.querySelector('#pane-history').children.length`);
+  check('打开弹窗不预加载运行记录（点那个标签页才去问 ComfyUI）', histPreload === 0, `${histPreload} 个子节点`);
   await page.evaluate(`document.querySelector('#modalClose').click()`);
   await new Promise((r) => setTimeout(r, 300));
 
