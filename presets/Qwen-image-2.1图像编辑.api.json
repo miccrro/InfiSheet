@@ -1,0 +1,240 @@
+{
+ "title": "Qwen-image-2.1图像编辑",
+ "note": "",
+ "graph": {
+  "13": {
+   "inputs": {
+    "aspect_ratio": "16:9 (Widescreen)",
+    "megapixels": 2,
+    "multiple": 32
+   },
+   "class_type": "ResolutionSelector",
+   "_meta": {
+    "title": "分辨率选择器"
+   }
+  },
+  "461": {
+   "inputs": {
+    "filename_prefix": "Qwen_image_2.1",
+    "format": "png",
+    "format.bit_depth": "8-bit",
+    "format.input_color_space": "sRGB",
+    "images": [
+     "478",
+     0
+    ]
+   },
+   "class_type": "SaveImageAdvanced",
+   "_meta": {
+    "title": "保存图像(高级)"
+   }
+  },
+  "478": {
+   "inputs": {
+    "anything": [
+     "483",
+     0
+    ]
+   },
+   "class_type": "easy cleanGpuUsed",
+   "_meta": {
+    "title": "清理GPU占用"
+   }
+  },
+  "479": {
+   "inputs": {
+    "unet_name": "Qwen_image2.1\\qwen_image_2.1_int8_convrot.safetensors",
+    "weight_dtype": "default"
+   },
+   "class_type": "UNETLoader",
+   "_meta": {
+    "title": "UNET加载器"
+   }
+  },
+  "480": {
+   "inputs": {
+    "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+    "type": "qwen_image",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader",
+   "_meta": {
+    "title": "加载CLIP"
+   }
+  },
+  "481": {
+   "inputs": {
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+   },
+   "class_type": "VAELoader",
+   "_meta": {
+    "title": "加载VAE"
+   }
+  },
+  "482": {
+   "inputs": {
+    "width": [
+     "13",
+     0
+    ],
+    "height": [
+     "13",
+     1
+    ],
+    "batch_size": 1
+   },
+   "class_type": "EmptyLatentImage",
+   "_meta": {
+    "title": "空Latent"
+   }
+  },
+  "483": {
+   "inputs": {
+    "samples": [
+     "484",
+     0
+    ],
+    "vae": [
+     "481",
+     0
+    ]
+   },
+   "class_type": "VAEDecode",
+   "_meta": {
+    "title": "VAE解码"
+   }
+  },
+  "484": {
+   "inputs": {
+    "seed": 1072862487794663,
+    "steps": 25,
+    "cfg": 1,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1,
+    "model": [
+     "486",
+     0
+    ],
+    "positive": [
+     "487",
+     0
+    ],
+    "negative": [
+     "487",
+     1
+    ],
+    "latent_image": [
+     "485",
+     0
+    ]
+   },
+   "class_type": "KSampler",
+   "_meta": {
+    "title": "K采样器"
+   }
+  },
+  "485": {
+   "inputs": {
+    "switch": true,
+    "on_false": [
+     "487",
+     2
+    ],
+    "on_true": [
+     "482",
+     0
+    ]
+   },
+   "class_type": "ComfySwitchNode",
+   "_meta": {
+    "title": "切换"
+   }
+  },
+  "486": {
+   "inputs": {
+    "device": "auto",
+    "dtype": "default",
+    "model": [
+     "479",
+     0
+    ]
+   },
+   "class_type": "QwenImage21Cache",
+   "_meta": {
+    "title": "Qwen Image 2.1 缓存"
+   }
+  },
+  "487": {
+   "inputs": {
+    "prompt": "",
+    "negative_prompt": "",
+    "resolution": 1024,
+    "clip": [
+     "480",
+     0
+    ],
+    "images.image_1": [
+     "489",
+     0
+    ],
+    "images.image_2": [
+     "502",
+     0
+    ],
+    "images.image_3": [
+     "503",
+     0
+    ],
+    "images.image_4": [
+     "504",
+     0
+    ],
+    "vae": [
+     "481",
+     0
+    ]
+   },
+   "class_type": "TextEncodeQwenImage21",
+   "_meta": {
+    "title": "文本编码 Qwen Image 2.1"
+   }
+  },
+  "489": {
+   "inputs": {
+    "image": "Krea2_turbo_00483_.png"
+   },
+   "class_type": "LoadImage",
+   "_meta": {
+    "title": "加载图像"
+   }
+  },
+  "502": {
+   "inputs": {
+    "image": "023.jpg"
+   },
+   "class_type": "LoadImage",
+   "_meta": {
+    "title": "加载图像"
+   }
+  },
+  "503": {
+   "inputs": {
+    "image": "023.jpg"
+   },
+   "class_type": "LoadImage",
+   "_meta": {
+    "title": "加载图像"
+   }
+  },
+  "504": {
+   "inputs": {
+    "image": "023.jpg"
+   },
+   "class_type": "LoadImage",
+   "_meta": {
+    "title": "加载图像"
+   }
+  }
+ }
+}

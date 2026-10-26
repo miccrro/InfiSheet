@@ -1,0 +1,27 @@
+{
+  "name": "comfy-canvas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地 ComfyUI 的无限画布：把工作流拆成节点摆到画布上，连线、调参、运行、出图",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "python server.py",
+    "dev": "python server.py --port 8788 --no-browser",
+    "check": "node tools/check.mjs",
+    "test": "python tests/smoke.py",
+    "test:api": "python selftest.py",
+    "test:e2e": "node tests/e2e/run.mjs",
+    "shots": "node tests/e2e/walkthrough.mjs",
+    "icons": "node tools/icons/gen.cjs",
+    "pack": "python tools/pack.py",
+    "format": "prettier --write \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\" \"tools/**/*.{mjs,cjs}\"",
+    "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\""
+  },
+  "devDependencies": {
+    "@icon-park/svg": "1.4.2",
+    "prettier": "3.3.3"
+  }
+}

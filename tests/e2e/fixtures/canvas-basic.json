@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "savedAt": 1761320000000,
+  "bootAt": 1761320000000,
+  "seq": 40,
+  "view": { "x": 60, "y": 40, "k": 1 },
+  "name": "e2e 夹具画布",
+  "snap": true,
+  "linksHidden": false,
+  "minimapOn": false,
+  "groups": [],
+  "links": [
+    { "id": "l1", "from": "t1", "to": "i2", "toKey": "in" },
+    { "id": "l2", "from": "i3", "to": "t1", "toKey": "in" }
+  ],
+  "nodes": [
+    {
+      "id": "t1",
+      "type": "text",
+      "title": "提示词",
+      "x": 80,
+      "y": 120,
+      "value": "a cinematic portrait of a woman standing in a rain-soaked neon alley",
+      "status": "idle",
+      "gen": null
+    },
+    {
+      "id": "i2",
+      "type": "image",
+      "title": "图片",
+      "x": 470,
+      "y": 120,
+      "status": "idle",
+      "gen": {
+        "prompt": "中近景半身胸像的 3D 超写实国风机甲女性角色立绘，电影海报质感；平视机位，人物正面朝向镜头、肩部微侧，人物占画面约七成，头顶高髻与双肩保留均衡留白，浅景深、背景强虚化。画面主体为一名二十岁出头的东亚女性，冷白细腻皮肤，鹅蛋窄长脸型，下颌清秀；深色自然柳叶细眉，棕褐色琥珀双眸，双眼皮，眼尾略上挑，眼神平静克制；鼻梁细直、鼻头小巧，唇形饱满偏薄，自然裸色唇釉；耳垂小巧，佩戴极细银色耳线。服装为白色修身机能风旗袍，立领盘扣，肩部与腰侧拼接浅灰机能硬壳护甲，暗纹云雷纹；右臂半透明外骨骼护臂，指节处有冷蓝色发光点；腰间悬挂一枚青玉平安扣。姿态自然站立，双手轻搭身前，指尖放松；光线为左前方大面积冷白柔光，右侧一盏极细轮廓光勾勒发丝，背景是雨夜霓虹巷口，青蓝与品红反射在湿润地面，轻微体积光与胶片颗粒。整体色调冷白 + 青蓝 + 少量品红点缀；8K、细节丰富、皮肤质感真实、布料与金属材质区分明确。负面：多余手指、畸形、塑料感、过度磨皮、文字水印。",
+        "wf": "preset:krea2-txt2img.api.json",
+        "aspect": "1:1",
+        "size": "preview",
+        "batch": 1,
+        "status": "",
+        "busy": false,
+        "gallery": [],
+        "idx": 0,
+        "extras": []
+      }
+    },
+    {
+      "id": "i3",
+      "type": "image",
+      "title": "参考图甲",
+      "x": 80,
+      "y": 470,
+      "status": "idle",
+      "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGOMsulhIAUwkaSaYVQDcYCJSHVwMKqBGEByKAEAqecBQozN/6cAAAAASUVORK5CYII=",
+      "gen": null
+    },
+    {
+      "id": "i4",
+      "type": "image",
+      "title": "参考图乙",
+      "x": 480,
+      "y": 470,
+      "status": "idle",
+      "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGPUqMhjIAUwkaSaYVQDcYCJSHVwMKqBGEByKAEAbLsBLvjtyVMAAAAASUVORK5CYII=",
+      "gen": null
+    },
+    {
+      "id": "i5",
+      "type": "image",
+      "title": "参考图丙",
+      "x": 880,
+      "y": 470,
+      "status": "idle",
+      "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGOclqfBQApgIkk1w6gG4gATkergYFQDMYDkUAIAyRMBTOJXH8QAAAAASUVORK5CYII=",
+      "gen": null
+    }
+  ]
+}
