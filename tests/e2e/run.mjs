@@ -887,6 +887,28 @@ try {
   await page.evaluate(`document.querySelector('#projectBar [data-act="add-workflow"]').click()`);
   await page.waitFor(`!document.querySelector('#modal').classList.contains('hidden')`, 6000);
   await new Promise((r) => setTimeout(r, 350));
+
+  // 弹窗里不允许出现蓝色：扫描所有元素的文字/底色/描边/阴影，找明显偏蓝的 rgb
+  // （b 比 r、g 都高出 40 以上）。主题色 #09caf5 会立刻被抓到。
+  const blueHits = await page.evaluate(`(() => {
+    const isBlue = (v) => {
+      const m = String(v).match(/rgba?\\((\\d+), (\\d+), (\\d+)/);
+      if (!m) return false;
+      const r = +m[1], g = +m[2], b = +m[3];
+      return b > 120 && b - r > 40 && b - g > 40;
+    };
+    const hits = [];
+    document.querySelectorAll('#modal *').forEach((el) => {
+      const cs = getComputedStyle(el);
+      ['color', 'backgroundColor', 'borderTopColor', 'borderLeftColor', 'boxShadow'].forEach((p) => {
+        if (isBlue(cs[p])) hits.push((el.className || el.tagName) + ' · ' + p);
+      });
+    });
+    return [...new Set(hits)];
+  })()`);
+  check('弹窗里没有蓝色：选中条 / 卡片 / 描边都是中性色',
+    blueHits.length === 0, JSON.stringify(blueHits));
+
   const modalBox = () => page.evaluate(`(() => {
     const s = document.querySelector('#modal .sheet').getBoundingClientRect();
     const nav = document.querySelector('#modalTabs').getBoundingClientRect();
