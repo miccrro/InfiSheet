@@ -173,6 +173,21 @@
 - 大图（`#lightbox`）也带翻页：`openLightbox(url, list, idx)` 收一个数组，翻页翻的是**这一组**——
   从资产抽屉点开的，翻的就是抽屉当前筛选结果，不是画布上那个节点的相册。
 
+### 生成历史（`gen.runs`）与宫格
+
+`gen.gallery` 只装「当前显示的那一批」，`gen.runs` 是旁路记录：每生成一次压一条
+（`at / prompt / seed / w / h / batch / wf / items`，新的在前，`RUN_CAP = 30`）。
+
+- 节点缩略图右下角是 `N 次` 入口，点开是**三列宫格**（`.run-grid`），一格 = 一次生成，
+  多图的格子带 `N 张` 角标，当前那格比对 `items` 的 url 数组来标（不能按位置——点过「换回节点」
+  之后 gallery 会换成老那一批，位置就指错了）。
+- 单击格子 → `openLightbox(url, items, 0, info)`，第四个参数是信息卡内容
+  （`{ prompt, rows, actions }`）。分辨率取 `img.naturalWidth/Height`，**不取面板上填的值**——
+  工作流可能不按面板尺寸出图。
+- 宫格**不能用 `aspect-ratio` 撑正方形**，理由和资产抽屉那节一样（grid 算行高时列宽未定，
+  两者互相等对方）；这里用 `height:0 + padding-bottom:100%` + `img` 绝对定位。
+- `#lightbox` 挂着「点一下就关」，所以信息卡必须 `stopPropagation`，否则在里面选文字就把图关了。
+
 **资产抽屉（`/api/assets`）的取舍：只索引，不复制。**
 
 ```
