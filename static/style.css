@@ -597,7 +597,7 @@ select option { background: #1f1f1f; color: var(--text); }
 #modalTabs .tab .oi { width: 16px; height: 16px; opacity: 0.75; }
 #modalTabs .tab:hover { background: var(--panel-2); color: var(--text); }
 #modalTabs .tab:hover .oi { opacity: 1; }
-#modalTabs .tab.active { background: var(--panel-2); color: #fff; box-shadow: inset 2px 0 0 var(--accent); }
+#modalTabs .tab.active { background: var(--panel-2); color: #fff; box-shadow: inset 2px 0 0 #e6e6e6; }
 #modalTabs .tab.active .oi { opacity: 1; }
 .modal-panes { display: flex; min-width: 0; min-height: 0; }
 .pane { flex: 1; min-height: 0; padding: 14px 16px 18px; overflow: auto; }
@@ -1421,10 +1421,12 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
   box-shadow: var(--shadow-2);
 }
 #modal header, #appSettings header, #slotSheet header, #canvasHistory header { border-bottom: 1px solid var(--line); }
+/* 弹窗内部不使用蓝色：焦点环改中性白（全局那条仍是蓝的，只在这里覆盖） */
+#modal :focus-visible { outline-color: rgba(255, 255, 255, 0.6); }
 #modalTabs .tab { color: var(--dim); }
-#modalTabs .tab.active { color: #fff; border-color: var(--accent); }
-.card { background: #121419; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 11px; }
-.card:hover { border-color: rgba(122, 162, 255, 0.35); background: #151821; }
+#modalTabs .tab.active { color: #fff; }   /* 选中态只靠底色 + 左侧白条，不用主题蓝 */
+.card { background: #141414; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 11px; }
+.card:hover { border-color: rgba(255, 255, 255, 0.18); background: #1a1a1a; }
 .card .primary, .set-actions button.prime, #pasteGo, #setOpenLib {
   background: linear-gradient(180deg, #8fb0ff, #6d95ff);
   border-color: transparent;
