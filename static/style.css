@@ -478,6 +478,30 @@ select option { background: #1f1f1f; color: var(--text); }
   border-bottom: 1px solid var(--line); margin-bottom: 3px;
 }
 
+/* 生成历史列表：一行一次生成（时间 / 提示词摘要 / 参数 + 看 / 派生） */
+.run-list { min-width: 308px; max-width: 348px; }
+.run-rows { display: flex; flex-direction: column; gap: 2px; }
+.run-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 7px;
+}
+.run-row:hover { background: var(--panel-2); }
+.run-row.on { box-shadow: inset 2px 0 0 var(--accent); }
+.run-main { flex: 1; min-width: 0; }
+.run-time { font-size: 10px; color: var(--faint); }
+.run-prompt {
+  font-size: 11.5px; color: var(--text); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.run-meta { font-size: 10px; color: var(--faint); margin-top: 2px; }
+.run-acts { display: flex; gap: 4px; flex: none; }
+.run-acts button {
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.run-acts button:hover { background: var(--panel-2); border-color: var(--line-strong); }
+
 #helpSheet {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(520px, 88vw); z-index: 70;
@@ -746,6 +770,19 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .img-nav .nav-btn.next { right: 8px; }
 .node.image:hover .img-nav .nav-btn, .node.image.selected .img-nav .nav-btn { opacity: 0.95; }
 .img-nav .nav-btn:hover { background: rgba(48, 48, 48, 0.92); color: #fff; opacity: 1; }
+
+/* 生成历史角标：右下角，和左下角的「1 / 4」左右对称。
+   左下回答「这一批里的第几张」，右下回答「第几次生成」。 */
+.img-hist {
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  padding: 2px 8px; border-radius: 999px; cursor: pointer;
+  background: rgba(20, 20, 20, 0.72); border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #dcdcdc; font-size: 10.5px; letter-spacing: 0.04em;
+  opacity: 0.7; transition: opacity 0.15s, background 0.15s, color 0.15s;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.node.image:hover .img-hist, .node.image.selected .img-hist { opacity: 1; }
+.img-hist:hover { background: rgba(48, 48, 48, 0.92); color: #fff; }
 .img-zoom svg {
   width: 14px; height: 14px; fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;

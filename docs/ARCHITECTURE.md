@@ -108,7 +108,12 @@
       "gen": { "prompt": "...", "wf": "preset:krea2-txt2img.api.json", "aspect": "1:1",
                "size": "preview", "batch": 1, "seedMode": "random", "seed": 2718281828,
                "gallery": [], "idx": 0,
-               "extras": ["i3"] } }   // @ 引用来的图（只存节点 id，图还是走 /api/view）
+               "extras": ["i3"],   // @ 引用来的图（只存节点 id，图还是走 /api/view）
+               "runs": [           // 生成历史：新的在前，最多 30 条（RUN_CAP）
+                 { "at": 1793000000000, "prompt": "...", "seed": 2718281828,
+                   "w": 1024, "h": 1024, "batch": 1, "wf": "preset:...",
+                   "items": [] }   // 这一次出的全部产物，结构同 gallery
+               ] } }
   ]
 }
 ```
