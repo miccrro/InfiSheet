@@ -1083,6 +1083,21 @@ try {
   await page.evaluate(`document.querySelector('#lightbox .lb-next').click()`);
   await new Promise((r) => setTimeout(r, 300));
   const lb2 = await page.evaluate(`document.querySelector('#lightbox .lb-count').textContent`);
+  // 图片节点的大图也要有同一张右侧详情抽屉（以前只有生成历史有）
+  const lbInfoNode = await page.evaluate(`(() => {
+    const box = document.querySelector('#lightboxInfo');
+    if (!box || box.classList.contains('hidden')) return { hidden: true };
+    return {
+      opened: box.classList.contains('open'),
+      rows: [...box.querySelectorAll('.lbi-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()),
+      prompt: (box.querySelector('.lbi-prompt') || {}).textContent,
+    };
+  })()`);
+  check('图片节点的大图也带右侧抽屉：来源/工作流/种子 + 这一组 2 / 4',
+    lbInfoNode.opened && lbInfoNode.rows.join('|').includes('生成')
+      && /这一组\s*2 \/ 4/.test(lbInfoNode.rows.join('|'))
+      && lbInfoNode.prompt === '多图',
+    JSON.stringify(lbInfoNode));
   await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 250));
   const lbClosed = await page.evaluate(`document.querySelector('#lightbox').classList.contains('hidden')`);
@@ -1292,6 +1307,17 @@ try {
     const lb = document.querySelector('#lightbox');
     return { open: !lb.classList.contains('hidden'), count: lb.querySelector('.lb-count').textContent };
   })()`);
+  const lbInfoAsset = await page.evaluate(`(() => {
+    const box = document.querySelector('#lightboxInfo');
+    if (!box || box.classList.contains('hidden')) return { hidden: true };
+    return {
+      opened: box.classList.contains('open'),
+      rows: [...box.querySelectorAll('.lbi-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()),
+    };
+  })()`);
+  check('资产抽屉里的大图也带抽屉：至少给出「来源」和「文件」',
+    lbInfoAsset.opened && lbInfoAsset.rows.some((t) => /^来源/.test(t)) && lbInfoAsset.rows.some((t) => /^文件/.test(t)),
+    JSON.stringify(lbInfoAsset));
   await page.evaluate(`document.querySelector('#lightbox .lb-next').click()`);
   await new Promise((r) => setTimeout(r, 300));
   const lbB = await page.evaluate(`document.querySelector('#lightbox .lb-count').textContent`);

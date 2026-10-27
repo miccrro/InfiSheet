@@ -200,6 +200,11 @@
 - 单击格子 → `openLightbox(url, items, 0, info)`，第四个参数是**右侧详情抽屉**的内容
   （`{ prompt, rows, actions }`）。分辨率取 `img.naturalWidth/Height`，**不取面板上填的值**——
   工作流可能不按面板尺寸出图。
+- **四个放大入口共用同一张抽屉**：图片节点缩略图（放大按钮/双击）、资产抽屉的格子、
+  工作流/输出节点的产物图、生成历史与运行记录的宫格。前三个各自带一个 `xxxImageInfo()`
+  造 `{ prompt, rows }`——能拿到什么给什么，拿不到的行留空（`paintLightboxInfo` 会过滤），
+  所以资产里的图没有提示词时不会显示一行空的「提示词」。
+- 「这一组 n / N」由 `paintLightboxInfo` 自己按 `lbList` 追加，翻页时跟着变，调用方不用管。
 - 抽屉靠 `#lightbox.has-info` 让位：`--lbi-w: min(420px, 92vw)` 同时用在
   `padding-right`（图片在剩下的区域里居中）、`img` 的 `max-width`、`.lb-next` 的 `right`、
   `.lb-count` 的 `left` 上——只改一个变量，四处跟着走。抽屉自己用 `transform: translateX(100%)`
