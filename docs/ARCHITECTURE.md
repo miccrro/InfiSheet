@@ -197,12 +197,16 @@
 - 节点缩略图右下角是 `N 次` 入口，点开是**三列宫格**（`.run-grid`），一格 = 一次生成，
   多图的格子带 `N 张` 角标，当前那格比对 `items` 的 url 数组来标（不能按位置——点过「换回节点」
   之后 gallery 会换成老那一批，位置就指错了）。
-- 单击格子 → `openLightbox(url, items, 0, info)`，第四个参数是信息卡内容
+- 单击格子 → `openLightbox(url, items, 0, info)`，第四个参数是**右侧详情抽屉**的内容
   （`{ prompt, rows, actions }`）。分辨率取 `img.naturalWidth/Height`，**不取面板上填的值**——
   工作流可能不按面板尺寸出图。
+- 抽屉靠 `#lightbox.has-info` 让位：`--lbi-w: min(420px, 92vw)` 同时用在
+  `padding-right`（图片在剩下的区域里居中）、`img` 的 `max-width`、`.lb-next` 的 `right`、
+  `.lb-count` 的 `left` 上——只改一个变量，四处跟着走。抽屉自己用 `transform: translateX(100%)`
+  → `.open` 归零，滑入 240ms。
 - 宫格**不能用 `aspect-ratio` 撑正方形**，理由和资产抽屉那节一样（grid 算行高时列宽未定，
   两者互相等对方）；这里用 `height:0 + padding-bottom:100%` + `img` 绝对定位。
-- `#lightbox` 挂着「点一下就关」，所以信息卡必须 `stopPropagation`，否则在里面选文字就把图关了。
+- `#lightbox` 挂着「点一下就关」，所以抽屉必须 `stopPropagation`，否则在里面选文字就把图关了。
 
 **资产抽屉（`/api/assets`）的取舍：只索引，不复制。**
 
