@@ -628,33 +628,57 @@ select option { background: #1f1f1f; color: var(--text); }
 .row { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
 .row input[type="file"] { flex: 1; font-size: 11.5px; color: var(--dim); }
 
-#lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 80; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
-#lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
-/* 大图左侧的信息卡：分辨率 / 参数 / 提示词 / 一个动作（派生）。
-   #lightbox 本身挂着「点一下就关」，所以这张卡要 stopPropagation（见 app.js）。 */
-#lightboxInfo {
-  position: absolute; left: 22px; bottom: 22px; width: min(380px, 42vw); max-height: 76vh;
-  overflow: auto; cursor: default; text-align: left;
-  background: rgba(20, 20, 20, 0.88); border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 12px; padding: 12px 14px 14px; color: #e8e8e8;
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+#lightbox {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 80;
+  display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+  --lbi-w: 0px;            /* 右侧抽屉占的宽度：没有抽屉时是 0 */
+  box-sizing: border-box;
 }
-#lightboxInfo .lbi-dim { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: #fff; }
-#lightboxInfo .lbi-row { display: flex; gap: 10px; margin-top: 5px; font-size: 11.5px; color: #9a9a9a; }
+/* 抽屉打开时给右边让出等宽的内边距，图就自动在剩下的区域里居中，不会压到抽屉底下 */
+#lightbox.has-info { --lbi-w: min(420px, 92vw); padding-right: var(--lbi-w); }
+#lightbox img { max-width: min(92vw, calc(100vw - var(--lbi-w) - 28px)); max-height: 92vh; border-radius: 8px; }
+#lightbox.has-info .lb-next { right: calc(var(--lbi-w) + 22px); }
+#lightbox.has-info .lb-count { left: calc((100vw - var(--lbi-w)) / 2); }
+
+/* 详情抽屉：贴右侧、整屏高，从右边滑进来。
+   #lightbox 本身挂着「点一下就关」，所以抽屉要 stopPropagation（见 app.js）。 */
+#lightboxInfo {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(420px, 92vw); box-sizing: border-box;
+  display: flex; flex-direction: column;
+  overflow: hidden; cursor: default; text-align: left;
+  background: #151515; border-left: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 12px 18px 16px; color: #e8e8e8;
+  box-shadow: -18px 0 44px rgba(0, 0, 0, 0.45);
+  transform: translateX(100%);
+  transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+#lightboxInfo.open { transform: none; }
+#lightboxInfo .lbi-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#lightboxInfo .lbi-head span { flex: 1; font-size: 10.5px; letter-spacing: 0.14em; color: #8a8a8a; }
+#lightboxInfo .lbi-close {
+  width: 26px; height: 26px; display: grid; place-items: center; padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 8px;
+  background: transparent; color: #cfcfcf; font-size: 12px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+#lightboxInfo .lbi-close:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+#lightboxInfo .lbi-dim { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; color: #fff; }
+#lightboxInfo .lbi-row { display: flex; gap: 10px; margin-top: 6px; font-size: 11.5px; color: #9a9a9a; }
 #lightboxInfo .lbi-row b { color: #f2f2f2; font-weight: 500; word-break: break-all; }
 #lightboxInfo .lbi-label {
-  margin-top: 11px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1);
   font-size: 10.5px; color: #8a8a8a;
 }
+/* 抽屉是整屏高，提示词占满剩余空间自己滚，按钮永远贴底 */
 #lightboxInfo .lbi-prompt {
-  margin-top: 4px; font-size: 12px; line-height: 1.55; color: #dcdcdc;
-  white-space: pre-wrap; word-break: break-word; max-height: 26vh; overflow: auto;
-  user-select: text;
+  flex: 1; min-height: 60px; margin-top: 4px; overflow: auto;
+  font-size: 12px; line-height: 1.6; color: #dcdcdc;
+  white-space: pre-wrap; word-break: break-word; user-select: text;
 }
-#lightboxInfo .lbi-acts { display: flex; gap: 6px; margin-top: 12px; }
+#lightboxInfo .lbi-acts { display: flex; gap: 6px; margin-top: 12px; flex: none; }
 #lightboxInfo .lbi-btn {
-  flex: 1; padding: 7px 10px; border: none; border-radius: 999px;
+  flex: 1; padding: 8px 10px; border: none; border-radius: 999px;
   background: #ffffffe6; color: #141414; font-size: 12px; cursor: pointer;
   transition: background 0.15s;
 }

@@ -1137,18 +1137,30 @@ try {
   const info = await page.evaluate(`(() => {
     const box = document.querySelector('#lightboxInfo');
     if (!box || box.classList.contains('hidden')) return { hidden: true };
+    const r = box.getBoundingClientRect();
+    const img = document.querySelector('#lightboxImg').getBoundingClientRect();
     return {
       dim: (box.querySelector('.lbi-dim') || {}).textContent,
-      rows: [...box.querySelectorAll('.lbi-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()),
+      rows: [...box.querySelectorAll('.lbi-row')].map((x) => x.textContent.replace(/\\s+/g, ' ').trim()),
       prompt: (box.querySelector('.lbi-prompt') || {}).textContent,
       acts: [...box.querySelectorAll('.lbi-btn')].map((b) => b.textContent),
       count: (document.querySelector('#lightbox .lb-count') || {}).textContent,
+      opened: box.classList.contains('open'),
+      right: Math.round(r.right), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+      vw: innerWidth, vh: innerHeight,
+      imgRight: Math.round(img.right),
     };
   })()`);
   check('单击宫格里的图 → 大图打开，旁边列出分辨率 / 参数 / 提示词',
     !info.hidden && /^\d+ × \d+$/.test(info.dim) && /种子\s*222/.test(info.rows.join('|'))
       && info.prompt === '第二版：雨夜霓虹' && info.acts.join() === '换回节点,派生到新节点'
       && info.count === '1 / 4', JSON.stringify(info));
+
+  check('详情是贴右侧的抽屉：整屏高、贴右边、图片让出等宽不重叠',
+    info.opened && Math.abs(info.right - info.vw) <= 1 && info.top === 0
+      && Math.abs(info.h - info.vh) <= 1 && info.w >= 300 && info.w <= 440
+      && info.imgRight <= info.right - info.w + 1,
+    JSON.stringify({ right: info.right, vw: info.vw, w: info.w, h: info.h, vh: info.vh, imgRight: info.imgRight }));
 
   // 点信息卡（选文字 / 点按钮）不该把大图关掉
   await page.evaluate(`document.querySelector('#lightboxInfo .lbi-prompt').click()`);

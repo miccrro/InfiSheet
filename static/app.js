@@ -3840,14 +3840,19 @@
     const box = $('#lightboxInfo');
     if (!lbInfo) {
       box.classList.add('hidden');
+      box.classList.remove('open');
+      $('#lightbox').classList.remove('has-info');
       box.innerHTML = '';
       return;
     }
     box.classList.remove('hidden');
+    $('#lightbox').classList.add('has-info');          // 让大图给抽屉让出右边
+    if (!box.classList.contains('open')) requestAnimationFrame(() => box.classList.add('open'));
     const img = $('#lightboxImg');
     const real = img.naturalWidth && img.naturalHeight ? `${img.naturalWidth} × ${img.naturalHeight}` : '';
     const rows = (lbInfo.rows || []).filter(([, v]) => v != null && v !== '');
     box.innerHTML = `
+      <div class="lbi-head"><span>详情</span><button type="button" class="lbi-close" title="关闭（Esc）">✕</button></div>
       <div class="lbi-dim">${esc(real || '尺寸读取中…')}</div>
       ${rows.map(([k, v]) => `<div class="lbi-row"><span>${esc(k)}</span><b>${esc(String(v))}</b></div>`).join('')}
       <div class="lbi-label">提示词</div>
@@ -3855,16 +3860,23 @@
       ${(lbInfo.actions || []).length
         ? `<div class="lbi-acts">${lbInfo.actions.map((a, i) => `<button type="button" class="lbi-btn${i ? ' ghost' : ''}" data-i="${i}">${esc(a.label)}</button>`).join('')}</div>`
         : ''}`;
+    const closeBtn = box.querySelector('.lbi-close');
+    if (closeBtn) closeBtn.onclick = (ev) => { ev.stopPropagation(); hideLightbox(); };
     box.querySelectorAll('.lbi-btn').forEach((btn) => {
       btn.onclick = (ev) => {
         ev.stopPropagation();
         const a = (lbInfo && lbInfo.actions || [])[Number(btn.dataset.i)];
-        const fn = a && a.fn;      // 先取出来：下面会把 lbInfo 清掉
-        $('#lightbox').classList.add('hidden');
-        lbInfo = null;
+        const fn = a && a.fn;      // 先取出来：hideLightbox 会把 lbInfo 清掉
+        hideLightbox();
         if (fn) fn();
       };
     });
+  }
+  function hideLightbox() {
+    $('#lightbox').classList.add('hidden');
+    $('#lightbox').classList.remove('has-info');
+    $('#lightboxInfo').classList.remove('open');
+    lbInfo = null;
   }
   function openLightbox(url, list, idx, info) {
     lbList = Array.isArray(list) && list.length ? list : null;
@@ -3879,7 +3891,7 @@
     lbIdx = ((lbIdx + delta) % lbList.length + lbList.length) % lbList.length;
     paintLightbox();
   }
-  $('#lightbox').onclick = () => { $('#lightbox').classList.add('hidden'); lbInfo = null; };
+  $('#lightbox').onclick = () => hideLightbox();
   // 信息卡里要能选文字、点按钮，不能顺手把大图关掉
   $('#lightboxInfo').onclick = (ev) => ev.stopPropagation();
   $('#lightboxImg').addEventListener('load', () => paintLightboxInfo());
@@ -4669,7 +4681,7 @@
       // 一起关掉的话，用户从资产里点开大图、看完按 Esc，整个资产面板也跟着没了。
       if (!$('#lightbox').classList.contains('hidden')) {
         ev.preventDefault();
-        $('#lightbox').classList.add('hidden');
+        hideLightbox();
         return;
       }
       $('#modal').classList.add('hidden');
