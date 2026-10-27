@@ -377,12 +377,12 @@
         zoom.innerHTML = icon('zoom');
         zoom.onclick = (ev) => {
           ev.stopPropagation();
-          openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0);
+          openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0, nodeImageInfo(n));
         };
         thumb.appendChild(zoom);
         thumb.ondblclick = (ev) => {
           ev.stopPropagation();
-          openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0);
+          openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0, nodeImageInfo(n));
         };
         const dim = document.createElement('span');
         dim.className = 'img-dim';
@@ -2244,7 +2244,7 @@
         add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
         cell.append(img, badge, name, add);
         // 单击看大图（列表就是当前筛选结果，翻页能一直翻下去）
-        cell.onclick = () => openLightbox(item.url, list, i);
+        cell.onclick = () => openLightbox(item.url, list, i, assetImageInfo(item));
         cell.ondblclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
         cell.onkeydown = (ev) => {
           if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); putAssetOnCanvas(item); }
@@ -2695,7 +2695,7 @@
       img.src = url; img.loading = 'lazy';
       img.draggable = false;
       img.addEventListener('dragstart', (ev) => ev.preventDefault());
-      img.ondblclick = (ev) => { ev.stopPropagation(); openLightbox(url); };
+      img.ondblclick = (ev) => { ev.stopPropagation(); openLightbox(url, null, 0, artifactImageInfo(a, n)); };
       box.appendChild(img);
     } else if (a.kind === 'video') {
       const v = document.createElement('video');
@@ -3851,12 +3851,13 @@
     const img = $('#lightboxImg');
     const real = img.naturalWidth && img.naturalHeight ? `${img.naturalWidth} × ${img.naturalHeight}` : '';
     const rows = (lbInfo.rows || []).filter(([, v]) => v != null && v !== '');
+    if (lbList && lbList.length > 1) rows.push(['这一组', `${lbIdx + 1} / ${lbList.length}`]);
     box.innerHTML = `
       <div class="lbi-head"><span>详情</span><button type="button" class="lbi-close" title="关闭（Esc）">✕</button></div>
       <div class="lbi-dim">${esc(real || '尺寸读取中…')}</div>
       ${rows.map(([k, v]) => `<div class="lbi-row"><span>${esc(k)}</span><b>${esc(String(v))}</b></div>`).join('')}
       <div class="lbi-label">提示词</div>
-      <div class="lbi-prompt">${esc(lbInfo.prompt || '（这一张没有留下提示词）')}</div>
+      <div class="lbi-prompt">${esc(lbInfo.prompt || '（没有关联的提示词）')}</div>
       ${(lbInfo.actions || []).length
         ? `<div class="lbi-acts">${lbInfo.actions.map((a, i) => `<button type="button" class="lbi-btn${i ? ' ghost' : ''}" data-i="${i}">${esc(a.label)}</button>`).join('')}</div>`
         : ''}`;
@@ -3872,6 +3873,47 @@
       };
     });
   }
+  // 三处「放大」共用同一张详情抽屉：能拿到什么就给什么，拿不到的行留空（paint 时会过滤掉）
+  function nodeImageInfo(n) {
+    const g = (n && n.gen) || {};
+    const runs = g.runs || [];
+    return {
+      prompt: g.prompt || '',
+      rows: [
+        ['来源', g.wf ? '生成' : (n && (n.filename || n.uploaded) ? '上传' : '画布')],
+        ['工作流', (g.wf || '').replace(/^preset:/, '')],
+        ['种子', g.seed == null ? '' : String(g.seed)],
+        ['生成次数', runs.length ? `${runs.length} 次` : ''],
+      ],
+    };
+  }
+
+  function assetImageInfo(item) {
+    const rows = [
+      ['来源', item.source === 'canvas' ? '画布上的图' : item.source === 'input' ? '上传素材' : '生成结果'],
+      ['文件', item.filename || ''],
+    ];
+    let prompt = '';
+    const n = item.node ? getNode(item.node) : null;     // 画布来源的资产带 node id，能顺出它的提示词
+    if (n && n.gen) {
+      prompt = n.gen.prompt || '';
+      if (n.gen.wf) rows.push(['工作流', n.gen.wf.replace(/^preset:/, '')]);
+      if (n.gen.seed != null) rows.push(['种子', String(n.gen.seed)]);
+    }
+    return { prompt, rows };
+  }
+
+  function artifactImageInfo(a, n) {
+    return {
+      prompt: '',
+      rows: [
+        ['来源', n && n.type === 'out' ? '输出节点' : '工作流产物'],
+        ['文件', a.filename || ''],
+        ['类型', a.type || 'output'],
+      ],
+    };
+  }
+
   function hideLightbox() {
     $('#lightbox').classList.add('hidden');
     $('#lightbox').classList.remove('has-info');
