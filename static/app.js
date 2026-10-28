@@ -238,6 +238,7 @@
     if (zb) zb.textContent = `${Math.round(k * 100)}%`;
     scheduleMinimap();
     world.style.transform = `translate(${x}px, ${y}px) scale(${k})`;
+    positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
     const cell = clamp(28 * k, 16, 112);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
@@ -2932,6 +2933,7 @@
       const multi = state.selected.size >= 2;
       if (multi) ensureAlignBar();
       bar.classList.toggle('hidden', !multi);
+      if (multi) positionAlignBar();      // 显示出来才有尺寸，定位必须在 toggle 之后
     }
   }
 
@@ -3041,6 +3043,39 @@
     return bar;
   }
 
+  // 跟着选区走：浮在选中节点包围盒的上方居中，上面放不下就翻到下方，再夹在视口内。
+  // 固定贴底会挡住画布内容（尤其是底部那一排节点），跟随才是这类工具条的常规做法。
+  // 拖动过程中不跟——工具条贴着指针抖，反而碍事；松手再归位。
+  function positionAlignBar() {
+    const bar = $('#alignBar');
+    // 注意别在这里判 drag：选中本身就是在 pointerdown 里发生的，那时 drag 还没清，
+    // 一判就把定位整个跳过（工具条会停在 CSS 兜底的位置——底部居中）。
+    // 「拖动中不跟随」靠的是调用时机：拖动过程里没人调这个函数。
+    if (!bar || bar.classList.contains('hidden')) return;
+    const rects = alignTargets()
+      .map((n) => nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`))
+      .filter(Boolean)
+      .map((el) => el.getBoundingClientRect());
+    if (!rects.length) return;
+    const left = Math.min(...rects.map((r) => r.left));
+    const right = Math.max(...rects.map((r) => r.right));
+    const top = Math.min(...rects.map((r) => r.top));
+    const bottom = Math.max(...rects.map((r) => r.bottom));
+    const bw = bar.offsetWidth || 280;
+    const bh = bar.offsetHeight || 42;
+    const gap = 12;
+    const margin = 10;
+    let x = (left + right) / 2 - bw / 2;
+    let y = top - gap - bh;
+    if (y < margin) y = bottom + gap;                    // 上方空间不够就翻到选区下面
+    x = Math.max(margin, Math.min(x, innerWidth - bw - margin));
+    y = Math.max(margin, Math.min(y, innerHeight - bh - margin));
+    bar.style.left = `${Math.round(x)}px`;
+    bar.style.top = `${Math.round(y)}px`;
+    bar.style.bottom = 'auto';
+    bar.style.transform = 'none';
+  }
+
   /**
    * Alt + 左键拖动节点 = 拖出一个副本，原节点留在原地。
    * 比 Ctrl+C / Ctrl+V 少两步（不用先复制、不用再粘到鼠标处），也是最顺手的一种「就地拷贝」。
@@ -3104,6 +3139,7 @@
       document.body.classList.remove('dragging');
       drag = null;
       renderLinks(); renderGroups();
+      positionAlignBar();                    // 拖完才跟过去，拖动中不追着指针跑
       queueSave(); commit();
     };
     window.addEventListener('pointermove', move);

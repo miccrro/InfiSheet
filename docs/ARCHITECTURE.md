@@ -191,8 +191,13 @@
 
 ### 对齐 / 分布（`applyAlign`）
 
-选中 ≥2 个节点时底部 dock 上方浮出一条**图标工具条**（`#alignBar`，`paintSelection` 里按
-`state.selected.size` 切显隐）。按钮只建一次（`ensureAlignBar` 惰性构建），之后只切 `hidden`——
+选中 ≥2 个节点时浮出一条**图标工具条**（`#alignBar`，`paintSelection` 里按
+`state.selected.size` 切显隐）。位置由 `positionAlignBar()` 算：取选中节点的屏幕包围盒，
+浮在其**上方居中**（间距 12px），上方不够就翻到下方，最后夹在视口内。
+
+`#alignBar` 必须是 `<body>` 的直接子节点——它原本挂在 `dockWrap` 里，而 `dockWrap` 带
+`backdrop-filter`，**会成为 `position: fixed` 的包含块**，于是 `left/top` 全按 dockWrap 算，
+工具条会跑到屏幕外（这个坑只有量了 `getBoundingClientRect` 才看得出来，光看代码是"对的"）。按钮只建一次（`ensureAlignBar` 惰性构建），之后只切 `hidden`——
 每次选中都重建会把 hover 和焦点一起弄丢。
 
 图标来自 IconPark：`tools/icons/gen.cjs` 的 MAP 里加 8 个映射（`alignLeft` / `alignHCenter` /
