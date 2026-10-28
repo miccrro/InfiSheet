@@ -534,6 +534,38 @@ try {
       && afterColor.chipBg === 'rgb(52, 211, 153)',
     JSON.stringify(afterColor));
 
+  // 双击组名改名
+  await page.evaluate(`document.querySelector('.group .gname').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 250));
+  const editing = await page.evaluate(`(() => {
+    const n = document.querySelector('.group .gname');
+    return { editable: n.isContentEditable, text: n.textContent, cls: n.className };
+  })()`);
+  check('双击组名进入编辑态（只显示名字，不带「· N 节点」）',
+    editing.editable === true && editing.text === '分组 1' && /editing/.test(editing.cls),
+    JSON.stringify(editing));
+
+  await page.evaluate(`(() => {
+    const n = document.querySelector('.group .gname');
+    n.textContent = '雨夜三连';
+    n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const renamed = await page.evaluate(`(async () => {
+    const n = document.querySelector('.group .gname');
+    const id = localStorage.getItem('comfy-canvas-project');
+    const j = await (await fetch('/api/projects/' + id)).json();
+    return {
+      text: n.textContent, editable: n.isContentEditable,
+      saved: (j.canvas.groups || []).map((g) => g.name),
+    };
+  })()`);
+  check('回车保存新名字：组头变成「雨夜三连 · 2 节点」，并写进存档',
+    renamed.text === '雨夜三连 · 2 节点' && renamed.editable === false
+      && renamed.saved.includes('雨夜三连'),
+    JSON.stringify(renamed));
+
   // 整框可拖：在组框内的空白处（右下角 padding 区）按下拖 60/40
   const dragFrom = await page.evaluate(`[...document.querySelectorAll('.node.selected')]
     .map((el) => { const b = el.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top)]; })`);
