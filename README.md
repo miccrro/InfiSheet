@@ -42,6 +42,7 @@ npm run pack       # 打 zip 到 dist/
 和 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（服务端路由、前端分区、快照 schema、CSS 分层、已知债）。
 
 后续计划：[`docs/GEN-ITERATION.md`](docs/GEN-ITERATION.md)（图片生成的迭代方案）·
+[`docs/LLM-NODE-EVAL.md`](docs/LLM-NODE-EVAL.md)（LLM 节点可行性评估）·
 [`docs/ROADMAP.md`](docs/ROADMAP.md)（工程侧）· [`docs/FEATURES.md`](docs/FEATURES.md)（其他新功能）。
 
 ## 它能做什么
