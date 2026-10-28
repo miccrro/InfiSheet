@@ -265,6 +265,7 @@
     renderLinks();
     renderGroups();
     updateCanvasEmpty();
+    paintSelection();      // 节点是重建的，选中态得重新盖回去（否则对齐/批量操作后高亮凭空消失）
     scheduleMinimap();
   }
 
@@ -2925,6 +2926,9 @@
   /* ---------------- 选中 / 拖拽 ---------------- */
   function paintSelection() {
     nodesEl.querySelectorAll('.node').forEach((el) => el.classList.toggle('selected', state.selected.has(el.dataset.id)));
+    // 「对齐」按钮只在真的能对齐时出现（选中 2 个以上），否则 dock 上多一个永远灰着的图标
+    const btn = document.querySelector('#bar [data-act="align"]');
+    if (btn) btn.classList.toggle('hidden', state.selected.size < 2);
   }
 
   function selectOnly(id) {
@@ -2935,6 +2939,104 @@
   function toggleSelect(id) {
     if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
     paintSelection();
+  }
+
+  /* ---------------- 对齐 / 分布 ---------------- */
+  // 选中 2 个以上时，底部多出「对齐」按钮：6 种对齐 + 2 种等距分布。
+  // 高度不能只信 n.h（只有手动拉过才有值），直接量 DOM 再除回缩放系数。
+  const ALIGN_ITEMS = [
+    ['left', '左对齐', '左边缘对齐到最左'],
+    ['hcenter', '水平居中', '按整体中线水平居中'],
+    ['right', '右对齐', '右边缘对齐到最右'],
+    ['top', '顶对齐', '上边缘对齐到最上'],
+    ['vcenter', '垂直居中', '按整体中线垂直居中'],
+    ['bottom', '底对齐', '下边缘对齐到最下'],
+    ['hdist', '水平等距', '两端不动，中间按相同间距排开'],
+    ['vdist', '垂直等距', '两端不动，中间按相同间距排开'],
+  ];
+
+  function alignTargets() {
+    return [...state.selected].map((id) => getNode(id)).filter(Boolean);
+  }
+
+  function worldSize(n) {
+    const el = nodesEl.querySelector(`.node[data-id="${n.id}"]`);
+    const k = state.view.k || 1;
+    return { w: nodeWidth(n), h: el ? Math.round(el.getBoundingClientRect().height / k) : (n.h || 180) };
+  }
+
+  function applyAlign(mode, targets) {
+    const list = targets || alignTargets();
+    if (list.length < 2) return false;
+    const sizes = list.map(worldSize);
+    const minX = Math.min(...list.map((n) => n.x));
+    const maxX = Math.max(...list.map((n, i) => n.x + sizes[i].w));
+    const minY = Math.min(...list.map((n) => n.y));
+    const maxY = Math.max(...list.map((n, i) => n.y + sizes[i].h));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    if (mode === 'hdist' || mode === 'vdist') {
+      // 两端不动，中间的按「间距相等」重排。间距可能是负的（节点比可用空间还宽）——那就是贴紧。
+      const horiz = mode === 'hdist';
+      const sorted = list.map((n, i) => ({ n, s: sizes[i] }))
+        .sort((a, b) => (horiz ? a.n.x - b.n.x : a.n.y - b.n.y));
+      const first = sorted[0];
+      const last = sorted[sorted.length - 1];
+      const span = horiz ? (last.n.x + last.s.w) - first.n.x : (last.n.y + last.s.h) - first.n.y;
+      const used = sorted.reduce((sum, it) => sum + (horiz ? it.s.w : it.s.h), 0);
+      const gap = (span - used) / (sorted.length - 1);
+      let cur = horiz ? first.n.x : first.n.y;
+      sorted.forEach((it) => {
+        if (horiz) it.n.x = Math.round(cur); else it.n.y = Math.round(cur);
+        cur += (horiz ? it.s.w : it.s.h) + gap;
+      });
+    } else {
+      list.forEach((n, i) => {
+        const { w, h } = sizes[i];
+        if (mode === 'left') n.x = minX;
+        else if (mode === 'right') n.x = maxX - w;
+        else if (mode === 'hcenter') n.x = Math.round(cx - w / 2);
+        else if (mode === 'top') n.y = minY;
+        else if (mode === 'bottom') n.y = maxY - h;
+        else if (mode === 'vcenter') n.y = Math.round(cy - h / 2);
+      });
+    }
+    renderAll();
+    queueSave();
+    commit();
+    return true;
+  }
+
+  function openAlignMenu(anchor) {
+    closePopMenu();
+    // 目标在这里就抓下来：点菜单项的那一下 pointerdown 会先冒泡到画布，选择被清掉之后再算
+    // 就一个节点都不剩了（菜单能开、点了没反应）。
+    const list = alignTargets();
+    if (list.length < 2) { flash('先选中 2 个以上节点再对齐'); return; }
+    const menu = document.createElement('div');
+    menu.className = 'popmenu align-menu';
+    menu.onpointerdown = (ev) => ev.stopPropagation();   // 点菜单别把选中状态清掉
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = `对齐 ${list.length} 个节点`;
+    menu.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = 'align-grid';
+    ALIGN_ITEMS.forEach(([mode, label, tip]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'align-btn';
+      b.textContent = label;
+      b.title = tip;
+      b.onclick = (ev) => { ev.stopPropagation(); closePopMenu(); applyAlign(mode, list); };
+      grid.appendChild(b);
+    });
+    menu.appendChild(grid);
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
   }
 
   /**
@@ -4407,6 +4509,7 @@
     if (act === 'add-workflow') { showCanvas(); openModal(); switchModalTab('paste'); return; }
     if (act === 'tutorial') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
     if (act === 'history') { showCanvas(); openModal(); switchModalTab('history'); return; }
+    if (act === 'align') { showCanvas(); openAlignMenu(btn); return; }
     if (act === 'pan-mode') { setTool(true); return; }
     if (act === 'select-mode') { setTool(false); return; }
     if (act === 'help') { flash('拖空白框选 · 空格/中键平移 · 滚轮缩放 · 双击空白建节点 · Ctrl+G 打组 · F 适配视图'); return; }

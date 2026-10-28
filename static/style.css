@@ -504,6 +504,17 @@ select option { background: #1f1f1f; color: var(--text); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .run-cell.on .rc-time { color: #fff; }
+/* 对齐菜单：3 列小方块。8 项竖着排会超出屏幕，横排两行刚好 */
+.align-menu { min-width: 252px; }
+.align-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 2px 2px; }
+.align-grid .align-btn {
+  padding: 8px 4px; font-size: 11.5px; text-align: center;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: transparent; color: var(--text); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.align-grid .align-btn:hover { background: var(--panel-2); border-color: var(--line-strong); }
+
 /* 运行记录宫格（弹窗里的「资产库」页）：列数自适应，缩略图沿用 .rc-img 的正方形撑法 */
 .hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .hist-grid .run-cell { border-radius: 10px; }
@@ -1897,7 +1908,7 @@ button.primary, .card .primary, #setOpenLib, #pasteGo,
    参数弹层里的比例卡 / 分段选项例外：里面已经有一个表示画幅的小方框，
    卡片再做成圆的会跟它打架（也分不清「这是在选比例」）。
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.align-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }

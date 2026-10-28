@@ -404,6 +404,73 @@ try {
   check('打开画布：5 节点 / 2 连线', canvas.nodes === 5 && canvas.links === 2, JSON.stringify(canvas));
   check('路由切到 #canvas', canvas.hash === '#canvas' && canvas.homeHidden);
 
+  // ---- 对齐 / 分布：按钮只在选中 2 个以上时出现 ----
+  const alignBtn = () => page.evaluate(`(() => {
+    const b = document.querySelector('#bar [data-act="align"]');
+    return b ? { hidden: b.classList.contains('hidden') } : { missing: true };
+  })()`);
+  const pickNode = (id, shift) => page.evaluate(`(() => {
+    const card = document.querySelector('.node[data-id="${id}"] .node-card');
+    if (!card) return false;
+    const b = card.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, clientX: b.left + 20, clientY: b.top + 12,
+      button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true, shiftKey: ${shift} };
+    card.dispatchEvent(new PointerEvent('pointerdown', o));
+    card.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 }));
+    return true;
+  })()`);
+  const leftsOf = () => page.evaluate(`[...document.querySelectorAll('.node.selected')]
+    .map((el) => Math.round(el.getBoundingClientRect().left))`);
+
+  const al0 = await alignBtn();
+  await pickNode('t1', false);
+  await new Promise((r) => setTimeout(r, 200));
+  const al1 = await alignBtn();
+  await pickNode('i3', true);
+  await pickNode('i4', true);
+  await new Promise((r) => setTimeout(r, 250));
+  const al2 = await alignBtn();
+  const leftBefore = await leftsOf();
+  check('「对齐」按钮只在选中 2 个以上时出现',
+    al0.hidden === true && al1.hidden === true && al2.hidden === false && leftBefore.length === 3,
+    JSON.stringify({ al0, al1, al2, leftBefore }));
+
+  await page.evaluate(`document.querySelector('#bar [data-act="align"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const alignMenu = await page.evaluate(`(() => {
+    const items = [...document.querySelectorAll('.align-menu .align-btn')].map((b) => b.textContent);
+    return { n: items.length, items, cols: getComputedStyle(document.querySelector('.align-grid')).gridTemplateColumns.split(' ').length };
+  })()`);
+  check('点对齐按钮弹出 8 种方式（6 对齐 + 2 等距），3 列排布',
+    alignMenu.n === 8 && alignMenu.cols === 3
+      && ['左对齐', '水平居中', '右对齐', '顶对齐', '垂直居中', '底对齐', '水平等距', '垂直等距'].every((x) => alignMenu.items.includes(x)),
+    JSON.stringify(alignMenu));
+
+  await page.evaluate(`[...document.querySelectorAll('.align-menu .align-btn')].find((b) => b.textContent === '左对齐').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const leftAfter = await leftsOf();
+  check('左对齐：三个节点的左边缘落到同一条竖线上',
+    leftAfter.length === 3 && new Set(leftAfter).size === 1 && new Set(leftBefore).size > 1,
+    JSON.stringify({ leftBefore, leftAfter }));
+
+  // 对齐进了撤销栈：Ctrl+Z 要能整批回退（位置全恢复）
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 400));
+  const restored = await leftsOf();
+  check('对齐可撤销：Ctrl+Z 后三个节点回到原位',
+    restored.length === 3 && restored.join() === leftBefore.join(), JSON.stringify({ leftBefore, restored }));
+
+  // 清掉选择，后面的用例按原来的单选用法继续
+  await page.evaluate(`(() => {
+    const stage = document.querySelector('#stage');
+    const b = stage.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, clientX: b.left + 6, clientY: b.bottom - 6, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    stage.dispatchEvent(new PointerEvent('pointerdown', o));
+    stage.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+
   // 连线是三次贝塞尔（两端水平切线），不是「横 → 竖 → 横」的折线
   const curve = await page.evaluate(`(() => {
     const d = document.querySelector('#links .link-line').getAttribute('d') || '';
