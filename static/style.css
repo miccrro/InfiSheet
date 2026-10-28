@@ -307,23 +307,44 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---------- 分组 ---------- */
 #groups { position: absolute; left: 0; top: 0; }
+/* 编组：颜色走 CSS 变量（--gc-line / --gc-fill / --gc-chip），由 renderGroups 按 g.color 设。
+   整个框都能拖（不只是顶部标题）——组框在节点下面，点空白就落到这里。 */
 .group {
   position: absolute;
-  border: 1px dashed rgba(110, 168, 254, 0.45);
+  border: 1px dashed var(--gc-line, rgba(110, 168, 254, 0.45));
   border-radius: 14px;
-  background: rgba(110, 168, 254, 0.045);
+  background: var(--gc-fill, rgba(110, 168, 254, 0.045));
+  cursor: move;
 }
 .group-head {
   position: absolute; left: 0; top: 0; transform: translateY(-100%);
   display: flex; align-items: center; gap: 6px; padding: 2px 4px 5px;
-  font-size: 11px; color: var(--accent); cursor: move; max-width: 100%;
+  font-size: 11px; color: var(--gc-chip, var(--accent)); cursor: move; max-width: 100%;
 }
 .group-head .gname {
   cursor: pointer; padding: 1px 7px; border-radius: 6px;
-  background: rgba(110, 168, 254, 0.14); border: 1px solid rgba(110, 168, 254, 0.35);
+  background: rgba(255, 255, 255, 0.07); border: 1px solid var(--gc-line, rgba(110, 168, 254, 0.35));
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .group-head button { padding: 2px 7px; font-size: 10.5px; }
+/* 色块：组头最左边那个小圆点，点开换色 */
+.group-head .gcolor {
+  width: 12px; height: 12px; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: var(--gc-chip, var(--accent)); cursor: pointer;
+  flex: 0 0 auto;
+}
+.group-head .gcolor:hover { transform: scale(1.15); }
+
+/* 取色菜单：一行色块 */
+.group-colors { min-width: 0; }
+.gc-row { display: flex; gap: 6px; padding: 4px 6px 2px; }
+.gc-chip {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25); cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+}
+.gc-chip:hover { transform: scale(1.12); border-color: #fff; }
 
 /* 框选矩形 */
 .rubber {
@@ -1524,8 +1545,6 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
 }
 
 /* 分组 */
-.group { border-color: rgba(255, 255, 255, 0.1); border-radius: 14px; background: rgba(122, 162, 255, 0.03); }
-.group-head { color: var(--dim); }
 
 /* 其他小件 */
 #queueBadge { background: rgba(24, 27, 33, 0.96); border-color: rgba(255, 255, 255, 0.12); color: #dfe4ec; border-radius: 10px; box-shadow: var(--shadow-2); }
@@ -1870,7 +1889,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .gen-status { color: #919191; }
 
 /* 分组 / 选择框 / 提示 */
-.group { border-color: #363636; background: rgba(255, 255, 255, 0.04); }
+.group { border-color: var(--gc-line, #363636); background: var(--gc-fill, rgba(255, 255, 255, 0.04)); }
 .rubber { border-color: #ffffff4d; background: rgba(255, 255, 255, 0.06); }
 #queueBadge { background: #242424; border-color: #363636; color: #ffffffd9; }
 #minimap { background: #1f1f1fe6; }

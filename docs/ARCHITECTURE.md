@@ -189,6 +189,18 @@
 
 没有产物的记录点了**直接导入工作流**（没有图可看，弹大图没意义）。
 
+### 分组（`state.groups`）
+
+一个组 = `{ id, name, nodeIds, color }`，随画布一起存（`serialize()` 里整块带走）。
+
+- **颜色**：`GROUP_COLORS` 六色，`renderGroups()` 把 `--gc-line / --gc-fill / --gc-chip`
+  三个变量写到组框上，CSS 只用变量——所以换色不用改类名，也不会漏掉某个子元素。
+  新组按 `state.groups.length % 6` 依次取色，同一个画布里相邻的组不会撞色。
+- **整框可拖**：`#groups` 排在 `#nodes` 前面（DOM 顺序即层级），所以点节点还是操作节点，
+  点组框里的空白才落到 `.group` 上——正好是「按住组内任意空处拖整组」。
+  以前只有顶部那条 `.group-head` 能拖，而它还挂在框外（`translateY(-100%)`），热区很窄。
+- 代价：组内空白不能再框选（pointerdown 被组框接管）。组内要框选得先解组，这个取舍写在验收报告里。
+
 ### 对齐 / 分布（`applyAlign`）
 
 选中 ≥2 个节点时浮出一条**图标工具条**（`#alignBar`，`paintSelection` 里按

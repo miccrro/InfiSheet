@@ -2729,6 +2729,19 @@
   }
 
   // 组框复用：拖动时每帧都要更新几何，整块重建 DOM（含按钮与事件）会明显掉帧
+  // 编组配色：只用来区分「哪个组是哪个」，所以取低饱和的线 + 极淡的底
+  const GROUP_COLORS = [
+    { id: 'blue', label: '蓝', chip: '#6ea8fe', line: 'rgba(110, 168, 254, 0.55)', fill: 'rgba(110, 168, 254, 0.05)' },
+    { id: 'violet', label: '紫', chip: '#a78bfa', line: 'rgba(167, 139, 250, 0.55)', fill: 'rgba(167, 139, 250, 0.05)' },
+    { id: 'green', label: '绿', chip: '#34d399', line: 'rgba(52, 211, 153, 0.55)', fill: 'rgba(52, 211, 153, 0.05)' },
+    { id: 'amber', label: '橙', chip: '#fbbf24', line: 'rgba(251, 191, 36, 0.55)', fill: 'rgba(251, 191, 36, 0.05)' },
+    { id: 'pink', label: '粉', chip: '#f472b6', line: 'rgba(244, 114, 182, 0.55)', fill: 'rgba(244, 114, 182, 0.05)' },
+    { id: 'slate', label: '灰', chip: '#9aa3af', line: 'rgba(154, 163, 175, 0.55)', fill: 'rgba(154, 163, 175, 0.05)' },
+  ];
+  function groupColor(g) {
+    return GROUP_COLORS.find((c) => c.id === (g && g.color)) || GROUP_COLORS[0];
+  }
+
   function groupBoxFor(gid) {
     const host = groupsEl();
     let box = host.querySelector(`.group[data-gid="${CSS.escape(gid)}"]`);
@@ -2739,6 +2752,9 @@
 
     const head = document.createElement('div');
     head.className = 'group-head';
+    const chip = document.createElement('button');
+    chip.className = 'gcolor';
+    chip.title = '换个颜色';
     const name = document.createElement('span');
     name.className = 'gname';
     name.title = '点击选中整组，拖动可整体移动';
@@ -2746,7 +2762,7 @@
     run.textContent = '执行';
     const un = document.createElement('button');
     un.textContent = '解组';
-    head.append(name, run, un);
+    head.append(chip, name, run, un);
     box.appendChild(head);
     host.appendChild(box);
 
@@ -2776,6 +2792,20 @@
       if (!g) return;
       startNodeDrag(ev, g.nodeIds.map(getNode).filter(Boolean));
     };
+    // 整个组框都能拖：以前只有顶部那条标题能拖，热区太窄（标题还在框外面）。
+    // 组框在节点下面（#groups 在 #nodes 之前），所以点节点仍然是操作节点，
+    // 点组框里的空白才落到这里——正好是「按住组内任意空处拖整组」。
+    box.onpointerdown = (ev) => {
+      if (ev.target.closest('button, .gname')) return;
+      ev.stopPropagation();
+      const g = current();
+      if (!g) return;
+      startNodeDrag(ev, g.nodeIds.map(getNode).filter(Boolean));
+    };
+    chip.onclick = (ev) => {
+      ev.stopPropagation();
+      openGroupColorMenu(chip, gid);
+    };
     return box;
   }
 
@@ -2795,6 +2825,11 @@
 
       const box = groupBoxFor(g.id);
       box.style.cssText = `left:${x}px;top:${y}px;width:${x2 - x}px;height:${y2 - y}px`;
+      const c = groupColor(g);
+      box.style.setProperty('--gc-line', c.line);
+      box.style.setProperty('--gc-fill', c.fill);
+      box.style.setProperty('--gc-chip', c.chip);
+      box.dataset.color = c.id;
       const name = box.querySelector('.gname');
       if (name) name.textContent = `${g.name} · ${members.length} 节点`;
     });
@@ -2803,10 +2838,46 @@
     });
   }
 
+  function openGroupColorMenu(anchor, gid) {
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu group-colors';
+    menu.onpointerdown = (ev) => ev.stopPropagation();
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = '分组颜色';
+    menu.appendChild(head);
+    const row = document.createElement('div');
+    row.className = 'gc-row';
+    GROUP_COLORS.forEach((c) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'gc-chip';
+      b.style.background = c.chip;
+      b.title = c.label;
+      b.setAttribute('aria-label', c.label);
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const g = state.groups.find((x) => x.id === gid);
+        if (g) { g.color = c.id; renderGroups(); queueSave(); commit(); }
+        closePopMenu();
+      };
+      row.appendChild(b);
+    });
+    menu.appendChild(row);
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
   function createGroup(ids) {
     const list = [...ids].filter((id) => getNode(id));
     if (list.length < 2) { flash('先选中至少两个节点（Shift 点选），再按 Ctrl+G 打组'); return; }
-    state.groups.push({ id: uid('g'), name: `分组 ${state.groups.length + 1}`, nodeIds: list });
+    state.groups.push({
+      id: uid('g'), name: `分组 ${state.groups.length + 1}`, nodeIds: list,
+      color: GROUP_COLORS[state.groups.length % GROUP_COLORS.length].id,
+    });
     renderGroups();
     queueSave(); commit();
     flash('已打组：组标题上可整组执行、解组');

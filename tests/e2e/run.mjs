@@ -488,6 +488,89 @@ try {
   })()`);
   await new Promise((r) => setTimeout(r, 250));
 
+  // ---- 编组：颜色 + 整框拖动 ----
+  await pickNode('t1', false);
+  await pickNode('i3', true);
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 400));
+  const grp0 = await page.evaluate(`(() => {
+    const box = document.querySelector('.group');
+    if (!box) return { missing: true };
+    const cs = getComputedStyle(box);
+    return {
+      gid: box.dataset.gid,
+      color: box.dataset.color,
+      chip: !!box.querySelector('.gcolor'),
+      chipBg: getComputedStyle(box.querySelector('.gcolor')).backgroundColor,
+      border: cs.borderTopColor,
+      cursor: cs.cursor,
+      name: (box.querySelector('.gname') || {}).textContent,
+    };
+  })()`);
+  check('Ctrl+G 打组后组框带颜色（默认第一个色）和色块按钮',
+    grp0.color === 'blue' && grp0.chip && grp0.chipBg === 'rgb(110, 168, 254)' && grp0.cursor === 'move'
+      && /2 节点/.test(grp0.name),
+    JSON.stringify(grp0));
+
+  await page.evaluate(`document.querySelector('.group .gcolor').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const gcMenu = await page.evaluate(`(() => {
+    const chips = [...document.querySelectorAll('.group-colors .gc-chip')];
+    return { n: chips.length, labels: chips.map((c) => c.getAttribute('aria-label')) };
+  })()`);
+  check('点色块弹出 6 个颜色',
+    gcMenu.n === 6 && gcMenu.labels.join('') === '蓝紫绿橙粉灰', JSON.stringify(gcMenu));
+
+  await page.evaluate(`[...document.querySelectorAll('.group-colors .gc-chip')].find((c) => c.getAttribute('aria-label') === '绿').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const afterColor = await page.evaluate(`(() => {
+    const box = document.querySelector('.group');
+    return { color: box.dataset.color, border: getComputedStyle(box).borderTopColor,
+      chipBg: getComputedStyle(box.querySelector('.gcolor')).backgroundColor };
+  })()`);
+  check('换色后组框描边和色块一起变绿',
+    afterColor.color === 'green' && afterColor.border === 'rgba(52, 211, 153, 0.55)'
+      && afterColor.chipBg === 'rgb(52, 211, 153)',
+    JSON.stringify(afterColor));
+
+  // 整框可拖：在组框内的空白处（右下角 padding 区）按下拖 60/40
+  const dragFrom = await page.evaluate(`[...document.querySelectorAll('.node.selected')]
+    .map((el) => { const b = el.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top)]; })`);
+  const dragHit = await page.evaluate(`(() => {
+    const box = document.querySelector('.group');
+    const r = box.getBoundingClientRect();
+    const x = r.left + 8, y = r.top + 8;   // 左上角 padding 区：组框比节点多留 26/44，这里一定是空白
+    const el = document.elementFromPoint(x, y);
+    const o = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    el.dispatchEvent(new PointerEvent('pointerdown', o));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: x + 60, clientY: y + 40 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: x + 60, clientY: y + 40, buttons: 0 }));
+    return { hit: el.className, gid: el.dataset ? el.dataset.gid : null };
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const dragTo = await page.evaluate(`[...document.querySelectorAll('.node.selected')]
+    .map((el) => { const b = el.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top)]; })`);
+  const moved = dragFrom.length === 2 && dragTo.length === 2
+    && dragFrom.every((p, i) => Math.abs(dragTo[i][0] - p[0] - 60) <= 2 && Math.abs(dragTo[i][1] - p[1] - 40) <= 2);
+  check('按住组框内的空白也能整组拖动（不再只能拖顶部标题）',
+    /\bgroup\b/.test(dragHit.hit || '') && moved,
+    JSON.stringify({ hit: dragHit.hit, dragFrom, dragTo }));
+
+  // 拖完撤销回原位，后面的用例按原布局继续
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 350));
+  await page.evaluate(`(() => {
+    const stage = document.querySelector('#stage');
+    const b = stage.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, clientX: b.left + 6, clientY: b.bottom - 6, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    stage.dispatchEvent(new PointerEvent('pointerdown', o));
+    stage.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+
   // 连线是三次贝塞尔（两端水平切线），不是「横 → 竖 → 横」的折线
   const curve = await page.evaluate(`(() => {
     const d = document.querySelector('#links .link-line').getAttribute('d') || '';
