@@ -228,8 +228,9 @@ try {
     const r = buildGenGraph(g, [], { width: 1280, height: 720 }, 1, 'p', null);
     return { f: f.replace(/\.(api\.)?json$/, ''), t, sized: r.sized, w: t ? r.graph[t].inputs.width : 0, h: t ? r.graph[t].inputs.height : 0 };
   });
-  check('四个内置预设全部钉得住尺寸（含三个从 ResolutionSelector 连线的）',
-    presetRows.length === 4 && presetRows.every((p) => p.sized && p.w === 1280 && p.h === 720),
+  // 不写死数量：presets/ 是用户目录，随时会多一个（这次就多了 Moss_图像编辑）
+  check('内置预设全部钉得住尺寸（含从 ResolutionSelector 连线的）',
+    presetRows.length >= 4 && presetRows.every((p) => p.sized && p.w === 1280 && p.h === 720),
     presetRows.map((p) => `${p.f}→${p.t || '无'}:${p.w}×${p.h}`).join(' | '));
 
   // ---- 提示词落点：不能取「排序第一个 text 插槽」----
