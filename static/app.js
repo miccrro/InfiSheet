@@ -25,6 +25,7 @@
     snap: false,
     linksHidden: false,
     minimapOn: false,
+    panelSide: 'bottom',   // 生成器面板贴在哪一侧：bottom / top / left / right
     panMode: false,
     bootAt: Date.now(),
     hydrated: false,   // 启动恢复完成前，禁止把状态回写（避免空画布覆盖已存内容）
@@ -475,7 +476,9 @@
         hist.onclick = (ev) => { ev.stopPropagation(); openRunList(hist, n); };
         thumb.appendChild(hist);
       }
-      card.appendChild(buildGenPanel(n));
+      // 挂在 .node 上而不是 .node-card：标题行在卡片外面（在 flow 里占高度），
+      // 挂卡片上的话「面板放上方」会压住标题——bottom:100% 相对整个节点才对。
+      el.appendChild(buildGenPanel(n));
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
       imgIn.onpointerdown = (ev) => { ev.stopPropagation(); startPortDrag(ev, n.id, 'in'); };
@@ -1634,6 +1637,40 @@
     armPopClose(anchor);
   }
 
+  // 面板位置：全局偏好（存 localStorage），切换后重建所有面板
+  const PANEL_SIDES = [['bottom', '下方'], ['top', '上方'], ['left', '左侧'], ['right', '右侧']];
+  function setPanelSide(side) {
+    if (!PANEL_SIDES.some(([k]) => k === side)) return;
+    state.panelSide = side;
+    // 注意：setGlobalFlag 只存 '1'/'0'，这里要存字符串，直接写 localStorage
+    try { localStorage.setItem('comfy-canvas-panel-side', side); } catch { /* noop */ }
+    renderAll();          // 面板的 data-side 和按钮文字都在 buildGenPanel 里，重画一次最省事
+    queueSave();
+  }
+  function openSideMenu(anchor) {
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu side-menu';
+    menu.onpointerdown = (ev) => ev.stopPropagation();
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = '面板位置';
+    menu.appendChild(head);
+    PANEL_SIDES.forEach(([key, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.side = key;
+      b.textContent = label;
+      b.classList.toggle('active', state.panelSide === key);
+      b.onclick = (ev) => { ev.stopPropagation(); closePopMenu(); setPanelSide(key); };
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
   function buildGenPanel(n) {
     // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值
     n.gen = {
@@ -1654,6 +1691,7 @@
     const panel = document.createElement('div');
     panel.className = `gen-panel${g.wide ? ' wide' : ''}`;
     panel.dataset.panelFor = n.id;
+    panel.dataset.side = state.panelSide;   // 贴哪一侧由全局偏好决定，CSS 里四条规则分别定位
     panel.onpointerdown = (ev) => ev.stopPropagation();
 
     const ICON = {
@@ -1678,6 +1716,15 @@
       chips.appendChild(b);
       return b;
     };
+    // 位置：面板贴节点哪一侧。放在 chips 行最右边（margin-left:auto），不占额外高度
+    const SIDE_LABEL = { bottom: '下方', top: '上方', left: '左侧', right: '右侧' };
+    const sideBtn = document.createElement('button');
+    sideBtn.className = 'chip gen-side';
+    sideBtn.title = '生成器面板出现的位置（上 / 下 / 左 / 右）';
+    sideBtn.textContent = `${SIDE_LABEL[state.panelSide] || '下方'} ▾`;
+    sideBtn.onclick = (ev) => { ev.stopPropagation(); openSideMenu(sideBtn); };
+    chips.appendChild(sideBtn);
+
     mkChip('上传', ICON.upload, () => pickImage(n), '上传本地图片到这个节点');
     mkChip('画布素材', ICON.grid, () => {
       const src = state.nodes.find((x) => x.type === 'image' && x.id !== n.id && x.dataURL);
@@ -2298,6 +2345,9 @@
     state.snap = globalFlag('comfy-canvas-snap', !!state.snap);
     state.linksHidden = !globalFlag('comfy-canvas-links', !state.linksHidden);
     state.minimapOn = globalFlag('comfy-canvas-minimap', !!state.minimapOn);
+    let side = 'bottom';
+    try { side = localStorage.getItem('comfy-canvas-panel-side') || 'bottom'; } catch { /* noop */ }
+    state.panelSide = ['bottom', 'top', 'left', 'right'].includes(side) ? side : 'bottom';
   }
 
   // ---------- 画布背景 ----------
