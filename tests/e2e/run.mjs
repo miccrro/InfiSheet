@@ -650,6 +650,62 @@ try {
     panel && panel.prompt.border === '0px' && panel.prompt.minH === '86px' && panel.prompt.maxH === '168px' && panel.prompt.bg === 'rgba(0, 0, 0, 0)',
     JSON.stringify(panel?.prompt));
   check('长提示词出现底部渐隐', panel && panel.prompt.masked === true);
+
+  // ---- 生成器面板位置：上 / 下 / 左 / 右 ----
+  const panelGeom = () => page.evaluate(`(() => {
+    const p = document.querySelector('.gen-panel');
+    const node = document.querySelector('.node.selected');
+    if (!p || !node) return { missing: true };
+    const a = p.getBoundingClientRect(), b = node.getBoundingClientRect();
+    return {
+      side: p.dataset.side,
+      below: Math.round(a.top - b.bottom),    // 面板顶 - 节点底
+      above: Math.round(b.top - a.bottom),    // 节点顶 - 面板底
+      right: Math.round(a.left - b.right),    // 面板左 - 节点右
+      left: Math.round(b.left - a.right),     // 节点左 - 面板右
+    };
+  })()`);
+  const pickSide = async (label) => {
+    await page.evaluate(`document.querySelector('.gen-panel .gen-side').click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    await page.evaluate(`[...document.querySelectorAll('.side-menu button')].find((b) => b.textContent === '${label}').click()`);
+    await new Promise((r) => setTimeout(r, 350));
+  };
+
+  const pg0 = await panelGeom();
+  check('生成器面板默认贴在节点下方（data-side=bottom）',
+    pg0.side === 'bottom' && pg0.below >= 6, JSON.stringify(pg0));
+
+  await page.evaluate(`document.querySelector('.gen-panel .gen-side').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const sideMenu = await page.evaluate(`[...document.querySelectorAll('.side-menu button')].map((b) => b.textContent)`);
+  check('点位置按钮弹出四个方向，当前项高亮',
+    sideMenu.join('|') === '下方|上方|左侧|右侧'
+      && (await page.evaluate(`document.querySelector('.side-menu button.active').textContent`)) === '下方',
+    JSON.stringify(sideMenu));
+
+  await page.evaluate(`[...document.querySelectorAll('.side-menu button')].find((b) => b.textContent === '上方').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const pg1 = await panelGeom();
+  check('切到「上方」：面板整块跑到节点上面',
+    pg1.side === 'top' && pg1.above >= 6, JSON.stringify(pg1));
+
+  await pickSide('右侧');
+  const pg2 = await panelGeom();
+  check('切到「右侧」：面板在节点右边缘之外',
+    pg2.side === 'right' && pg2.right >= 6, JSON.stringify(pg2));
+
+  await pickSide('左侧');
+  const pg3 = await panelGeom();
+  check('切到「左侧」：面板在节点左边缘之外',
+    pg3.side === 'left' && pg3.left >= 6, JSON.stringify(pg3));
+
+  await pickSide('下方');   // 复位，后面用例按默认布局继续
+  const pgBack = await panelGeom();
+  check('切回「下方」并记住选择（localStorage）',
+    pgBack.side === 'bottom' && pgBack.below >= 6
+      && (await page.evaluate(`localStorage.getItem('comfy-canvas-panel-side')`)) === 'bottom',
+    JSON.stringify(pgBack));
   check('底栏只有一行', panel && panel.rows === 1, panel ? panel.barChildren.join(' / ') : '');
   check('底栏顺序：工作流 → 参数 → 状态 → 生成',
     panel && panel.barChildren.join(',') === 'gensel,gensel,gen-status,gen-run',

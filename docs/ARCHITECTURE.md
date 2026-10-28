@@ -206,6 +206,19 @@
   名字就白改了（e2e 里就是这么挂的）。
 - 代价：组内空白不能再框选（pointerdown 被组框接管）。组内要框选得先解组，这个取舍写在验收报告里。
 
+### 生成器面板的位置（`state.panelSide`）
+
+面板贴节点哪一侧由 `state.panelSide`（bottom / top / left / right）决定，
+`buildGenPanel()` 把它写到 `panel.dataset.side`，CSS 四条 `[data-side="…"]` 规则分别定位。
+上下方向跟节点同宽（`left/right: 8px`），左右方向固定 430px——两个方向都设 `left/right` 会拉满。
+
+两个坑：
+
+1. **面板挂在 `.node` 上，不是 `.node-card` 上。** 标题行在卡片外面（在 flow 里占高度），
+   挂卡片上的话 `bottom: 100%` 只到卡片顶，面板会压住标题（实测差 19px）。
+2. **`globalFlag` / `setGlobalFlag` 只认布尔**（存的是 `'1'`/`'0'`），拿它存 `'left'` 会被写成 `'1'`。
+   字符串偏好直接读写 `localStorage`。
+
 ### 对齐 / 分布（`applyAlign`）
 
 选中 ≥2 个节点时浮出一条**图标工具条**（`#alignBar`，`paintSelection` 里按

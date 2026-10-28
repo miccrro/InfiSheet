@@ -438,10 +438,9 @@ select option { background: #1f1f1f; color: var(--text); }
 .dots .dot-i:hover { background: #8a8a8a; transform: scale(1.18); }
 .dots .dot-i.on { background: var(--accent); }
 
-/* 图片节点的生成器面板：仅在选中时浮出 */
+/* 图片节点的生成器面板：仅在选中时浮出。位置由 data-side 决定（见下方四条规则） */
 .gen-panel {
-  display: none; position: absolute; left: -24px; top: calc(100% + 10px);
-  width: 430px; max-width: 70vw; z-index: 6;
+  display: none; position: absolute; z-index: 6;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
@@ -949,10 +948,9 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9;
 }
 
-/* 生成器：独立卡片，跟节点同宽、贴在下沿 */
+/* 生成器：独立卡片，默认跟节点同宽、贴在下沿 */
 .gen-panel {
-  position: absolute; left: 8px; right: 8px; top: calc(100% + 10px);
-  width: auto; max-width: none; padding: 10px;
+  position: absolute; padding: 10px;
   background: rgba(23, 26, 32, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
@@ -960,8 +958,20 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: 7;
+  --gp-gap: 10px;
 }
-.gen-panel.wide { left: -52px; right: -52px; }
+
+/* 贴哪一侧：上下跟节点同宽，左右固定 430px（否则 left/right 都设会拉满）。
+   加宽版（.wide）只在上下方向有意义，左右方向保持 430。 */
+.gen-panel[data-side="bottom"] { top: calc(100% + var(--gp-gap)); left: 8px; right: 8px; }
+.gen-panel[data-side="top"]    { bottom: calc(100% + var(--gp-gap)); left: 8px; right: 8px; }
+.gen-panel[data-side="left"]   { right: calc(100% + var(--gp-gap)); left: auto; top: 0; width: 430px; max-width: 70vw; }
+.gen-panel[data-side="right"]  { left: calc(100% + var(--gp-gap)); right: auto; top: 0; width: 430px; max-width: 70vw; }
+.gen-panel.wide[data-side="bottom"], .gen-panel.wide[data-side="top"] { left: -52px; right: -52px; }
+
+/* 位置按钮：推到 chips 行最右，弱化存在感 */
+.gen-chips .gen-side { margin-left: auto; flex: 0 0 auto; color: var(--dim); }
+.gen-chips .gen-side:hover { color: var(--text); }
 
 .gen-chips { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .gen-chips .grow, .gen-bar .grow { flex: 1; }
