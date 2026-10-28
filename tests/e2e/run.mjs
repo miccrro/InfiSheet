@@ -404,10 +404,21 @@ try {
   check('打开画布：5 节点 / 2 连线', canvas.nodes === 5 && canvas.links === 2, JSON.stringify(canvas));
   check('路由切到 #canvas', canvas.hash === '#canvas' && canvas.homeHidden);
 
-  // ---- 对齐 / 分布：按钮只在选中 2 个以上时出现 ----
-  const alignBtn = () => page.evaluate(`(() => {
-    const b = document.querySelector('#bar [data-act="align"]');
-    return b ? { hidden: b.classList.contains('hidden') } : { missing: true };
+  // ---- 对齐 / 分布：悬浮条（选中 2 个以上才浮出，图标按钮） ----
+  const alignBarState = () => page.evaluate(`(() => {
+    const bar = document.querySelector('#alignBar');
+    if (!bar) return { missing: true };
+    const btns = [...bar.querySelectorAll('.ab-btn')];
+    const r = bar.getBoundingClientRect();
+    return {
+      hidden: bar.classList.contains('hidden'),
+      n: btns.length,
+      icons: btns.filter((b) => b.querySelector('svg')).length,
+      labels: btns.map((b) => b.getAttribute('aria-label')),
+      sep: bar.querySelectorAll('.ab-sep').length,
+      gapBottom: Math.round(innerHeight - r.bottom),
+      centered: Math.abs((r.left + r.right) / 2 - innerWidth / 2) <= 2,
+    };
   })()`);
   const pickNode = (id, shift) => page.evaluate(`(() => {
     const card = document.querySelector('.node[data-id="${id}"] .node-card');
@@ -422,31 +433,26 @@ try {
   const leftsOf = () => page.evaluate(`[...document.querySelectorAll('.node.selected')]
     .map((el) => Math.round(el.getBoundingClientRect().left))`);
 
-  const al0 = await alignBtn();
+  const al0 = await alignBarState();
   await pickNode('t1', false);
   await new Promise((r) => setTimeout(r, 200));
-  const al1 = await alignBtn();
+  const al1 = await alignBarState();
   await pickNode('i3', true);
   await pickNode('i4', true);
   await new Promise((r) => setTimeout(r, 250));
-  const al2 = await alignBtn();
+  const al2 = await alignBarState();
   const leftBefore = await leftsOf();
-  check('「对齐」按钮只在选中 2 个以上时出现',
+  check('对齐悬浮条只在选中 2 个以上时浮出',
     al0.hidden === true && al1.hidden === true && al2.hidden === false && leftBefore.length === 3,
     JSON.stringify({ al0, al1, al2, leftBefore }));
 
-  await page.evaluate(`document.querySelector('#bar [data-act="align"]').click()`);
-  await new Promise((r) => setTimeout(r, 300));
-  const alignMenu = await page.evaluate(`(() => {
-    const items = [...document.querySelectorAll('.align-menu .align-btn')].map((b) => b.textContent);
-    return { n: items.length, items, cols: getComputedStyle(document.querySelector('.align-grid')).gridTemplateColumns.split(' ').length };
-  })()`);
-  check('点对齐按钮弹出 8 种方式（6 对齐 + 2 等距），3 列排布',
-    alignMenu.n === 8 && alignMenu.cols === 3
-      && ['左对齐', '水平居中', '右对齐', '顶对齐', '垂直居中', '底对齐', '水平等距', '垂直等距'].every((x) => alignMenu.items.includes(x)),
-    JSON.stringify(alignMenu));
+  check('悬浮条是 8 个图标按钮（6 对齐 + 1 分隔 + 2 分布），浮在 dock 上方居中',
+    al2.n === 8 && al2.icons === 8 && al2.sep === 1 && al2.centered
+      && al2.gapBottom > 50 && al2.gapBottom < 130
+      && al2.labels.join('|') === '左对齐|水平居中|右对齐|顶对齐|垂直居中|底对齐|水平等距|垂直等距',
+    JSON.stringify(al2));
 
-  await page.evaluate(`[...document.querySelectorAll('.align-menu .align-btn')].find((b) => b.textContent === '左对齐').click()`);
+  await page.evaluate(`document.querySelector('#alignBar .ab-btn[data-mode="left"]').click()`);
   await new Promise((r) => setTimeout(r, 400));
   const leftAfter = await leftsOf();
   check('左对齐：三个节点的左边缘落到同一条竖线上',

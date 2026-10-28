@@ -105,9 +105,6 @@
     <button class="icon" data-act="history" title="生成历史（ComfyUI 运行记录）">
       <span class="ico" data-icon="time" aria-hidden="true"></span>
     </button>
-    <button class="icon hidden" data-act="align" title="对齐 / 分布（先选中 2 个以上节点）">
-      <span class="ico" data-icon="snap" aria-hidden="true"></span>
-    </button>
     <span class="vsep"></span>
     <button class="icon" data-act="help" title="快捷键">
       <span class="ico" data-icon="help" aria-hidden="true"></span>
@@ -116,6 +113,10 @@
       <span class="ico" data-icon="book" aria-hidden="true"></span>
     </button>
   </header>
+
+<!-- 对齐 / 分布悬浮条：选中 2 个以上节点时浮出 -->
+<div id="alignBar" class="hidden" role="toolbar" aria-label="对齐与分布"></div>
+
   <button class="icon orb dock-orb" data-act="home" title="返回首页"><span class="orb-dot"></span></button>
   </div>
 

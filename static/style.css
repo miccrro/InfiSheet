@@ -504,16 +504,25 @@ select option { background: #1f1f1f; color: var(--text); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .run-cell.on .rc-time { color: #fff; }
-/* 对齐菜单：3 列小方块。8 项竖着排会超出屏幕，横排两行刚好 */
-.align-menu { min-width: 252px; }
-.align-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 2px 2px; }
-.align-grid .align-btn {
-  padding: 8px 4px; font-size: 11.5px; text-align: center;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: transparent; color: var(--text); cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+/* 对齐 / 分布悬浮条：选中 2 个以上节点时浮在底部 dock 上方。
+   图标 + title 提示，不再用文字按钮——8 个中文标签排一行会挤成一坨。 */
+#alignBar {
+  position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%);
+  z-index: 45; display: flex; align-items: center; gap: 2px; padding: 5px;
+  background: rgba(38, 38, 38, 0.96);
+  border: 0.5px solid #3a3a3a; border-radius: 999px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
 }
-.align-grid .align-btn:hover { background: var(--panel-2); border-color: var(--line-strong); }
+#alignBar .ab-btn {
+  width: 32px; height: 32px; display: grid; place-items: center; padding: 0;
+  border: none; border-radius: 999px; background: transparent;
+  color: #d6d6d6; cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+#alignBar .ab-btn:hover { background: #ffffff1f; color: #fff; }
+#alignBar .ab-btn:active { background: #ffffff33; }
+#alignBar .ab-btn .oi { width: 17px; height: 17px; }
+#alignBar .ab-sep { width: 1px; height: 18px; background: #3d3d3d; margin: 0 4px; }
 
 /* 运行记录宫格（弹窗里的「资产库」页）：列数自适应，缩略图沿用 .rc-img 的正方形撑法 */
 .hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
@@ -1908,7 +1917,7 @@ button.primary, .card .primary, #setOpenLib, #pasteGo,
    参数弹层里的比例卡 / 分段选项例外：里面已经有一个表示画幅的小方框，
    卡片再做成圆的会跟它打架（也分不清「这是在选比例」）。
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.align-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
