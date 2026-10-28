@@ -221,6 +221,25 @@ try {
   check('张数对得上、只选 1 张、一张都没回来——都不算「少给了」',
     batchShortfall(4, 4) === null && batchShortfall(1, 1) === null && batchShortfall(4, 0) === null);
 
+  // 出错分类：ComfyUI 的报错是一大坨字符串，直接甩给用户等于没说。
+  // 四类各给一句「下一步该干什么」，只有连接类值得自动重试。
+  const { classifyGenError } = new Function(`${pickFn(appSrc, 'classifyGenError')}\nreturn { classifyGenError };`)();
+  const cls = (m) => classifyGenError(m).kind;
+  check('出错分类：显存不足单独识别，并提示降尺寸（不重试）',
+    cls('CUDA error: out of memory') === 'oom' && classifyGenError('CUDA error: out of memory').retry === false
+      && /尺寸/.test(classifyGenError('CUDA error: out of memory').hint),
+    JSON.stringify(classifyGenError('CUDA error: out of memory')));
+  check('出错分类：模型缺失 / 工作流有错 / 连接超时 各归各类',
+    cls("Value not in list: ckpt_name: 'x.safetensors' not in []") === 'model'
+      && cls('Prompt has no outputs') === 'workflow'
+      && cls('Failed to fetch') === 'network'
+      && cls('任务记录已丢失（ComfyUI 可能已重启）') === 'network',
+    JSON.stringify([cls("ckpt_name not found"), cls('Prompt has no outputs'), cls('Failed to fetch')]));
+  check('出错分类：只有连接类会自动重试一次',
+    classifyGenError('timeout').retry === true
+      && classifyGenError('node_errors').retry === false
+      && classifyGenError('随便什么错').kind === 'unknown');
+
   // 拿真实预设再过一遍：内置四个里三个的宽高是连线，这条就是防「面板选了尺寸、提交图上没写」的回归
   const presetRows = fs.readdirSync(path.join(ROOT, 'presets')).filter((f) => f.endsWith('.json')).map((f) => {
     const g = JSON.parse(fs.readFileSync(path.join(ROOT, 'presets', f), 'utf8')).graph;

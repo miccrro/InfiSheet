@@ -947,6 +947,25 @@
     };
   }
 
+  // 出错信息分类：ComfyUI 的报错是一大坨字符串，直接甩给用户等于没说。
+  // 分四类，每类给一句「下一步该干什么」——用户才知道是改尺寸、补模型，还是等一等。
+  function classifyGenError(msg) {
+    const s = String(msg || '');
+    if (/out of memory|OutOfMemory|OOM|allocation on device|CUDA error/i.test(s)) {
+      return { kind: 'oom', title: '显存不足', hint: '尺寸调小一档再试（4K→2K，或短边减半）', retry: false };
+    }
+    if (/not found|No such file|ckpt_name|CheckpointLoader|failed to load|Cannot load/i.test(s)) {
+      return { kind: 'model', title: '模型或文件缺失', hint: '检查工作流里的模型名和本机 models 目录是否对得上', retry: false };
+    }
+    if (/node_errors|invalid prompt|Required input is missing|Return type mismatch|Prompt has no outputs/i.test(s)) {
+      return { kind: 'workflow', title: '工作流有错', hint: '看报错里的节点 id，回 ComfyUI 检查那个节点', retry: false };
+    }
+    if (/任务记录已丢失|查询失败|Failed to fetch|network|NetworkError|timeout|超时/i.test(s)) {
+      return { kind: 'network', title: '连接或超时', hint: '会自动重试一次；再失败就看 ComfyUI 是否还在跑', retry: true };
+    }
+    return { kind: 'unknown', title: '生成失败', hint: '', retry: false };
+  }
+
   function pollPrompt(pid, onTick, onDone) {
     const t0 = Date.now();
     let lostPolls = 0;
@@ -2003,6 +2022,7 @@
   async function generateImage(n) {
     const g = n.gen;
     if (g.busy) return;
+    g.retried = 0;          // 手动发起的一次生成，重置「已自动重试」标记
     if (!g.wf) { flash('先在面板里选一个工作流'); return; }
     // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
     const inLinks = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
@@ -2086,7 +2106,24 @@
         },
         async (arts, err, secs) => {
           g.busy = false;
-          if (err) { clearProgress(n); g.status = `出错：${err}`; refreshGenPanel(n); return; }
+          if (err) {
+            clearProgress(n);
+            const c = classifyGenError(err);
+            // 连接/超时类自动重试一次：ComfyUI 卡一下、代理抖一下，重试往往就好了；
+            // 显存/模型/工作流这三类重试一百次也一样，只报原因。
+            if (c.retry && !g.retried) {
+              g.retried = 1;
+              g.status = `${c.title} · 自动重试一次…`;
+              refreshGenPanel(n);
+              setTimeout(() => { generateImage(n); }, 800);
+              return;
+            }
+            g.retried = 0;
+            g.status = `${c.title}：${err}${c.hint ? ' · ' + c.hint : ''}`;
+            refreshGenPanel(n);
+            return;
+          }
+          g.retried = 0;
           const imgs = arts.filter((x) => x.kind === 'image');
           if (!imgs.length) { clearProgress(n); g.status = `完成 · ${secs}s（无图片，检查工作流是否有保存节点）`; refreshGenPanel(n); return; }
           g.gallery = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
