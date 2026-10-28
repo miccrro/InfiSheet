@@ -1630,6 +1630,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #dockWrap[data-dock="left"]   { left: 16px; right: auto; top: 50%; bottom: auto; transform: translateY(-50%); }
 #dockWrap[data-dock="right"]  { left: auto; right: 16px; top: 50%; bottom: auto; transform: translateY(-50%); }
 #dockWrap[data-dock="top"]    { left: 50%; right: auto; top: 64px; bottom: auto; transform: translateX(-50%); }
+/* 左右停靠时竖着排：横排 340px 会横着压掉半个画布，竖排只占一列。
+   圆球跟着排到工具条下面（#dockWrap 本身也转成 column）。 */
+#dockWrap[data-dock="left"], #dockWrap[data-dock="right"] { flex-direction: column; gap: 12px; }
+#dockWrap[data-dock="left"] #bar, #dockWrap[data-dock="right"] #bar {
+  flex-direction: column; height: auto; width: auto; padding: 6px; gap: 3px;
+}
+/* 竖排时分隔线要变成横线 */
+#dockWrap[data-dock="left"] #bar .vsep, #dockWrap[data-dock="right"] #bar .vsep {
+  width: 20px; height: 1px; margin: 3px 0;
+}
 #bar {
   position: static; left: auto; bottom: auto; transform: none;
   height: 54px; padding: 5px; gap: 2px; border-radius: 14px;
