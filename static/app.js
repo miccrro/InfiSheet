@@ -26,6 +26,7 @@
     linksHidden: false,
     minimapOn: false,
     panelSide: 'bottom',   // 生成器面板贴在哪一侧：bottom / top / left / right
+    dockSide: 'bottom',    // 底部工具条停在哪：bottom / left / right / top
     panMode: false,
     bootAt: Date.now(),
     hydrated: false,   // 启动恢复完成前，禁止把状态回写（避免空画布覆盖已存内容）
@@ -1647,6 +1648,43 @@
     renderAll();          // 面板的 data-side 和按钮文字都在 buildGenPanel 里，重画一次最省事
     queueSave();
   }
+  // 底部工具条停在哪：底部居中 / 左下 / 右下 / 顶部居中。
+  // 位置写在 #dockWrap 的 data-dock 上，CSS 四条规则各管一处——和生成器面板同一套思路。
+  const DOCK_SIDES = [['bottom', '底部居中'], ['left', '左侧居中'], ['right', '右侧居中'], ['top', '顶部居中']];
+  function applyDockSide() {
+    const wrap = $('#dockWrap');
+    if (wrap) wrap.dataset.dock = state.dockSide;
+  }
+  function setDockSide(side) {
+    if (!DOCK_SIDES.some(([k]) => k === side)) return;
+    state.dockSide = side;
+    try { localStorage.setItem('comfy-canvas-dock-side', side); } catch { /* noop */ }
+    applyDockSide();
+  }
+  function openDockMenu(anchor) {
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu dock-menu';
+    menu.onpointerdown = (ev) => ev.stopPropagation();
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = '工具条位置';
+    menu.appendChild(head);
+    DOCK_SIDES.forEach(([key, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.dock = key;
+      b.textContent = label;
+      b.classList.toggle('active', state.dockSide === key);
+      b.onclick = (ev) => { ev.stopPropagation(); setDockSide(key); closePopMenu(); };
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
   function openSideMenu(anchor) {
     closePopMenu();
     const menu = document.createElement('div');
@@ -2348,6 +2386,10 @@
     let side = 'bottom';
     try { side = localStorage.getItem('comfy-canvas-panel-side') || 'bottom'; } catch { /* noop */ }
     state.panelSide = ['bottom', 'top', 'left', 'right'].includes(side) ? side : 'bottom';
+    let dock = 'bottom';
+    try { dock = localStorage.getItem('comfy-canvas-dock-side') || 'bottom'; } catch { /* noop */ }
+    state.dockSide = ['bottom', 'left', 'right', 'top'].includes(dock) ? dock : 'bottom';
+    applyDockSide();
   }
 
   // ---------- 画布背景 ----------
@@ -4724,6 +4766,7 @@
         ['导入画布 JSON', () => importCanvas()],
         ['导入工作流 JSON…', () => importWorkflowFile()],
         ['历史画布…', () => openCanvasHistory()],
+        ['工具条位置…', () => { closePopMenu(); openDockMenu(btn); }],
         ['清空画布节点', () => clearCanvas(), 'danger'],
       ]);
     }
