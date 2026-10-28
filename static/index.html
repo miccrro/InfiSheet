@@ -114,9 +114,6 @@
     </button>
   </header>
 
-<!-- 对齐 / 分布悬浮条：选中 2 个以上节点时浮出 -->
-<div id="alignBar" class="hidden" role="toolbar" aria-label="对齐与分布"></div>
-
   <button class="icon orb dock-orb" data-act="home" title="返回首页"><span class="orb-dot"></span></button>
   </div>
 
@@ -225,5 +222,10 @@
 </div>
 <script src="/icons.js"></script>
 <script src="/app.js"></script>
+<!-- 对齐 / 分布悬浮条：选中 2 个以上节点时浮出。
+     必须是 body 的直接子节点：dockWrap 带 backdrop-filter，会成为 fixed 的包含块，
+     放里面的话 position: fixed 会变成相对 dockWrap 定位。 -->
+<div id="alignBar" class="hidden" role="toolbar" aria-label="对齐与分布"></div>
+
 </body>
 </html>

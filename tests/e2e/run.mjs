@@ -410,14 +410,22 @@ try {
     if (!bar) return { missing: true };
     const btns = [...bar.querySelectorAll('.ab-btn')];
     const r = bar.getBoundingClientRect();
+    const sel = [...document.querySelectorAll('.node.selected')].map((el) => el.getBoundingClientRect());
+    const selTop = sel.length ? Math.min(...sel.map((x) => x.top)) : null;
+    const selBottom = sel.length ? Math.max(...sel.map((x) => x.bottom)) : null;
+    const selLeft = sel.length ? Math.min(...sel.map((x) => x.left)) : null;
+    const selRight = sel.length ? Math.max(...sel.map((x) => x.right)) : null;
     return {
       hidden: bar.classList.contains('hidden'),
       n: btns.length,
       icons: btns.filter((b) => b.querySelector('svg')).length,
       labels: btns.map((b) => b.getAttribute('aria-label')),
       sep: bar.querySelectorAll('.ab-sep').length,
-      gapBottom: Math.round(innerHeight - r.bottom),
-      centered: Math.abs((r.left + r.right) / 2 - innerWidth / 2) <= 2,
+      // 跟随选区：底边到选区顶边的间距、水平是否对准选区中线
+      above: selTop == null ? null : Math.round(selTop - r.bottom),
+      dx: selLeft == null ? null : Math.round((r.left + r.right) / 2 - (selLeft + selRight) / 2),
+      below: selBottom == null ? null : Math.round(r.top - selBottom),
+      inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
     };
   })()`);
   const pickNode = (id, shift) => page.evaluate(`(() => {
@@ -446,11 +454,14 @@ try {
     al0.hidden === true && al1.hidden === true && al2.hidden === false && leftBefore.length === 3,
     JSON.stringify({ al0, al1, al2, leftBefore }));
 
-  check('悬浮条是 8 个图标按钮（6 对齐 + 1 分隔 + 2 分布），浮在 dock 上方居中',
-    al2.n === 8 && al2.icons === 8 && al2.sep === 1 && al2.centered
-      && al2.gapBottom > 50 && al2.gapBottom < 130
+  check('悬浮条是 8 个图标按钮（6 对齐 + 1 分隔 + 2 分布）',
+    al2.n === 8 && al2.icons === 8 && al2.sep === 1
       && al2.labels.join('|') === '左对齐|水平居中|右对齐|顶对齐|垂直居中|底对齐|水平等距|垂直等距',
     JSON.stringify(al2));
+  check('悬浮条跟着选区走：浮在选区上方、水平对准选区中线、不出视口',
+    al2.above !== null && al2.above >= 6 && al2.above <= 26
+      && Math.abs(al2.dx) <= 2 && al2.inView,
+    JSON.stringify({ above: al2.above, dx: al2.dx, inView: al2.inView }));
 
   await page.evaluate(`document.querySelector('#alignBar .ab-btn[data-mode="left"]').click()`);
   await new Promise((r) => setTimeout(r, 400));
