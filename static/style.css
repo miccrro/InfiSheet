@@ -1624,6 +1624,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
   z-index: 30; display: flex; align-items: center; gap: 14px;
 }
+/* 工具条停靠：data-dock 由「全部功能 → 工具条位置」切换。
+   左右只做「居中」——左下角是视图工具、右下角是小地图，放角上会撞。 */
+#dockWrap[data-dock="bottom"] { left: 50%; right: auto; top: auto; bottom: 14px; transform: translateX(-50%); }
+#dockWrap[data-dock="left"]   { left: 16px; right: auto; top: 50%; bottom: auto; transform: translateY(-50%); }
+#dockWrap[data-dock="right"]  { left: auto; right: 16px; top: 50%; bottom: auto; transform: translateY(-50%); }
+#dockWrap[data-dock="top"]    { left: 50%; right: auto; top: 64px; bottom: auto; transform: translateX(-50%); }
 #bar {
   position: static; left: auto; bottom: auto; transform: none;
   height: 54px; padding: 5px; gap: 2px; border-radius: 14px;

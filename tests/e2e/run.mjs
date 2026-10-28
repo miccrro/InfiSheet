@@ -405,6 +405,57 @@ try {
   check('打开画布：5 节点 / 2 连线', canvas.nodes === 5 && canvas.links === 2, JSON.stringify(canvas));
   check('路由切到 #canvas', canvas.hash === '#canvas' && canvas.homeHidden);
 
+  // ---- 工具条停靠：底部居中 / 左侧 / 右侧 / 顶部 ----
+  const dockState = () => page.evaluate(`(() => {
+    const w = document.querySelector('#dockWrap');
+    const r = w.getBoundingClientRect();
+    return {
+      side: w.dataset.dock,
+      left: Math.round(r.left), right: Math.round(innerWidth - r.right),
+      top: Math.round(r.top), bottom: Math.round(innerHeight - r.bottom),
+      cx: Math.round((r.left + r.right) / 2), cy: Math.round((r.top + r.bottom) / 2),
+      vw: innerWidth, vh: innerHeight,
+    };
+  })()`);
+  const pickDock = async (label) => {
+    await page.evaluate(`document.querySelector('#bar [data-act="all-tools"]').click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    await page.evaluate(`[...document.querySelectorAll('.popmenu button')].find((b) => b.textContent === '工具条位置…').click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    await page.evaluate(`[...document.querySelectorAll('.dock-menu button')].find((b) => b.textContent === '${label}').click()`);
+    await new Promise((r) => setTimeout(r, 300));
+  };
+
+  const d0 = await dockState();
+  check('工具条默认停在底部居中',
+    d0.side === 'bottom' && Math.abs(d0.cx - d0.vw / 2) <= 2 && d0.bottom < 40,
+    JSON.stringify(d0));
+
+  await pickDock('左侧居中');
+  const d1 = await dockState();
+  check('切到左侧居中：贴左边、垂直居中',
+    d1.side === 'left' && d1.left <= 20 && Math.abs(d1.cy - d1.vh / 2) <= 2,
+    JSON.stringify(d1));
+
+  await pickDock('右侧居中');
+  const d2 = await dockState();
+  check('切到右侧居中：贴右边、垂直居中',
+    d2.side === 'right' && d2.right <= 20 && Math.abs(d2.cy - d2.vh / 2) <= 2,
+    JSON.stringify(d2));
+
+  await pickDock('顶部居中');
+  const d3 = await dockState();
+  check('切到顶部居中：贴顶、水平居中',
+    d3.side === 'top' && d3.top <= 70 && Math.abs(d3.cx - d3.vw / 2) <= 2,
+    JSON.stringify(d3));
+
+  await pickDock('底部居中');   // 复位，后面的用例按默认布局继续
+  const d4 = await dockState();
+  check('切回底部居中并记住选择（localStorage）',
+    d4.side === 'bottom' && Math.abs(d4.cx - d4.vw / 2) <= 2
+      && (await page.evaluate(`localStorage.getItem('comfy-canvas-dock-side')`)) === 'bottom',
+    JSON.stringify(d4));
+
   // ---- 对齐 / 分布：悬浮条（选中 2 个以上才浮出，图标按钮） ----
   const alignBarState = () => page.evaluate(`(() => {
     const bar = document.querySelector('#alignBar');

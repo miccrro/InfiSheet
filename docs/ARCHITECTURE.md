@@ -206,6 +206,14 @@
   名字就白改了（e2e 里就是这么挂的）。
 - 代价：组内空白不能再框选（pointerdown 被组框接管）。组内要框选得先解组，这个取舍写在验收报告里。
 
+### 工具条的停靠位置（`state.dockSide`）
+
+`#dockWrap`（工具条 + 圆球）的 `data-dock` 由 `applyDockSide()` 按 `state.dockSide` 设置，
+CSS 四条 `[data-dock="…"]` 规则分别定位（底部/左侧/右侧/顶部，左右都是垂直居中）。
+
+- 左右不做「左下/右下」：左下角是 `#viewTools`、右下角是 `#minimap`，放角上必撞。
+- 和 `panelSide` 一样，偏好是**字符串**，直接读写 `localStorage`（`setGlobalFlag` 只认布尔）。
+
 ### 生成器面板的位置（`state.panelSide`）
 
 面板贴节点哪一侧由 `state.panelSide`（bottom / top / left / right）决定，
