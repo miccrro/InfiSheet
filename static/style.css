@@ -327,6 +327,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .group-head button { padding: 2px 7px; font-size: 10.5px; }
+/* 改名时的输入态：加一圈主色描边，光标变文本 */
+.group-head .gname.editing {
+  cursor: text; min-width: 48px; outline: none;
+  background: #141414; border-color: var(--gc-chip, var(--accent));
+  box-shadow: 0 0 0 1px var(--gc-chip, var(--accent));
+  user-select: text;
+}
 /* 色块：组头最左边那个小圆点，点开换色 */
 .group-head .gcolor {
   width: 12px; height: 12px; padding: 0; border-radius: 50%;

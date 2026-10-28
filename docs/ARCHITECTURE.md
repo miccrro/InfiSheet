@@ -199,6 +199,11 @@
 - **整框可拖**：`#groups` 排在 `#nodes` 前面（DOM 顺序即层级），所以点节点还是操作节点，
   点组框里的空白才落到 `.group` 上——正好是「按住组内任意空处拖整组」。
   以前只有顶部那条 `.group-head` 能拖，而它还挂在框外（`translateY(-100%)`），热区很窄。
+- **改名**：双击 `.gname` 进编辑。不换成 `<input>`——换元素的话 `renderGroups()` 找不到
+  `.gname` 会重建整个组头，编辑态就丢了。改成给 span 挂 `contenteditable`，编辑时先把文案
+  缩成纯名字（不带「· N 节点」），收尾时关掉 contenteditable 再 `renderGroups()` 恢复完整文案。
+  **Enter 直接调 `finish(true)`，不要靠 `span.blur()`**：元素没拿到焦点时 `blur()` 不触发 blur 事件，
+  名字就白改了（e2e 里就是这么挂的）。
 - 代价：组内空白不能再框选（pointerdown 被组框接管）。组内要框选得先解组，这个取舍写在验收报告里。
 
 ### 对齐 / 分布（`applyAlign`）

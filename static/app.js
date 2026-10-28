@@ -2742,6 +2742,40 @@
     return GROUP_COLORS.find((c) => c.id === (g && g.color)) || GROUP_COLORS[0];
   }
 
+  // 组名就地编辑：不换元素（换成 input 的话 renderGroups 找不到 .gname 会重建整个头），
+  // 直接给 span 挂 contenteditable，结束时把 contentEditable 关掉、让 renderGroups 重写文案。
+  function startRenameGroup(span, g) {
+    if (span.dataset.editing) return;
+    span.dataset.editing = '1';
+    span.textContent = g.name;              // 编辑时只显示名字，不带「· N 节点」
+    span.contentEditable = 'true';
+    span.classList.add('editing');
+    span.focus();
+    const range = document.createRange();
+    range.selectNodeContents(span);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const finish = (save) => {
+      if (!span.dataset.editing) return;
+      delete span.dataset.editing;
+      span.contentEditable = 'false';
+      span.classList.remove('editing');
+      const v = (span.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+      if (save && v) g.name = v;
+      renderGroups();                        // 恢复成「名字 · N 节点」
+      if (save && v) { queueSave(); commit(); }
+    };
+    span.onblur = () => finish(true);
+    span.onkeydown = (ev) => {
+      ev.stopPropagation();                  // 别让画布快捷键（Delete 删节点等）截走
+      // 直接收尾，别指望 blur()：元素没拿到焦点时 blur 不触发，名字就白改了
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    };
+  }
+
   function groupBoxFor(gid) {
     const host = groupsEl();
     let box = host.querySelector(`.group[data-gid="${CSS.escape(gid)}"]`);
@@ -2757,7 +2791,7 @@
     chip.title = '换个颜色';
     const name = document.createElement('span');
     name.className = 'gname';
-    name.title = '点击选中整组，拖动可整体移动';
+    name.title = '点击选中整组，拖动可整体移动，双击改名';
     const run = document.createElement('button');
     run.textContent = '执行';
     const un = document.createElement('button');
@@ -2775,6 +2809,12 @@
       selectOnly(null);
       g.nodeIds.forEach((id) => state.selected.add(id));
       paintSelection();
+    };
+    // 双击组名改名字：编辑时就地变成可输入，回车/失焦保存，Esc 放弃
+    name.ondblclick = (ev) => {
+      ev.stopPropagation();
+      const g = current();
+      if (g) startRenameGroup(name, g);
     };
     run.onclick = (ev) => {
       ev.stopPropagation();
