@@ -191,7 +191,13 @@
 
 ### 对齐 / 分布（`applyAlign`）
 
-选中 ≥2 个节点时底部 dock 出现「对齐」按钮（`paintSelection` 里按 `state.selected.size` 切换显隐）。
+选中 ≥2 个节点时底部 dock 上方浮出一条**图标工具条**（`#alignBar`，`paintSelection` 里按
+`state.selected.size` 切显隐）。按钮只建一次（`ensureAlignBar` 惰性构建），之后只切 `hidden`——
+每次选中都重建会把 hover 和焦点一起弄丢。
+
+图标来自 IconPark：`tools/icons/gen.cjs` 的 MAP 里加 8 个映射（`alignLeft` / `alignHCenter` /
+`alignRight` / `alignTop` / `alignVCenter` / `alignBottom` / `distH` / `distV`），跑 `npm run icons`
+重新生成 `static/icons.js`（该文件不要手改）。
 
 - 基准是**整体包围盒**，不是"第一个选中的节点"——后者在框选时顺序不确定，用户也看不出规律。
 - 宽度用 `nodeWidth()`（卡片宽度是确定的），**高度必须量 DOM**：`n.h` 只有手动拉过才有值，

@@ -2926,9 +2926,13 @@
   /* ---------------- 选中 / 拖拽 ---------------- */
   function paintSelection() {
     nodesEl.querySelectorAll('.node').forEach((el) => el.classList.toggle('selected', state.selected.has(el.dataset.id)));
-    // 「对齐」按钮只在真的能对齐时出现（选中 2 个以上），否则 dock 上多一个永远灰着的图标
-    const btn = document.querySelector('#bar [data-act="align"]');
-    if (btn) btn.classList.toggle('hidden', state.selected.size < 2);
+    // 对齐悬浮条只在真的能对齐时出现（选中 2 个以上）
+    const bar = $('#alignBar');
+    if (bar) {
+      const multi = state.selected.size >= 2;
+      if (multi) ensureAlignBar();
+      bar.classList.toggle('hidden', !multi);
+    }
   }
 
   function selectOnly(id) {
@@ -2944,15 +2948,16 @@
   /* ---------------- 对齐 / 分布 ---------------- */
   // 选中 2 个以上时，底部多出「对齐」按钮：6 种对齐 + 2 种等距分布。
   // 高度不能只信 n.h（只有手动拉过才有值），直接量 DOM 再除回缩放系数。
+  // [模式, 名称, 说明, 图标]
   const ALIGN_ITEMS = [
-    ['left', '左对齐', '左边缘对齐到最左'],
-    ['hcenter', '水平居中', '按整体中线水平居中'],
-    ['right', '右对齐', '右边缘对齐到最右'],
-    ['top', '顶对齐', '上边缘对齐到最上'],
-    ['vcenter', '垂直居中', '按整体中线垂直居中'],
-    ['bottom', '底对齐', '下边缘对齐到最下'],
-    ['hdist', '水平等距', '两端不动，中间按相同间距排开'],
-    ['vdist', '垂直等距', '两端不动，中间按相同间距排开'],
+    ['left', '左对齐', '左边缘对齐到最左', 'alignLeft'],
+    ['hcenter', '水平居中', '按整体中线水平居中', 'alignHCenter'],
+    ['right', '右对齐', '右边缘对齐到最右', 'alignRight'],
+    ['top', '顶对齐', '上边缘对齐到最上', 'alignTop'],
+    ['vcenter', '垂直居中', '按整体中线垂直居中', 'alignVCenter'],
+    ['bottom', '底对齐', '下边缘对齐到最下', 'alignBottom'],
+    ['hdist', '水平等距', '两端不动，中间按相同间距排开', 'distH'],
+    ['vdist', '垂直等距', '两端不动，中间按相同间距排开', 'distV'],
   ];
 
   function alignTargets() {
@@ -3008,35 +3013,32 @@
     return true;
   }
 
-  function openAlignMenu(anchor) {
-    closePopMenu();
-    // 目标在这里就抓下来：点菜单项的那一下 pointerdown 会先冒泡到画布，选择被清掉之后再算
-    // 就一个节点都不剩了（菜单能开、点了没反应）。
-    const list = alignTargets();
-    if (list.length < 2) { flash('先选中 2 个以上节点再对齐'); return; }
-    const menu = document.createElement('div');
-    menu.className = 'popmenu align-menu';
-    menu.onpointerdown = (ev) => ev.stopPropagation();   // 点菜单别把选中状态清掉
-    const head = document.createElement('div');
-    head.className = 'popmenu-title';
-    head.textContent = `对齐 ${list.length} 个节点`;
-    menu.appendChild(head);
-    const grid = document.createElement('div');
-    grid.className = 'align-grid';
-    ALIGN_ITEMS.forEach(([mode, label, tip]) => {
+  // 悬浮条：选中 2 个以上就直接浮出来，点一下立刻对齐（不用再点一次菜单）。
+  // 按钮只建一次，之后只切显隐——每次选中都重建会让 hover 状态和焦点一起丢。
+  let alignBarReady = false;
+  function ensureAlignBar() {
+    const bar = $('#alignBar');
+    if (!bar || alignBarReady) return bar;
+    ALIGN_ITEMS.forEach(([mode, label, tip, ico], i) => {
+      if (i === 6) {                       // 6 个对齐 / 2 个分布，中间隔一条竖线
+        const sep = document.createElement('span');
+        sep.className = 'ab-sep';
+        bar.appendChild(sep);
+      }
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'align-btn';
-      b.textContent = label;
-      b.title = tip;
-      b.onclick = (ev) => { ev.stopPropagation(); closePopMenu(); applyAlign(mode, list); };
-      grid.appendChild(b);
+      b.className = 'ab-btn';
+      b.dataset.mode = mode;
+      b.title = `${label} · ${tip}`;
+      b.setAttribute('aria-label', label);
+      b.innerHTML = icon(ico);
+      b.onclick = (ev) => { ev.stopPropagation(); applyAlign(mode, alignTargets()); };
+      bar.appendChild(b);
     });
-    menu.appendChild(grid);
-    document.body.appendChild(menu);
-    placePopMenu(menu, anchor);
-    popAnchor = anchor;
-    armPopClose(anchor);
+    // 点工具条不能把选中清掉：pointerdown 会冒泡到画布，选择一没按钮就跟着消失了
+    bar.onpointerdown = (ev) => ev.stopPropagation();
+    alignBarReady = true;
+    return bar;
   }
 
   /**
@@ -4509,7 +4511,6 @@
     if (act === 'add-workflow') { showCanvas(); openModal(); switchModalTab('paste'); return; }
     if (act === 'tutorial') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
     if (act === 'history') { showCanvas(); openModal(); switchModalTab('history'); return; }
-    if (act === 'align') { showCanvas(); openAlignMenu(btn); return; }
     if (act === 'pan-mode') { setTool(true); return; }
     if (act === 'select-mode') { setTool(false); return; }
     if (act === 'help') { flash('拖空白框选 · 空格/中键平移 · 滚轮缩放 · 双击空白建节点 · Ctrl+G 打组 · F 适配视图'); return; }
