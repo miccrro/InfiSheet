@@ -212,6 +212,9 @@
 CSS 四条 `[data-dock="…"]` 规则分别定位（底部/左侧/右侧/顶部，左右都是垂直居中）。
 
 - 左右不做「左下/右下」：左下角是 `#viewTools`、右下角是 `#minimap`，放角上必撞。
+- **左右停靠时 `#dockWrap` 和 `#bar` 都转成 `flex-direction: column`**：横排 301px 宽会横着
+  压掉半个画布，竖排只有 54px。圆球跟着排到工具条下面，`.vsep` 也要从竖线改成横线
+  （`width: 20px; height: 1px`），否则分隔线还竖在那儿很怪。
 - 和 `panelSide` 一样，偏好是**字符串**，直接读写 `localStorage`（`setGlobalFlag` 只认布尔）。
 
 ### 生成器面板的位置（`state.panelSide`）
