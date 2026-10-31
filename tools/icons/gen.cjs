@@ -77,6 +77,25 @@ for (const [key, spec] of Object.entries(MAP)) {
   out[key] = inner.replace(/\s+/g, ' ').trim();
 }
 
+// IconPark 没有对应组件、手写的路径（同样的 48×48 / stroke-width 4 / currentColor 口径）。
+// 放在这里是为了「重新生成图标时不被冲掉」——直接改 static/icons.js 会被下一次 gen 覆盖。
+const EXTRA = {
+  // 裁剪：经典的两笔「裁切框」——一根竖线到底再向右，一根横线到头再向下。
+  // 图标集里的 select 是四角锚点的选区框，用在「裁剪」上更像「框选」，容易被当成选框工具
+  crop: '<path d="M12 4v32h32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '<path d="M4 12h32v32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
+  // 旋转：一段带缺口的圆 + 左上角的箭头
+  rotate: '<path d="M24 8a16 16 0 1 1-11.3 4.7" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>'
+    + '<path d="M12 4v10h10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
+  // 画笔：斜握的笔杆 + 笔尖
+  brush: '<path d="M40 8 26 22" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>'
+    + '<path d="M25 23l-6 15 15-6z" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>',
+  // 橡皮：斜放的橡皮块 + 桌面线
+  eraser: '<rect x="11" y="19" width="28" height="15" rx="3" transform="rotate(-40 25 26.5)" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>'
+    + '<path d="M12 41h26" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>',
+};
+Object.assign(out, EXTRA);
+
 const js = `/* 图标：全部来自 IconPark（https://iconpark.oceanengine.com/official）
  * 由 tools/icons/gen.cjs 生成，别手改。
  * outline 主题、48×48 viewBox、stroke-width 4，颜色走 currentColor —— 产品运行时零依赖、离线可用。 */
@@ -102,5 +121,4 @@ const js = `/* 图标：全部来自 IconPark（https://iconpark.oceanengine.com
 `;
 
 const target = path.resolve(__dirname, '../../static/icons.js');
-fs.writeFileSync(target, js);
-console.log(`icons: ${Object.keys(out).length} 个 → ${path.relative(process.cwd(), target)} (${js.length} bytes)`);
+fs.writeFileSync(target, js);console.log(`icons: ${Object.keys(out).length} 个 → ${path.relative(process.cwd(), target)} (${js.length} bytes)`);

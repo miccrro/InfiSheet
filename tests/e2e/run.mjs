@@ -121,6 +121,30 @@ try {
     && applyStylePrompt('主体', { prompt: '' }) === '主体'
     && applyStylePrompt('主体', null) === '主体');
 
+  // 扩图的尺寸算法是纯函数：目标比例 → 新画布（宽高必须是 8 的倍数，ComfyUI 的 latent 要）。
+  // 浏览器里那张测试图只有 16×16，8 像素一格等于 50% 的台阶，比例根本量不准，
+  // 所以「比例准不准」在 Node 里用真实尺寸验，浏览器只验「画布真的变宽了」。
+  const { outpaintSize, outpaintBands } = new Function(
+    `${pickFn(appSrc, 'snap8')}\n${pickFn(appSrc, 'outpaintSize')}\n${pickFn(appSrc, 'outpaintBands')}\n`
+    + 'return { outpaintSize, outpaintBands };')();
+  const os16 = outpaintSize(1024, 768, 16 / 9, 20);
+  const osP = outpaintSize(1024, 768, 9 / 16, 20);
+  const osPad = outpaintSize(1024, 768, 0, 20);
+  check('扩图尺寸：真实尺寸下 16:9 / 9:16 / 原比例都算得准，且都是 8 的倍数',
+    os16[0] % 8 === 0 && os16[1] % 8 === 0 && Math.abs(os16[0] / os16[1] - 16 / 9) < 0.01
+      && osP[0] % 8 === 0 && osP[1] % 8 === 0 && Math.abs(osP[0] / osP[1] - 9 / 16) < 0.01
+      && osPad[0] % 8 === 0 && osPad[1] % 8 === 0
+      && osPad[0] > 1024 && osPad[1] > 768,
+    JSON.stringify({ os16, osP, osPad }));
+  // 四条边：中间那块必须正好等于原图，四条带子拼起来不重叠。
+  // 用「原比例 + 四周各扩 20%」这一路——宽高都长，四条边才都出现。
+  const ob = outpaintBands(1024, 768, osPad[0], osPad[1]);
+  const areaOf = (bs) => bs.reduce((s, b) => s + b[2] * b[3], 0);
+  check('扩图遮罩：四条边围住原图，带子面积 + 原图面积 = 新画布面积',
+    ob.bands.length === 4 && ob.ox >= 0 && ob.oy >= 0
+      && areaOf(ob.bands) + 1024 * 768 === osPad[0] * osPad[1],
+    JSON.stringify({ ox: ob.ox, oy: ob.oy, bands: ob.bands, area: areaOf(ob.bands) }));
+
   // 运行记录的「详情」是纯逻辑：从 /history 的 API 图里挖提示词和采样参数。
   // 这段在 Node 里直接验——CI 没有 ComfyUI，浏览器里造不出历史记录。
   const { historyMeta } = new Function(`${pickFn(appSrc, 'historyMeta')}\nreturn { historyMeta };`)();
@@ -2731,6 +2755,10 @@ try {
     return {
       hidden: bar.classList.contains('hidden'),
       tools: [...bar.querySelectorAll('.it-btn')].map((b) => b.textContent.trim()),
+      seps: bar.querySelectorAll('.it-sep').length,
+      // 分隔线插在哪儿是「分组」这件事本身，光数个数看不出错位
+      layout: [...bar.querySelectorAll('.it-btn, .it-sep')]
+        .map((el) => (el.classList.contains('it-sep') ? '|' : el.dataset.tool)).join('/'),
       centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2,
       above: r.bottom <= nb.top,
       gap: Math.round(nb.top - r.bottom),
@@ -2740,9 +2768,13 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条浮在节点上方（居中、不压标题）、工具齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/遮罩/高清'
+      && toolBar.tools.join('/') === '裁剪/旋转/调色/遮罩/擦除/去字/扩图/抠图/高清'
       && toolBar.centered && toolBar.above && toolBar.gap <= 12 && toolBar.inView,
     JSON.stringify(toolBar));
+  check('工具条按「本地变换 / 涂抹 / 整图编辑」分三段（两条分隔线，各三颗）',
+    toolBar.seps === 2
+      && toolBar.layout === 'crop/rotate/color/|/mask/erase/detext/|/outpaint/cutout/upscale',
+    toolBar.layout);
 
   // 工具条是屏幕坐标：缩放画布后它的大小不该跟着变
   // 用 50%（节点缩到视口装得下）来验：200% 时节点本身比视口还宽，工具条必然被
@@ -2956,6 +2988,221 @@ try {
     });
   })()`);
   await new Promise((r) => setTimeout(r, 400));
+
+  // ---- 旋转 / 调色 / 扩图 / 抠图 / 去字 ----
+  // 前三个是本地处理（不进模型）：旋转和调色直接重画像素，扩图只负责把画布撑大。
+  // 后两个要模型：抠图整张交给图像编辑，去字走遮罩 + 局部重绘。
+  const toolBase = await page.evaluate(`document.querySelectorAll('#nodes .node').length`);
+  // 工具条是「选中才有」的浮层：每个工具点之前先确保这张图被选中，
+  // 免得被上一个动作（拖拽 / 同步）留下的选择状态带偏
+  const selectImg = () => page.evaluate(`(() => {
+    const el = document.querySelector('.node[data-id="${pick.img}"]');
+    if (!el) return false;
+    const opt = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    el.dispatchEvent(new PointerEvent('pointerdown', opt));
+    el.dispatchEvent(new PointerEvent('pointerup', opt));
+    return true;
+  })()`);
+  const lastNode = () => page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const last = nodes[nodes.length - 1];
+    const im = last ? last.querySelector('.thumb img') : null;
+    return {
+      n: nodes.length,
+      title: last ? ((last.querySelector('.n-name') || {}).textContent || '') : '',
+      w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
+      src: im ? String(im.getAttribute('src')) : '',
+      wf: (document.querySelector('.node.selected .gensel.wfsel .gm-btn') || {}).textContent || '',
+      prompt: (document.querySelector('.node.selected .gen-prompt') || {}).textContent || '',
+    };
+  })()`);
+
+  const srcBefore = await page.evaluate(`(() => {
+    const im = document.querySelector('.node[data-id="${pick.img}"] .thumb img');
+    return { src: String(im.getAttribute('src')), w: im.naturalWidth, h: im.naturalHeight };
+  })()`);
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 250));
+  // 菜单是「点同一颗按钮再点一次就收起」的开关，中间插一拍等就可能被别的动作收掉：
+  // 开菜单、读菜单、点菜单项都在同一拍里做完
+  const rotMenu = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('#imgTools [data-tool="rotate"]');
+    const diag = { has: !!btn, disabled: btn ? btn.disabled : null,
+                   sel: document.querySelectorAll('#nodes .node.selected').length,
+                   barHidden: document.getElementById('imgTools').classList.contains('hidden'),
+                   err: '' };
+    try { btn.click(); } catch (e) { diag.err = String(e); }
+    await sleep(60);
+    const m = document.querySelector('.popmenu');
+    diag.items = m ? [...m.querySelectorAll('button')].map((b) => b.textContent.trim()) : [];
+    const pick = [...document.querySelectorAll('.popmenu button')]
+      .find((b) => b.textContent.trim() === '右转 90°');
+    diag.clicked = !!pick;
+    if (pick) pick.click();
+    return diag;
+  })()`);
+  check('点「旋转」→ 弹出 90° / 180° / 翻转五种',
+    rotMenu.items.join('/') === '右转 90°/左转 90°/旋转 180°/水平翻转/垂直翻转', JSON.stringify(rotMenu));
+  await new Promise((r) => setTimeout(r, 800));
+  const rotRes = await lastNode();
+  check('「右转 90°」→ 新建节点、图确实换了一张（原图不动）',
+    rotRes.n === toolBase + 1 && rotRes.title.startsWith('旋转')
+      && rotRes.src && rotRes.src !== srcBefore.src,
+    JSON.stringify({ rotRes, before: srcBefore.src.slice(0, 30) }));
+
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 250));
+  // 调色：预览和落地必须同一串 filter，否则「看着调好了、应用出来不一样」
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="color"]').click()`);
+  await new Promise((r) => setTimeout(r, 350));
+  const colorUi = await page.evaluate(`(() => {
+    const p = document.getElementById('imgPanel');
+    return {
+      open: !!p,
+      sliders: p ? p.querySelectorAll('.ip-body input[type="range"]').length : 0,
+      presets: p ? [...p.querySelectorAll('[data-preset]')].map((b) => b.textContent.trim()) : [],
+      toolsHidden: document.getElementById('imgTools').classList.contains('hidden'),
+    };
+  })()`);
+  check('点「调色」→ 弹层有亮度/对比度/饱和度/色温 + 预设，且工具条让位',
+    colorUi.open && colorUi.sliders === 4 && colorUi.presets.length >= 5 && colorUi.toolsHidden,
+    JSON.stringify(colorUi));
+  await page.evaluate(`[...document.querySelectorAll('#imgPanel [data-preset]')]
+    .find((b) => b.textContent.trim() === '黑白').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const colorPrev = await page.evaluate(
+    `document.querySelector('.node[data-id="${pick.img}"] .thumb img').style.filter`);
+  check('选预设「黑白」→ 画布上的图立刻变灰（实时预览）', /saturate\(0/.test(colorPrev), colorPrev);
+  await page.evaluate(`document.querySelector('#imgPanel .ip-apply').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const colorRes = await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const last = nodes[nodes.length - 1];
+    const im = last.querySelector('.thumb img');
+    let px = null;
+    if (im && im.naturalWidth) {
+      const cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      const c = cv.getContext('2d');
+      c.drawImage(im, 0, 0);
+      const d = c.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
+      px = [d[0], d[1], d[2]];
+    }
+    return { n: nodes.length, title: ((last.querySelector('.n-name') || {}).textContent || ''),
+             px, filter: document.querySelector('.node[data-id="${pick.img}"] .thumb img').style.filter };
+  })()`);
+  check('应用后新建「调色」节点，黑白真的烘进图里，原图预览滤镜撤掉',
+    colorRes.n === toolBase + 2 && colorRes.title.startsWith('调色') && colorRes.filter === ''
+      && !!colorRes.px && Math.abs(colorRes.px[0] - colorRes.px[1]) <= 3 && Math.abs(colorRes.px[1] - colorRes.px[2]) <= 3,
+    JSON.stringify(colorRes));
+
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 250));
+  // 扩图：撑大画布 + 四条边写成矩形遮罩；边必须透明（LoadImage 会把它算成 mask=255）
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="outpaint"]').click()`);
+  await new Promise((r) => setTimeout(r, 350));
+  const outUi = await page.evaluate(`(() => {
+    const p = document.getElementById('imgPanel');
+    return {
+      open: !!p,
+      ratios: p ? [...p.querySelectorAll('[data-ratio]')].map((b) => b.textContent.trim()) : [],
+      size: p ? ((p.querySelector('[data-size]') || {}).textContent || '') : '',
+    };
+  })()`);
+  check('点「扩图」→ 给出目标比例，并实时算出新尺寸',
+    outUi.open && outUi.ratios.includes('16:9') && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.size),
+    JSON.stringify(outUi));
+  await page.evaluate(`[...document.querySelectorAll('#imgPanel [data-ratio]')]
+    .find((b) => b.textContent.trim() === '16:9').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(`document.querySelector('#imgPanel .ip-apply').click()`);
+  await new Promise((r) => setTimeout(r, 1000));
+  const outRes = await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const last = nodes[nodes.length - 1];
+    const im = last.querySelector('.thumb img');
+    let corner = null;
+    if (im && im.naturalWidth) {
+      const cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      cv.getContext('2d').drawImage(im, 0, 0);
+      const d = cv.getContext('2d').getImageData(1, 1, 1, 1).data;
+      corner = [d[0], d[1], d[2], d[3]];
+    }
+    return {
+      n: nodes.length, title: ((last.querySelector('.n-name') || {}).textContent || ''),
+      w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
+      ov: !!last.querySelector('.thumb .mask-ov'), corner,
+      wf: (document.querySelector('.node.selected .gensel.wfsel .gm-btn') || {}).textContent || '',
+    };
+  })()`);
+  check('扩图 → 新节点按 16:9 撑大（8 的倍数）、四边透明、挂着遮罩预览，工作流是局部重绘',
+    outRes.n === toolBase + 3 && outRes.title.startsWith('扩图')
+      // 源图只有 16×16，8 像素一格就是极限：snap 到 8 的倍数之后 32×16（2:1）
+      // 已经是离 16:9 最近的可行解，所以这里只要求「比原来更宽 + 误差在一格之内」，
+      // 精确比例由大图保证（见下面 outpaintSize 的 Node 级用例）
+      && outRes.w % 8 === 0 && outRes.h % 8 === 0 && outRes.w > outRes.h
+      && Math.abs(outRes.w / outRes.h - 16 / 9) <= 0.25
+      && outRes.ov && outRes.corner && outRes.corner[3] === 0 && /局部重绘/.test(outRes.wf),
+    JSON.stringify(outRes));
+
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 250));
+  // 抠图：整张交给图像编辑，必须挑一个真吃图的工作流
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="cutout"]').click()`);
+  await new Promise((r) => setTimeout(r, 700));
+  const cutRes = await lastNode();
+  check('点「抠图」→ 新建节点，提示词是「去掉背景」，工作流吃图',
+    cutRes.n === toolBase + 4 && cutRes.title.startsWith('抠图')
+      && /背景/.test(cutRes.prompt) && cutRes.wf && !/局部重绘/.test(cutRes.wf),
+    JSON.stringify(cutRes));
+
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 250));
+  // 去字：同一个遮罩编辑器，涂完落到新节点上，遮罩跟着搬过去
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="detext"]').click()`);
+  await new Promise((r) => setTimeout(r, 800));
+  const detextOpen = await page.evaluate(`(() => {
+    const ed = document.querySelector('#maskEditor');
+    return { open: !!ed, title: ed ? (ed.querySelector('.me-title') || {}).textContent || '' : '',
+             hint: ed ? (ed.querySelector('.me-hint') || {}).textContent || '' : '' };
+  })()`);
+  check('点「去字」→ 打开同一个遮罩编辑器，标题和提示都写明「去字」',
+    detextOpen.open && /去字/.test(detextOpen.title) && /文字/.test(detextOpen.hint),
+    JSON.stringify(detextOpen));
+  const dRect = await page.evaluate(`(() => {
+    const r = document.querySelector('#maskEditor .me-cv').getBoundingClientRect();
+    return [r.left, r.top, r.width, r.height];
+  })()`);
+  await page.drag(
+    { x: dRect[0] + dRect[2] * 0.3, y: dRect[1] + dRect[3] * 0.4 },
+    { x: dRect[0] + dRect[2] * 0.7, y: dRect[1] + dRect[3] * 0.5 },
+    { steps: 8, settle: 150 });
+  await page.click('#maskEditor [data-act="apply"]', { settle: 900 });
+  const detextRes = await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const last = nodes[nodes.length - 1];
+    return {
+      n: nodes.length, title: ((last.querySelector('.n-name') || {}).textContent || ''),
+      pill: !!last.querySelector('.n-mask'),
+      ov: !!last.querySelector('.thumb .mask-ov'),
+      prompt: (document.querySelector('.node.selected .gen-prompt') || {}).textContent || '',
+      wf: (document.querySelector('.node.selected .gensel.wfsel .gm-btn') || {}).textContent || '',
+    };
+  })()`);
+  check('去字：涂完应用 → 新建节点，遮罩跟着搬过去，工作流切到局部重绘',
+    detextRes.n === toolBase + 5 && detextRes.title.startsWith('去字')
+      && /文字/.test(detextRes.prompt) && detextRes.pill && detextRes.ov
+      && /局部重绘/.test(detextRes.wf),
+    JSON.stringify(detextRes));
+
+  // 收尾：删掉这一批新节点，别挡住后面的遮罩用例
+  await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    nodes.slice(${toolBase}).forEach((el) => { const d = el.querySelector('.n-del'); if (d) d.click(); });
+  })()`);
+  await new Promise((r) => setTimeout(r, 600));
 
   // ---- 遮罩编辑器：涂 → 存 → 重开精确还原 ----
   // 重点不是视觉细节，是三条口径：

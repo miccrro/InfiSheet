@@ -2613,8 +2613,9 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 #imgTools.hidden { display: none; }
 #imgTools .it-btn {
+  position: relative;
   display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 9px; border: none; border-radius: 8px;
+  height: 26px; padding: 0 8px; border: none; border-radius: 8px;
   background: transparent; color: #cfcfcf;
   font-size: 11.5px; line-height: 1; white-space: nowrap; cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -2622,6 +2623,73 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 #imgTools .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 #imgTools .it-btn:active { background: rgba(255, 255, 255, 0.2); }
 #imgTools .it-btn .oi { width: 15px; height: 15px; }
+/* 九颗按钮全带文字会有 593px 宽，浮在画布上会盖住旁边节点的标题（点上去像「点了没反应」）。
+   所以文字收进悬停气泡：字还在 DOM 里（读屏和测试都拿得到），只是不占宽度。 */
+#imgTools .it-btn span { display: none; }
+#imgTools .it-btn::after {
+  content: attr(data-label);
+  position: absolute; left: 50%; top: 100%;
+  transform: translate(-50%, 5px);
+  padding: 3px 7px; border-radius: 6px; white-space: nowrap;
+  background: rgba(20, 20, 20, 0.96); border: 1px solid #3a3a3a; color: #e6e6e6;
+  font-size: 11px; opacity: 0; pointer-events: none; transition: opacity 0.12s;
+}
+#imgTools .it-btn:hover::after { opacity: 1; }
+/* 本地变换 / 涂抹类 / 整图编辑 三段之间的分隔线 */
+#imgTools .it-sep {
+  width: 1px; height: 16px; margin: 0 3px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* ---------- 图片处理弹层（调色 / 扩图） ---------- */
+#imgPanel {
+  position: fixed; inset: 0; z-index: 130;
+  display: grid; place-items: center;
+  background: rgba(8, 9, 12, 0.62);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+#imgPanel .ip-sheet { max-width: 92vw; }
+#imgPanel .ip-body { padding: 14px 16px 6px; display: grid; gap: 10px; overflow: auto; min-height: 0; }
+#imgPanel .ip-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--dim);
+}
+#imgPanel .ip-row > span { width: 56px; flex: 0 0 auto; }
+#imgPanel .ip-row input[type="range"] { flex: 1 1 auto; min-width: 120px; accent-color: var(--accent); }
+#imgPanel .ip-row b {
+  min-width: 38px; text-align: right; color: var(--text);
+  font-weight: 600; font-variant-numeric: tabular-nums;
+}
+#imgPanel .ip-row.is-off { opacity: 0.4; }
+#imgPanel .ip-row.is-off input { cursor: not-allowed; }
+#imgPanel .ip-ratios { display: flex; flex-wrap: wrap; gap: 4px; }
+#imgPanel .ip-ratios button,
+#imgPanel .ip-presets button {
+  height: 24px; padding: 0 9px; border-radius: 7px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line);
+  color: var(--dim); font: inherit; font-size: 11.5px; line-height: 1;
+}
+#imgPanel .ip-ratios button:hover,
+#imgPanel .ip-presets button:hover { color: var(--text); border-color: #4a4a4d; }
+#imgPanel .ip-ratios button.on,
+#imgPanel .ip-presets button.on {
+  background: rgba(122, 162, 255, 0.18); border-color: var(--accent); color: var(--accent);
+}
+#imgPanel .ip-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+#imgPanel .ip-tip { margin: 0; font-size: 11.5px; color: var(--faint); line-height: 1.6; }
+#imgPanel .ip-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px 14px;
+}
+#imgPanel .ip-foot button {
+  height: 30px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
+  color: var(--text); font: inherit; font-size: 12px;
+}
+#imgPanel .ip-foot .prime {
+  background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600;
+}
+
 
 /* ---------- 裁剪浮层 ---------- */
 #cropMask {

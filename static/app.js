@@ -7426,18 +7426,37 @@
   /* ---------------- 图片工具条：裁剪 / 高清 ---------------- */
   // 图片节点选中时，在节点标题上方浮出一排后续操作。位置按**屏幕坐标**算（和 #alignBar、
   // #linkDel 同一个路数）：放进 #world 会跟着画布缩放，200% 时工具条比图还大、25% 时点不着。
+  // 九颗按钮分三段：本地变换（不进模型）/ 涂抹类（靠遮罩驱动）/ 整图编辑（整张交给模型）。
+  // 分隔线就按这个分段画，用户一眼能看出「哪些是立刻出结果、哪些要跑工作流」。
   const IMG_TOOLS = [
-    ['crop', '裁剪', 'select', '拖一个框，裁出一张新的图片节点'],
-    ['mask', '遮罩', 'palette', '涂出要重绘的区域，只改涂过的地方'],
+    ['crop', '裁剪', 'crop', '拖一个框，裁出一张新的图片节点'],
+    ['rotate', '旋转', 'rotate', '旋转 90° / 180°，或水平 / 垂直翻转'],
+    ['color', '调色', 'palette', '亮度 / 对比度 / 饱和度 / 色温，实时预览'],
+    ['mask', '遮罩', 'brush', '涂出要重绘的区域，只改涂过的地方'],
+    ['erase', '擦除', 'eraser', '涂掉不想要的东西，让模型用周围内容补全'],
+    ['detext', '去字', 'text', '涂掉画面里的文字水印，用背景纹理补全'],
+    ['outpaint', '扩图', 'expand', '把画布向外扩大，让模型补全画外内容'],
+    ['cutout', '抠图', 'magic', '去掉背景，只保留主体'],
     ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
   ];
-  const EDIT_LABEL = { upscale: '高清' };
+  // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型。
+  // 三段各三颗，视觉上就是「不动模型 / 只动涂的地方 / 整张重做」三种代价。
+  const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint']);
+  const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
   // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
   // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
   const EDIT_TPL = {
     upscale: '以这张图为参考，输出分辨率更高、细节更精细的版本：补充皮肤、发丝、材质与织物的纹理，'
       + '构图、人物、光线与色调保持完全一致。',
+    cutout: '把背景去掉，只保留主体：主体轮廓完整、边缘干净不生硬，不要裁掉肢体和细节；'
+      + '输出纯白背景（#FFFFFF），主体位置和比例保持原样。',
+    erase: '把涂过的区域里的东西去掉，用周围的背景、材质和光线自然补全，不要留下痕迹。',
+    detext: '把涂过区域里的文字、水印和标识去掉，用背景纹理和光影自然补全，保持画面干净、不留痕迹。',
   };
+  // 每类工具该挑哪一类工作流。'mask' = 吃遮罩的那张（涂了才有效）。
+  const EDIT_WF = { upscale: 'upscale', cutout: 'img2img', erase: 'mask', detext: 'mask' };
+  // 抠图有专门的抠像工作流时优先用它（名字命中即可）；没有就退回普通图像编辑
+  const CUTOUT_HINTS = ['rembg', 'removebg', '抠图', '抠像', 'matting', 'birefnet', 'inspyrenet', 'segment'];
 
   let imgToolsEl = null;
 
@@ -7458,13 +7477,20 @@
     // 点工具条不能把节点选丢了，也不能顺手把画布拖走
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     IMG_TOOLS.forEach(([kind, label, ico, tip]) => {
+      if (IMG_TOOL_BREAKS.has(kind)) {
+        const sep = document.createElement('span');
+        sep.className = 'it-sep';
+        bar.appendChild(sep);
+      }
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'it-btn';
       b.dataset.tool = kind;
+      b.dataset.label = label;      // 悬停气泡用（文字本身在 span 里，只是不占宽度）
       b.title = tip;
+      b.setAttribute('aria-label', `${label}：${tip}`);
       b.innerHTML = `${icon(ico)}<span>${label}</span>`;
-      b.onclick = (ev) => { ev.stopPropagation(); runImgTool(kind); };
+      b.onclick = (ev) => { ev.stopPropagation(); runImgTool(kind, b); };
       bar.appendChild(b);
     });
     document.body.appendChild(bar);
@@ -7494,28 +7520,35 @@
   function updateImgTools() {
     const n = imgToolNode();
     const bar = ensureImgTools();
-    const show = !!n && !cropSession && !bigEditor;
+    const show = !!n && !cropSession && !bigEditor && !imgPanel;
     bar.classList.toggle('hidden', !show);
     if (show) {
-      // 只有「这台机器上压根没有吃遮罩的工作流」才禁用；工作流不对会在点的时候自动切
-      const maskBtn = bar.querySelector('[data-tool="mask"]');
-      if (maskBtn) {
-        const ok = maskCapable();
-        maskBtn.disabled = !ok;
-        maskBtn.title = ok
-          ? '涂出要重绘的区域，只改涂过的地方（会自动切到吃遮罩的工作流）'
-          : '没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」）';
-      }
+      // 只有「这台机器上压根没有吃遮罩的工作流」才禁用；工作流不对会在点的时候自动切。
+      // 遮罩 / 擦除 / 去字 三个都靠遮罩驱动，一起禁用——不然点进去涂完发现不生效。
+      const ok = maskCapable();
+      const why = ok
+        ? ''
+        : '没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」）';
+      bar.querySelectorAll('[data-tool="mask"],[data-tool="erase"],[data-tool="detext"]').forEach((btn) => {
+        btn.disabled = !ok;
+        btn.title = ok ? IMG_TOOLS.find((t) => t[0] === btn.dataset.tool)[3] : why;
+      });
       positionImgTools();
     }
   }
 
-  function runImgTool(kind) {
+  function runImgTool(kind, btn) {
     const n = imgToolNode();
-    if (!n) return;
+    // 工具条是「选中才有」的浮层，但它可能因为选择被别处清掉而残留一下。
+    // 这时候点上去什么都不发生，用户只会以为功能坏了——顺手把状态刷新回去。
+    if (!n) { updateImgTools(); flash('先选中一张有图的节点'); return; }
     if (kind === 'crop') { openCrop(n); return; }
+    if (kind === 'rotate') { openRotateMenu(n, btn); return; }
+    if (kind === 'color') { openColorPanel(n); return; }
+    if (kind === 'outpaint') { openOutpaintPanel(n); return; }
     if (kind === 'mask') { openMaskEditor(n); return; }
-    createEditNode(n, kind);
+    if (kind === 'erase' || kind === 'detext') { openMaskEditor(n, { intent: kind }); return; }
+    createEditNode(n, kind);      // upscale / cutout
   }
 
   // 图像编辑类工具的落地方式：**新建**一个节点，而不是改用户手上这张。
@@ -7525,10 +7558,16 @@
   // 挑工作流只看服务端扫出来的分类（server.py: graph_category），不看名字：
   // 按名字匹配时选中过 Moss_图像编辑 —— 那是个纯文生图流程，参考图根本没进图，
   // 高清出来的是一张全新的画。
-  function createEditNode(src, kind) {
+  function createEditNode(src, kind, maskDoc) {
     const prompt = EDIT_TPL[kind] || '';
-    // 高清要的是「放大」那一类；挑成普通图生图只会重画一张，细节并不会变多
-    const gen = { wf: pickWorkflow('upscale'), wfAuto: true, prompt };
+    // 挑工作流看用途：高清要「放大」那一类；抠图有专门抠像工作流就用它，没有就退回图像编辑；
+    // 擦除 / 去字必须吃遮罩，挑成普通图生图等于把涂的区域当空气。
+    const want = EDIT_WF[kind] || 'img2img';
+    const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
+    const wf = hint || (want === 'mask'
+      ? ((presetOptions().find((o) => o.alphaMask) || {}).id || '')
+      : pickWorkflow(want));
+    const gen = { wf, wfAuto: !hint, prompt };   // 名字命中的专用工作流钉住，别被自动纠正换掉
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
       uploaded: src.uploaded || null,
@@ -7538,6 +7577,10 @@
       gen,
     });
     selectOnly(n.id);
+    // 遮罩必须赶在**聚焦提示词之前**塞进去：rerenderNode 遇到「焦点在节点里的输入框」
+    // 会直接跳过重建（保护打字焦点），而下面刚把光标放进新节点的提示词框——
+    // 那时候再搬遮罩，DOM 不会刷新，节点上既没有药丸也没有预览，看着像没搬过去。
+    if (maskDoc) carryMask(src, n, maskDoc);
     const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
     if (ta) {
       ta.focus();
@@ -7550,6 +7593,303 @@
     }
     flash(`${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`);
     return n;
+  }
+
+  // 按名字找一个「专用」工作流（比如抠像）。找不到就返回空串，由调用方退回通用选择。
+  function pickWorkflowByHint(hints) {
+    const hit = presetOptions().find((o) => {
+      const s = `${o.id} ${o.label}`.toLowerCase();
+      return hints.some((h) => s.includes(h));
+    });
+    return hit ? hit.id : '';
+  }
+
+  // 遮罩跟着图走：把 src 上这块遮罩复制给新节点。
+  // 键必须按**新节点自己的图片身份**算——上传过的图键相同（本来就该共享同一块遮罩），
+  // 没上传过的图键是 node:<id>，不显式搬过去新节点就看不到笔画。
+  function carryMask(from, to, doc) {
+    // doc 由调用方直接给：它才是编辑器里那份**确定**的笔画。
+    // 从 from.masks 反查要依赖「键在两次调用之间没变」，而键会跟着上传 / 换图变，没必要赌。
+    const md = doc || maskDocOf(from);
+    const k = to && imgKeyOf(to);
+    if (!md || !k) return false;
+    to.masks = { ...(to.masks || {}) };
+    to.masks[k] = {
+      w: md.w, h: md.h, cover: md.cover,
+      strokes: md.strokes.map((s) => ({
+        ...s,
+        ...(s.pts ? { pts: s.pts.map((p) => p.slice()) } : {}),
+        ...(s.rect ? { rect: s.rect.slice() } : {}),
+      })),
+    };
+    queueSave();
+    rerenderNode(to.id);   // 药丸和遮罩预览要立刻出来，别等下一次重绘
+    return true;
+  }
+
+  /* ---------------- 本地图像变换 / 调色 / 扩图 ---------------- */
+  // 旋转和调色只是重画一遍像素，不需要工作流：**新建**一个节点，原图不动。
+  // 扩图虽然要模型补画外内容，但「把画布撑大」这一步也是本地的，只是顺手把补出来的四条边
+  // 写成矩形遮罩，交给局部重绘去填。
+  let imgPanel = null;      // 调色 / 扩图共用的弹层，同时只开一个
+
+  function canvasOf(w, h) {
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(w));
+    cv.height = Math.max(1, Math.round(h));
+    return cv;
+  }
+
+  function rotateCanvas(img, deg, flip) {
+    const swap = Math.abs(deg) % 180 === 90;
+    const w = swap ? img.naturalHeight : img.naturalWidth;
+    const h = swap ? img.naturalWidth : img.naturalHeight;
+    const cv = canvasOf(w, h);
+    const ctx = cv.getContext('2d');
+    // 绕中心转：先挪到中心、再转、再把图画到「中心为原点」的位置上
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate((deg * Math.PI) / 180);
+    if (flip === 'h') ctx.scale(-1, 1);
+    if (flip === 'v') ctx.scale(1, -1);
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    return cv;
+  }
+
+  function openRotateMenu(n, btn) {
+    if (!btn) return;
+    openPopMenu(btn, [
+      ['右转 90°', () => applyRotate(n, 90)],
+      ['左转 90°', () => applyRotate(n, -90)],
+      ['旋转 180°', () => applyRotate(n, 180)],
+      ['水平翻转', () => applyRotate(n, 0, 'h')],
+      ['垂直翻转', () => applyRotate(n, 0, 'v')],
+    ], '旋转');
+  }
+
+  async function applyRotate(src, deg, flip = '') {
+    let img;
+    try { img = await loadImageEl(src.dataURL); } catch { flash('图片加载失败，没法旋转'); return; }
+    const cv = rotateCanvas(img, deg, flip);
+    const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
+      dataURL: cv.toDataURL('image/png'),
+      title: `旋转 · ${src.title}`,
+    });
+    selectOnly(n.id);
+    flash(`已生成 ${cv.width} × ${cv.height} 的新节点（原图没动）`);
+  }
+
+  /* ---------------- 调色 ---------------- */
+  // 预览（CSS filter）和落地（ctx.filter）必须用**同一个** filter 串，
+  // 否则「看着调好了、应用出来不一样」是必然的。
+  const COLOR_PRESETS = [
+    ['原图', { bright: 0, contrast: 0, satur: 0, warm: 0 }],
+    ['明亮', { bright: 16, contrast: 6, satur: 6, warm: 0 }],
+    ['柔和', { bright: 6, contrast: -12, satur: -8, warm: 6 }],
+    ['冷调', { bright: 2, contrast: 4, satur: 2, warm: -32 }],
+    ['暖调', { bright: 4, contrast: 2, satur: 6, warm: 32 }],
+    ['黑白', { bright: 0, contrast: 8, satur: -100, warm: 0 }],
+    ['胶片', { bright: -4, contrast: 14, satur: -14, warm: 12 }],
+  ];
+
+  function colorFilter(v) {
+    const f = [
+      `brightness(${(1 + v.bright / 100).toFixed(3)})`,
+      `contrast(${(1 + v.contrast / 100).toFixed(3)})`,
+      `saturate(${(1 + v.satur / 100).toFixed(3)})`,
+    ];
+    // 色温没有原生滤镜：暖是「加一点 sepia 再压回去」，冷直接往蓝边转
+    const t = v.warm / 100;
+    if (t > 0) f.push(`sepia(${(t * 0.34).toFixed(3)})`, 'hue-rotate(-8deg)', `saturate(${(1 + t * 0.25).toFixed(3)})`);
+    else if (t < 0) f.push('hue-rotate(8deg)', `saturate(${(1 - t * 0.15).toFixed(3)})`);
+    return f.join(' ');
+  }
+
+  function closeImgPanel() {
+    if (!imgPanel) return;
+    const p = imgPanel;
+    imgPanel = null;
+    try { p.ac.abort(); } catch { /* 已经关过 */ }
+    if (p.onClose) p.onClose();
+    p.root.remove();
+    updateImgTools();
+  }
+
+  function openImgPanel(title, bodyHtml, opt = {}) {
+    closeImgPanel();
+    const root = document.createElement('div');
+    root.id = 'imgPanel';
+    root.innerHTML = `
+      <div class="sheet ip-sheet" style="width:${opt.width || 380}px">
+        <header><strong>${title}</strong><button type="button" class="x" title="关闭">×</button></header>
+        <div class="ip-body">${bodyHtml}</div>
+        <footer class="ip-foot">
+          <button type="button" class="ip-cancel">取消</button>
+          <button type="button" class="prime ip-apply">${opt.applyText || '应用'}</button>
+        </footer>
+      </div>`;
+    const ac = new AbortController();
+    const panel = { root, ac, onClose: opt.onClose || null };
+    imgPanel = panel;
+    // 点空白处 = 取消（和裁剪浮层一致）
+    root.addEventListener('pointerdown', (ev) => {
+      if (ev.target === root) { closeImgPanel(); return; }
+      ev.stopPropagation();
+    });
+    root.querySelector('.x').onclick = () => closeImgPanel();
+    root.querySelector('.ip-cancel').onclick = () => closeImgPanel();
+    root.querySelector('.ip-apply').onclick = () => opt.onApply && opt.onApply(root);
+    document.body.appendChild(root);
+    updateImgTools();
+    if (opt.onInput) opt.onInput(root, ac);
+    return panel;
+  }
+
+  function openColorPanel(n) {
+    const target = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
+    const v = { bright: 0, contrast: 0, satur: 0, warm: 0 };
+    const rows = [['bright', '亮度'], ['contrast', '对比度'], ['satur', '饱和度'], ['warm', '色温']];
+    const body = `
+      ${rows.map(([k, label]) => `<label class="ip-row"><span>${label}</span>
+        <input type="range" min="-100" max="100" step="1" value="0" data-k="${k}">
+        <b data-v="${k}">0</b></label>`).join('')}
+      <div class="ip-presets">
+        ${COLOR_PRESETS.map(([name], i) => `<button type="button" data-preset="${i}">${name}</button>`).join('')}
+      </div>
+      <p class="ip-tip">调的是这张图的副本，原图不动。</p>`;
+    openImgPanel('调色', body, {
+      onClose: () => { if (target) target.style.filter = ''; },
+      onInput(root) {
+        const paint = () => { if (target) target.style.filter = colorFilter(v); };
+        root.querySelectorAll('.ip-body input[type="range"]').forEach((el) => {
+          el.oninput = () => {
+            v[el.dataset.k] = Number(el.value);
+            root.querySelector(`[data-v="${el.dataset.k}"]`).textContent = el.value;
+            root.querySelectorAll('[data-preset]').forEach((x) => x.classList.remove('on'));
+            paint();
+          };
+        });
+        root.querySelectorAll('[data-preset]').forEach((b) => {
+          b.onclick = () => {
+            Object.assign(v, COLOR_PRESETS[Number(b.dataset.preset)][1]);
+            root.querySelectorAll('.ip-body input[type="range"]').forEach((el) => {
+              el.value = v[el.dataset.k];
+              root.querySelector(`[data-v="${el.dataset.k}"]`).textContent = v[el.dataset.k];
+            });
+            root.querySelectorAll('[data-preset]').forEach((x) => x.classList.toggle('on', x === b));
+            paint();
+          };
+        });
+        paint();
+      },
+      onApply: async () => {
+        let img;
+        try { img = await loadImageEl(n.dataURL); } catch { flash('图片加载失败，没法调色'); return; }
+        const cv = canvasOf(img.naturalWidth, img.naturalHeight);
+        const ctx = cv.getContext('2d');
+        ctx.filter = colorFilter(v);
+        ctx.drawImage(img, 0, 0);
+        closeImgPanel();
+        const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
+          dataURL: cv.toDataURL('image/png'),
+          title: `调色 · ${n.title}`,
+        });
+        selectOnly(nn.id);
+        flash(`调色完成（${cv.width} × ${cv.height}），原图没动`);
+      },
+    });
+  }
+
+  /* ---------------- 扩图 ---------------- */
+  // 扩图 = 把画布撑大 + 把新长出来的四条边标成遮罩，交给局部重绘去补。
+  // 关键点：新图的边是**透明**的，ComfyUI 的 LoadImage 会把它算成 mask=255（该重绘），
+  // 所以就算遮罩笔画丢了，模型也只会画边、不会动中间——两层保险。
+  const OUT_RATIOS = [['原比例', 0], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
+  // 写成 function 而不是箭头常量：e2e 里按函数名把实现抠出来跑（见 tests/e2e/run.mjs）
+  function snap8(x) {
+    return Math.max(8, Math.round(x / 8) * 8);
+  }
+
+  function outpaintSize(w, h, ratio, padPct) {
+    if (ratio) {
+      return w / h > ratio ? [snap8(w), snap8(w / ratio)] : [snap8(h * ratio), snap8(h)];
+    }
+    const p = padPct / 100;
+    return [snap8(w * (1 + 2 * p)), snap8(h * (1 + 2 * p))];
+  }
+
+  function outpaintBands(w, h, nw, nh) {
+    const ox = Math.round((nw - w) / 2);
+    const oy = Math.round((nh - h) / 2);
+    const bands = [];
+    if (ox > 0) bands.push([0, 0, ox, nh], [ox + w, 0, nw - ox - w, nh]);
+    if (oy > 0) bands.push([ox, 0, w, oy], [ox, oy + h, w, nh - oy - h]);
+    return { ox, oy, bands: bands.filter((b) => b[2] > 0 && b[3] > 0) };
+  }
+
+  function openOutpaintPanel(n) {
+    const body = `
+      <div class="ip-row"><span>目标比例</span>
+        <div class="ip-ratios">${OUT_RATIOS.map(([label], i) => `<button type="button" data-ratio="${i}"${i === 0 ? ' class="on"' : ''}>${label}</button>`).join('')}</div>
+      </div>
+      <label class="ip-row"><span>四周各扩</span>
+        <input type="range" min="0" max="100" step="5" value="20" data-pad>
+        <b data-padv>20%</b></label>
+      <p class="ip-tip" data-size>—</p>
+      <p class="ip-tip">扩出来的四条边会标成遮罩，点生成后由模型补画；中间的原图不会被重画。</p>`;
+    let ratio = 0;
+    let pad = 20;
+    openImgPanel('扩图', body, {
+      applyText: '生成扩图节点',
+      onInput(root) {
+        const sizeEl = root.querySelector('[data-size]');
+        const padEl = root.querySelector('[data-pad]');
+        const padNum = root.querySelector('[data-padv]');
+        const refresh = () => {
+          // 尺寸提示要用真实像素：从节点图里读，读不到就写「按原图比例」
+          const img = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
+          const W = img && img.naturalWidth, H = img && img.naturalHeight;
+          if (!W || !H) { sizeEl.textContent = '按原图比例扩'; return; }
+          const [nw, nh] = outpaintSize(W, H, ratio, pad);
+          sizeEl.textContent = `${W} × ${H}  →  ${nw} × ${nh}`;
+          // 选了比例时「四周各扩」不参与计算，明确灰掉，别让人以为拖了没反应
+          padEl.disabled = !!ratio;
+          padEl.parentElement.classList.toggle('is-off', !!ratio);
+        };
+        root.querySelectorAll('[data-ratio]').forEach((b) => {
+          b.onclick = () => {
+            ratio = OUT_RATIOS[Number(b.dataset.ratio)][1];
+            root.querySelectorAll('[data-ratio]').forEach((x) => x.classList.toggle('on', x === b));
+            refresh();
+          };
+        });
+        padEl.oninput = () => { pad = Number(padEl.value); padNum.textContent = `${pad}%`; refresh(); };
+        refresh();
+      },
+      onApply: async () => {
+        const wf = (presetOptions().find((o) => o.alphaMask) || {}).id;
+        if (!wf) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），扩图跑不了'); return; }
+        let img;
+        try { img = await loadImageEl(n.dataURL); } catch { flash('图片加载失败，没法扩图'); return; }
+        const [nw, nh] = outpaintSize(img.naturalWidth, img.naturalHeight, ratio, pad);
+        if (nw <= img.naturalWidth && nh <= img.naturalHeight) { flash('扩出来的尺寸和原图一样，换个比例或多扩一点'); return; }
+        const { ox, oy, bands } = outpaintBands(img.naturalWidth, img.naturalHeight, nw, nh);
+        const cv = canvasOf(nw, nh);
+        cv.getContext('2d').drawImage(img, ox, oy);
+        closeImgPanel();
+        const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
+          dataURL: cv.toDataURL('image/png'),
+          title: `扩图 ${nw} × ${nh}`,
+          gen: {
+            wf, wfAuto: true,
+            prompt: '把画面补全到新的画幅：扩出来的边缘按周围的构图、光线和材质自然延展，'
+              + '主体位置、风格与色调保持不变，接缝处不要出现明显边界或重复元素。',
+          },
+        });
+        putMaskDoc(nn, { w: nw, h: nh, strokes: bands.map((r) => ({ tool: 'rect', rect: r })) });
+        selectOnly(nn.id);
+        flash(`已扩到 ${nw} × ${nh}，点生成让模型补画外内容`);
+      },
+    });
   }
 
   /* ---------------- 遮罩编辑器 ---------------- */
@@ -7840,16 +8180,27 @@
 
   let maskSession = null;
 
-  function openMaskEditor(n) {
+  // 擦除 / 去字 = 「涂完直接生成一个新节点」，跟单纯涂遮罩的差别只在提示词和落地方式。
+  // 共用同一个编辑器：笔画数据、撤销、橡皮这些没必要写两遍。
+  const MASK_INTENT = {
+    erase: { label: '擦除', hint: '涂掉要去掉的东西 · 滚轮调笔刷 · [ ] 调粗细 · Ctrl+Z 撤销 · Esc 取消' },
+    detext: { label: '去字', hint: '涂掉文字 / 水印 · 滚轮调笔刷 · [ ] 调粗细 · Ctrl+Z 撤销 · Esc 取消' },
+  };
+
+  function openMaskEditor(n, opts = {}) {
     if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再涂'); return; }
-    // 进编辑器之前先把工作流对齐：涂了却因为工作流不吃遮罩而不生效，是最难查的一类问题
-    if (!ensureMaskWorkflow(n)) {
+    const intent = opts.intent && MASK_INTENT[opts.intent] ? opts.intent : '';
+    if (intent) {
+      // 擦除 / 去字落在一个**新节点**上，源节点的工作流不该被动
+      if (!maskCapable()) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），涂了也不会生效'); return; }
+    } else if (!ensureMaskWorkflow(n)) {
+      // 进编辑器之前先把工作流对齐：涂了却因为工作流不吃遮罩而不生效，是最难查的一类问题
       flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），涂了也不会生效');
       return;
     }
     if (maskSession) closeMaskEditor();
     loadImageEl(n.dataURL)
-      .then((img) => buildMaskEditor(n, img))
+      .then((img) => buildMaskEditor(n, img, { intent }))
       .catch(() => flash('图片加载失败，没法涂遮罩'));
   }
 
@@ -7860,12 +8211,17 @@
     maskSession = null;
   }
 
-  function buildMaskEditor(n, img) {
+  function buildMaskEditor(n, img, opts = {}) {
+    const intent = opts.intent || '';
+    const mode = intent ? MASK_INTENT[intent].label : '遮罩';
     const W = img.naturalWidth || 1024;
     const H = img.naturalHeight || 1024;
     const saved = maskDocOf(n);
-    // 尺寸对不上（换过图）就丢弃旧笔画：坐标空间变了，留着必然错位
-    const doc = saved && saved.w === W && saved.h === H
+    // 尺寸对不上（换过图）就丢弃旧笔画：坐标空间变了，留着必然错位。
+    // 擦除 / 去字是**一次性指令**：涂的是「这次要处理哪儿」，结果落在新节点上，
+    // 所以永远从空白开始，也不回写源节点——否则同一块遮罩会跟着源图留到下一次操作，
+    // 下次开编辑器就是一片已经涂满的区域。
+    const doc = !intent && saved && saved.w === W && saved.h === H
       ? { w: W, h: H, strokes: saved.strokes.map((s) => ({ ...s, pts: s.pts.map((p) => p.slice()) })) }
       : { w: W, h: H, strokes: [] };
 
@@ -7875,7 +8231,7 @@
     const alphaPct = Math.round(style.opacity * 100);
     root.innerHTML = `
       <div class="me-bar">
-        <span class="me-title">${esc(n.title)} · 遮罩</span>
+        <span class="me-title">${esc(n.title)} · ${mode}</span>
         <div class="me-tools">
           <button type="button" class="me-btn" data-tool="brush" aria-pressed="true">画笔</button>
           <button type="button" class="me-btn" data-tool="eraser" aria-pressed="false">橡皮</button>
@@ -7904,7 +8260,7 @@
         <div class="me-frame">
           <img class="me-img" alt="">
           <canvas class="me-cv"></canvas>
-          <span class="me-hint">涂出要重绘的区域 · 滚轮调笔刷 · [ ] 调粗细 · Ctrl+Z 撤销 · Esc 取消</span>
+          <span class="me-hint">${intent ? MASK_INTENT[intent].hint : '涂出要重绘的区域 · 滚轮调笔刷 · [ ] 调粗细 · Ctrl+Z 撤销 · Esc 取消'}</span>
         </div>
       </div>`;
 
@@ -8038,6 +8394,15 @@
     };
     root.querySelector('[data-act="cancel"]').onclick = () => closeMaskEditor();
     applyBtn.onclick = () => {
+      if (intent && !doc.strokes.length) { flash(`${mode}需要先涂出要处理的区域`); return; }
+      if (intent) {
+        // 新建一个节点：原图不动，涂过的区域跟着搬过去，提示词按 intent 预填。
+        // 不回写源节点的遮罩——这块区域属于「这一次操作」，不属于那张图。
+        closeMaskEditor();
+        createEditNode(n, intent, doc);
+        flash(`${mode}：区域已带过去，点生成即可（也可以先改提示词）`);
+        return;
+      }
       putMaskDoc(n, doc);
       closeMaskEditor();
       flash(doc.strokes.length ? `遮罩已保存（${maskCover(doc)}%）` : '已清掉遮罩');
