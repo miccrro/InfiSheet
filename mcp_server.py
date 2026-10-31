@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import threading
+import zlib
 import time
 import urllib.error
 import urllib.parse
@@ -1094,6 +1095,158 @@ def image_bytes(node: dict) -> bytes:
     raise ToolError(f"认不出这个图片地址：{u[:80]}")
 
 
+# --------------------------------------------------------------------------- #
+# 遮罩：把笔画烘进原图的 alpha 通道
+# --------------------------------------------------------------------------- #
+# 口径（2026-11-01 实测确认）：ComfyUI 的 LoadImage 输出是 mask = 1 - alpha，
+# 所以「涂过的地方 alpha=0（透明）」= 要重绘，和旧实现的「白底黑图」正好相反。
+# 烘进同一个文件的好处：图和遮罩天然配对，不存在两个文件靠插槽顺序猜的可能。
+# 这里必须和 static/app.js 的 bakeMaskCanvas 保持同一口径，否则浏览器和 AI 出图不一致。
+
+def _png_decode(data: bytes) -> tuple:
+    """解 PNG（8bit、非隔行、灰度/RGB/RGBA）。返回 (w, h, bpp, 像素)。"""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ToolError("这张图不是 PNG；局部重绘目前只支持 PNG 源图")
+    pos, idat, w, h, depth, ct, interlace = 8, [], 0, 0, 0, 0, 0
+    while pos + 8 <= len(data):
+        ln = int.from_bytes(data[pos:pos + 4], "big")
+        tag = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + ln]
+        if tag == b"IHDR":
+            w = int.from_bytes(body[0:4], "big")
+            h = int.from_bytes(body[4:8], "big")
+            depth, ct, interlace = body[8], body[9], body[12]
+        elif tag == b"IDAT":
+            idat.append(body)
+        pos += 12 + ln
+    if depth != 8 or interlace != 0 or ct not in (0, 2, 6):
+        raise ToolError(f"不支持这种 PNG（bit={depth} color={ct} interlace={interlace}）")
+    raw = zlib.decompress(b"".join(idat))
+    bpp = {0: 1, 2: 3, 6: 4}[ct]
+    stride = w * bpp
+    out, prev, i = bytearray(), bytearray(stride), 0
+    for _ in range(h):
+        f = raw[i]
+        i += 1
+        line = bytearray(raw[i:i + stride])
+        i += stride
+        if f == 1:
+            for x in range(bpp, stride):
+                line[x] = (line[x] + line[x - bpp]) & 255
+        elif f == 2:
+            for x in range(stride):
+                line[x] = (line[x] + prev[x]) & 255
+        elif f == 3:
+            for x in range(stride):
+                a = line[x - bpp] if x >= bpp else 0
+                line[x] = (line[x] + ((a + prev[x]) >> 1)) & 255
+        elif f == 4:
+            for x in range(stride):
+                a = line[x - bpp] if x >= bpp else 0
+                b = prev[x]
+                c = prev[x - bpp] if x >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[x] = (line[x] + pr) & 255
+        out += line
+        prev = line
+    return w, h, bpp, bytes(out)
+
+
+def _png_encode_rgba(w: int, h: int, rgba: bytes) -> bytes:
+    raw = b"".join(b"\x00" + rgba[y * w * 4:(y + 1) * w * 4] for y in range(h))
+
+    def chunk(tag, body):
+        c = tag + body
+        return len(body).to_bytes(4, "big") + c + (zlib.crc32(c) & 0xFFFFFFFF).to_bytes(4, "big")
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes((8, 6, 0, 0, 0)))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def mask_key_of(node: dict) -> str:
+    """图片身份的算法，必须与 app.js 的 imgKeyOf 一致（上传前后同一个键）。"""
+    gen = node.get("gen") or {}
+    gal = gen.get("gallery") or []
+    idx = int(gen.get("idx") or 0)
+    if gal and 0 <= idx < len(gal) and gal[idx].get("filename"):
+        it = gal[idx]
+        return f"{it.get('type') or 'output'}:{it.get('subfolder') or ''}/{it['filename']}"
+    if node.get("filename"):
+        return f"input:{node.get('subfolder') or ''}/{node['filename']}"
+    if node.get("uploaded"):
+        return f"input:{node['uploaded']}"
+    return f"node:{node.get('id')}"
+
+
+def mask_doc_for(node: dict) -> dict | None:
+    doc = (node.get("masks") or {}).get(mask_key_of(node))
+    return doc if doc and doc.get("strokes") else None
+
+
+def _stamp_line(buf: bytearray, w: int, h: int, x0, y0, x1, y1, rad: float) -> None:
+    """一条带圆头的线段写成 alpha=0。只扫包围盒，不整图跑。"""
+    minx = max(0, int(min(x0, x1) - rad - 1))
+    maxx = min(w - 1, int(max(x0, x1) + rad + 1))
+    miny = max(0, int(min(y0, y1) - rad - 1))
+    maxy = min(h - 1, int(max(y0, y1) + rad + 1))
+    dx, dy = x1 - x0, y1 - y0
+    ln2 = dx * dx + dy * dy
+    r2 = rad * rad
+    for y in range(miny, maxy + 1):
+        row = y * w
+        for x in range(minx, maxx + 1):
+            if ln2 <= 0:
+                d2 = (x - x0) ** 2 + (y - y0) ** 2
+            else:
+                t = ((x - x0) * dx + (y - y0) * dy) / ln2
+                t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+                d2 = (x - (x0 + t * dx)) ** 2 + (y - (y0 + t * dy)) ** 2
+            if d2 <= r2:
+                buf[(row + x) * 4 + 3] = 0
+
+
+def bake_alpha_png(node: dict, doc: dict) -> bytes:
+    """原图 + 遮罩 → 一张 RGBA PNG（涂过处 alpha=0）。"""
+    w, h, bpp, px = _png_decode(image_bytes(node))
+    out = bytearray(w * h * 4)
+    for i in range(w * h):
+        o = i * 4
+        if bpp >= 3:
+            out[o] = px[i * bpp]
+            out[o + 1] = px[i * bpp + 1]
+            out[o + 2] = px[i * bpp + 2]
+        else:
+            out[o] = out[o + 1] = out[o + 2] = px[i * bpp]
+        out[o + 3] = 255
+    sx = w / max(1, int(doc.get("w") or w))
+    sy = h / max(1, int(doc.get("h") or h))
+    for s in doc.get("strokes") or []:
+        if s.get("tool") == "rect":
+            r = s.get("rect") or []
+            if len(r) == 4 and r[2] > 0 and r[3] > 0:
+                x0 = max(0, int(r[0] * sx))
+                x1 = min(w, int((r[0] + r[2]) * sx))
+                y0 = max(0, int(r[1] * sy))
+                y1 = min(h, int((r[1] + r[3]) * sy))
+                for y in range(y0, y1):
+                    row = y * w
+                    for x in range(x0, x1):
+                        out[(row + x) * 4 + 3] = 0
+            continue
+        pts = s.get("pts") or []
+        if not pts:
+            continue
+        rad = max(1.0, float(s.get("size") or 32) * sx / 2)
+        if len(pts) == 1:
+            _stamp_line(out, w, h, pts[0][0] * sx, pts[0][1] * sy, pts[0][0] * sx, pts[0][1] * sy, rad)
+        for a, b in zip(pts, pts[1:]):
+            _stamp_line(out, w, h, a[0] * sx, a[1] * sy, b[0] * sx, b[1] * sy, rad)
+    return _png_encode_rgba(w, h, bytes(out))
+
+
 def ensure_uploaded(node: dict) -> str:
     if node.get("uploaded"):
         return node["uploaded"]
@@ -1620,6 +1773,64 @@ def _t_disconnect_nodes(args):
     return {"text": f"已断开 {removed} 条连线", "data": {"project": pid, "removed": removed}}
 
 
+@tool("set_mask",
+      "给图片节点设遮罩：生成时只重绘圈出来的矩形区域，其余像素保持原样。"
+      "坐标按原图像素；regions 传空数组表示清掉遮罩。跑之前最好确认工作流吃遮罩"
+      "（list_workflows 里的 takes_alpha_mask）。",
+      {"node": _node_field(),
+       "regions": {"type": "array",
+                   "description": "矩形列表 [{x,y,w,h}]，单位是原图像素；传 [] 清空遮罩",
+                   "items": {"type": "object"}},
+       "project": {"type": "string", "description": "项目 id，默认当前项目"}},
+      ["node"])
+def _t_set_mask(args):
+    pid, canvas = resolve_project(args)
+    node = find_node(canvas, str(args["node"]))
+    if not node:
+        raise ToolError(f"没有节点 {args['node']}")
+    if node.get("type") != "image":
+        raise ToolError(f"{args['node']} 是 {node.get('type')} 节点，遮罩只能挂在图片节点上")
+    regions = args.get("regions") or []
+    strokes = []
+    for r in regions:
+        if not isinstance(r, dict):
+            continue
+        try:
+            x, y = float(r.get("x") or 0), float(r.get("y") or 0)
+            rw, rh = float(r.get("w") or 0), float(r.get("h") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rw <= 0 or rh <= 0:
+            continue
+        strokes.append({"tool": "rect", "rect": [x, y, rw, rh]})
+    if regions and not strokes:
+        raise ToolError("regions 里没有有效矩形：每项要有 x/y/w/h，且 w、h > 0")
+    # 尺寸必须来自真实图片：矩形按原图像素算，烘 alpha 时靠它对齐
+    iw, ih, _bpp, _px = _png_decode(image_bytes(node))
+
+    def apply(c):
+        n = find_node(c, str(args["node"]))
+        if not n:
+            raise ToolError(f"没有节点 {args['node']}")
+        key = mask_key_of(n)
+        if not strokes:
+            (n.get("masks") or {}).pop(key, None)
+            return {"cleared": True}
+        area = sum(min(s["rect"][2], iw) * min(s["rect"][3], ih) for s in strokes)
+        n.setdefault("masks", {})[key] = {
+            "w": iw, "h": ih, "strokes": strokes,
+            "cover": max(1, min(100, round(area * 100 / max(1, iw * ih)))),
+        }
+        return {"cleared": False}
+
+    res, _ = mutate(pid, apply)
+    if res.get("cleared"):
+        return {"text": f"已清掉 {args['node']} 的遮罩", "data": {"project": pid}}
+    return {"text": f"已给 {args['node']} 设遮罩（{iw}×{ih}，{len(strokes)} 块）。"
+                    f"确认工作流吃遮罩后再 run_node",
+            "data": {"project": pid, "node": args["node"], "w": iw, "h": ih}}
+
+
 @tool("run_node",
       "跑一个图片节点：构建提交图 → 提交 ComfyUI → （默认）等到出图 → 把结果写回节点。"
       "run_node 之后节点上就有图了，浏览器打开也能看到。",
@@ -1652,6 +1863,17 @@ def _t_run_node(args):
     images = []
     for r in use:
         images.append(ensure_uploaded(r["node"]))
+    # 遮罩：和浏览器同一口径——烘进 alpha 上传，并排第一（第一个 image 插槽拿到它）。
+    # 不这么做的话，浏览器里涂了遮罩出的图和 AI 跑出来的图会不一样，而这种差异极难查。
+    mdoc = mask_doc_for(node)
+    if mdoc:
+        up = upload_bytes(bake_alpha_png(node, mdoc),
+                          _safe_filename(f"{node.get('id') or 'img'}-mask.png"))
+        mname = up.get("name")
+        if not mname:
+            raise ToolError("遮罩上传失败：ComfyUI 没返回文件名")
+        images.insert(0, mname)
+        labels.insert(0, "原图(带遮罩)")
     prompt = ref_marks(gen.get("prompt") or "", labels)
     style = resolve_style(gen.get("style")) if gen.get("style") else None
     if style:

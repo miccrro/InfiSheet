@@ -169,9 +169,13 @@ MCP 沿用同一套判断。
 `seed_mode` 默认 `random`，同一段提示词不会出同一张图。想复现就 `seed_mode="fixed"` + `seed=…`，
 数从 `list_runs` 里拿。
 
-**5. 遮罩/局部重绘已经不在了。**
-2026-10-31 把遮罩功能整套删掉（涂抹编辑器、局部重绘/消除/扩图、`krea2-inpaint` 预设），
-所以 `run_node` 不会遇到 `LoadImageMask`；自己导入带它的工作流，那个输入也不会被当成插槽暴露。
+**5. 遮罩是「烘进 alpha」，不是独立文件。**
+2026-11-01 重构后：遮罩按图片身份存在 `node.masks`（矢量笔画），生成时烘进原图的 alpha 通道
+（涂过处 alpha=0），走 `LoadImage` 的第二个输出（MASK）。所以不需要 `LoadImageMask`，
+图和遮罩天然是同一个文件。`run_node` 会自动做这一步——浏览器里涂的遮罩，AI 跑出来是同一张图。
+
+AI 涂不了笔，用 `set_mask` 圈矩形（坐标按原图像素，传 `regions: []` 清空）。
+跑之前用 `list_workflows` 看 `takes_alpha_mask`，为 false 的工作流涂了也不会生效。
 
 **6. `run_node` 只跑图片节点。**
 工作流节点请用 `add_workflow_node` 摆上去，在浏览器里调插槽后运行。

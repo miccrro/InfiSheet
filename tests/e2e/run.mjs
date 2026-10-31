@@ -2698,7 +2698,7 @@ try {
       return b.textContent.trim() === '风格' && !b.classList.contains('on');
     })()`));
 
-  // ---- 图片工具条：扩图 / 裁剪 / 局部重绘 / 消除 / 高清 ----
+  // ---- 图片工具条：裁剪 / 遮罩 / 高清 ----
   // 放在节点标题上方，按屏幕坐标定位（不吃画布缩放），只对「单选 + 有图」的图片节点出现。
   const pick = await page.evaluate(`(() => {
     // 只挑「已经真正解码出来」的图：裁剪要用 naturalWidth 把显示像素换算回原图像素，
@@ -2740,7 +2740,7 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条浮在节点上方（居中、不压标题）、工具齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/高清'
+      && toolBar.tools.join('/') === '裁剪/遮罩/高清'
       && toolBar.centered && toolBar.above && toolBar.gap <= 12 && toolBar.inView,
     JSON.stringify(toolBar));
 
@@ -2956,6 +2956,104 @@ try {
     });
   })()`);
   await new Promise((r) => setTimeout(r, 400));
+
+  // ---- 遮罩编辑器：涂 → 存 → 重开精确还原 ----
+  // 重点不是视觉细节，是三条口径：
+  //   1) canvas 内部尺寸 = 原图像素（不是显示尺寸，否则笔尖细一半、导出的遮罩整体错位）
+  //   2) 遮罩按「图片身份」索引，不挂在 gen 上（挂节点上时切一张图就错位）
+  //   3) 存档只存笔画，重开靠重放还原（旧实现从导出的 PNG 反推蓝色，羽化后必然走样）
+  await page.evaluate(`(() => {
+    const el = document.querySelector('.node[data-id="${pick.img}"]');
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 350));
+  await page.click('#imgTools .it-btn[data-tool="mask"]', { settle: 450 });
+  const maskOpen = await page.waitFor(`(() => {
+    const cv = document.querySelector('#maskEditor .me-cv');
+    const img = document.querySelector('#maskEditor .me-img');
+    if (!cv || !img) return null;
+    const r = cv.getBoundingClientRect();
+    return { cv: [cv.width, cv.height], img: [img.naturalWidth, img.naturalHeight],
+             rect: [r.left, r.top, r.width, r.height],
+             tools: [...document.querySelectorAll('#maskEditor [data-tool]')].map((b) => b.textContent.trim()),
+             cover: document.querySelector('#maskEditor .me-cover').textContent };
+  })()`, 8000);
+  check('点「遮罩」→ 全屏编辑器打开，canvas 内部尺寸 = 原图像素',
+    !!maskOpen && maskOpen.cv[0] === maskOpen.img[0] && maskOpen.cv[1] === maskOpen.img[1],
+    maskOpen ? `cv=${maskOpen.cv} img=${maskOpen.img}` : 'none');
+  check('编辑器有画笔 / 橡皮，覆盖率从 0 开始',
+    !!maskOpen && maskOpen.tools.join('/') === '画笔/橡皮' && /遮罩 0%/.test(maskOpen.cover),
+    maskOpen ? `${maskOpen.tools.join('/')} ${maskOpen.cover}` : 'none');
+
+  const [ml, mt, mw, mh] = maskOpen.rect;
+  const strokeMask = () => page.drag(
+    { x: ml + mw * 0.2, y: mt + mh * 0.5 },
+    { x: ml + mw * 0.8, y: mt + mh * 0.5 },
+    { steps: 8, settle: 150 });
+  const maskPixels = () => page.evaluate(`(() => {
+    const cv = document.querySelector('#maskEditor .me-cv');
+    if (!cv) return null;
+    const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+    let px = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8) px++;
+    return { px, cover: document.querySelector('#maskEditor .me-cover').textContent };
+  })()`);
+
+  await strokeMask();
+  const maskDrawn = await maskPixels();
+  check('在遮罩层上拖一笔，真的画上去了', maskDrawn && maskDrawn.px > 0, JSON.stringify(maskDrawn));
+
+  await page.click('#maskEditor [data-act="undo"]', { settle: 200 });
+  const maskUndone = await maskPixels();
+  check('撤销清掉最后一笔', maskUndone && maskUndone.px === 0, JSON.stringify(maskUndone));
+
+  await strokeMask();
+  await page.click('#maskEditor [data-act="apply"]', { settle: 450 });
+  const maskPill = await page.evaluate(`document.querySelector('.node[data-id="${pick.img}"] .n-mask')?.textContent || ''`);
+  check('应用后节点标题出现「遮罩 N%」药丸', /遮罩 \d+%/.test(maskPill), maskPill);
+
+  await page.click(`.node[data-id="${pick.img}"] .n-mask`, { settle: 550 });
+  const maskBack = await page.waitFor(`(() => {
+    const cv = document.querySelector('#maskEditor .me-cv');
+    if (!cv) return null;
+    const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+    let px = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8) px++;
+    return { px, cover: document.querySelector('#maskEditor .me-cover').textContent };
+  })()`, 8000);
+  check('点药丸重开：笔画原样还原', !!maskBack && maskBack.px > 0, JSON.stringify(maskBack));
+
+  await page.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 300));
+  check('Esc 关闭编辑器', (await page.evaluate(`!document.querySelector('#maskEditor')`)) === true);
+
+  await new Promise((r) => setTimeout(r, 1400));   // 存档有防抖
+  // 不按 projId 读：前面的用例可能切过画布，直接扫一遍数据目录找带遮罩的那个节点
+  let maskNode = null;
+  for (const f of fs.readdirSync(path.join(dataDir, 'projects')).filter((x) => x.endsWith('.json'))) {
+    const d = JSON.parse(fs.readFileSync(path.join(dataDir, 'projects', f), 'utf8'));
+    const hit = (d.nodes || []).find((n) => n.id === pick.img && n.masks && Object.keys(n.masks).length);
+    if (hit) { maskNode = hit; break; }
+  }
+  const maskKeys = maskNode ? Object.keys(maskNode.masks) : [];
+  const maskDoc = maskKeys.length ? maskNode.masks[maskKeys[0]] : null;
+  check('遮罩按图片身份存进 masks（不是节点级 gen.mask）',
+    maskKeys.length === 1 && !((maskNode || {}).gen || {}).mask, maskKeys.join(','));
+  check('存档只存笔画，不存位图',
+    !!maskDoc && Array.isArray(maskDoc.strokes) && !maskDoc.png && !maskDoc.url,
+    maskDoc ? Object.keys(maskDoc).join(',') : 'none');
+
+  // 清掉，别影响后面的用例
+  await page.evaluate(`(() => {
+    const n = document.querySelector('.node[data-id="${pick.img}"] .n-mask');
+    if (n) n.click();
+    return true;
+  })()`);
+  await page.waitFor(`!!document.querySelector('#maskEditor [data-act="clear"]')`, 5000);
+  await page.click('#maskEditor [data-act="clear"]', { settle: 150 });
+  await page.click('#maskEditor [data-act="apply"]', { settle: 400 });
 
   // ---- 进度百分比不许「有几率消失」 ----
   // 真实竞态：轮询某一拍拿不到数字（服务端 /api/job 的 progress 为 null —— 排队中、

@@ -2876,3 +2876,97 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 #appSettings .set-comfy input::placeholder { color: var(--faint); }
 #appSettings .set-tip.ok { color: var(--ok); }
 #appSettings .set-tip.bad { color: #f8a1a1; }
+
+/* ---------- 遮罩编辑器（全屏浮层） ----------
+   坐标口径：canvas 内部尺寸 = 原图像素，显示尺寸由 JS 按 contain 算一次写进
+   .me-frame 的 width/height。落笔换算只有一处 scale = doc.w / rect.width，
+   不再依赖 --ar → aspect-ratio → object-fit 那条多层链条。 */
+#maskEditor {
+  position: fixed; inset: 0; z-index: 220;
+  display: flex; flex-direction: column;
+  background: rgba(8, 10, 14, 0.94);
+  backdrop-filter: blur(6px);
+  animation: meIn 0.16s ease-out;
+}
+@keyframes meIn { from { opacity: 0; } to { opacity: 1; } }
+
+#maskEditor .me-bar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+#maskEditor .me-title {
+  font-size: 12px; color: var(--muted); margin-right: 4px;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#maskEditor .me-tools { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: var(--panel-2); }
+#maskEditor .me-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 11px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: none; color: var(--text);
+  font: inherit; font-size: 12px; cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+#maskEditor .me-btn:hover { background: rgba(255, 255, 255, 0.07); }
+#maskEditor .me-btn[aria-pressed="true"] {
+  background: var(--accent); color: #0b1220; border-color: var(--accent);
+}
+#maskEditor .me-btn:disabled { opacity: 0.35; cursor: default; }
+#maskEditor .me-spacer { flex: 1 1 auto; }
+#maskEditor .me-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+#maskEditor .me-size input { width: 110px; accent-color: var(--accent); }
+#maskEditor .me-size b { min-width: 30px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+#maskEditor .me-cover {
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  min-width: 74px; text-align: right;
+}
+#maskEditor .me-apply {
+  height: 30px; padding: 0 16px; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--accent); color: #0b1220;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+#maskEditor .me-apply:disabled { opacity: 0.4; cursor: default; }
+
+#maskEditor .me-stage {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 18px; overflow: hidden;
+}
+#maskEditor .me-frame {
+  position: relative; flex: 0 0 auto;
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+  background: #000;
+}
+#maskEditor .me-img { display: block; width: 100%; height: 100%; object-fit: fill; }
+#maskEditor .me-cv {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  cursor: crosshair; touch-action: none;
+}
+#maskEditor .me-hint {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  padding: 5px 12px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62); color: #dfe6f2;
+  font-size: 11.5px; white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity 0.2s;
+}
+#maskEditor .me-frame:hover .me-hint { opacity: 1; }
+
+/* 节点标题上的遮罩药丸 */
+.node-title .n-mask {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 19px; padding: 0 7px; margin-left: 6px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: rgba(122, 162, 255, 0.16); color: var(--accent);
+  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums;
+  cursor: pointer; white-space: nowrap;
+}
+.node-title .n-mask:hover { background: rgba(122, 162, 255, 0.3); }
+#imgTools .it-btn:disabled {
+  opacity: 0.38; cursor: not-allowed;
+  background: none; color: var(--muted);
+}
+#imgTools .it-btn:disabled:hover { background: none; color: var(--muted); }

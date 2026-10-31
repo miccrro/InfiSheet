@@ -1,0 +1,166 @@
+{
+  "title": "Krea2 · 局部重绘",
+  "category": "img2img",
+  "graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "",
+        "upload": "image"
+      }
+    },
+    "2": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "Krea2\\Krea2-Turbo-int8.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "3": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+        "type": "krea2",
+        "device": "default"
+      }
+    },
+    "4": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_vae.safetensors"
+      }
+    },
+    "5": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "lora_name": "krea2\\krea2_darkbrush.safetensors",
+        "strength_model": 0.8,
+        "model": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "3",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "blurry, low quality, distorted, deformed, watermark, text",
+        "clip": [
+          "3",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "FeatherMask",
+      "inputs": {
+        "mask": [
+          "1",
+          1
+        ],
+        "left": 6,
+        "top": 6,
+        "right": 6,
+        "bottom": 6
+      }
+    },
+    "9": {
+      "class_type": "VAEEncodeForInpaint",
+      "inputs": {
+        "pixels": [
+          "1",
+          0
+        ],
+        "vae": [
+          "4",
+          0
+        ],
+        "mask": [
+          "8",
+          0
+        ],
+        "grow_mask_by": 6
+      }
+    },
+    "10": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1,
+        "model": [
+          "5",
+          0
+        ],
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "7",
+          0
+        ],
+        "latent_image": [
+          "9",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "4",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": [
+          "1",
+          0
+        ],
+        "source": [
+          "11",
+          0
+        ],
+        "x": 0,
+        "y": 0,
+        "resize_source": false,
+        "mask": [
+          "8",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "12",
+          0
+        ],
+        "filename_prefix": "Krea2_inpaint"
+      }
+    }
+  }
+}

@@ -1936,19 +1936,41 @@ def safe_library_path(name: str):
 
 
 def graph_takes(graph: dict) -> dict:
-    """这个工作流**吃不吃**外部喂进去的图。
+    """这个工作流**吃不吃**外部喂进去的图 / 吃不吃遮罩。
 
     前端靠这面旗子挑工作流：高清必须挑真有 LoadImage 的，纯文生图流程会把参考图默默丢掉。
     按名字猜（"图像编辑"四个字）迟早猜错——Moss_图像编辑 就是纯文生图。
-    遮罩（LoadImageMask）那面旗子已经跟着功能一起删了，见 analyze_graph 里的说明。
+
+    `takes_alpha_mask` 是遮罩重构后的唯一口径：不看有没有 LoadImageMask 节点，而是看
+    **有没有人在消费 LoadImage 的 MASK 输出**（输出索引 1，就是 alpha 通道）。
+    遮罩不需要单独一个文件，烘进原图 alpha 即可，图和遮罩天然配对。
+
+    故意**不**再报 takes_mask：analyze_graph 把 LoadImageMask 的输入跳过了（它只会退化成
+    一个「选了也不生效」的文件名下拉），所以那种工作流在这套画布上根本跑不了遮罩。
+    报一个 true 出去等于空承诺，前端会以为能用。
     """
     takes_image = False
+    load_ids = set()
+    for nid, node in (graph or {}).items():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type") or ""
+        if ct in ("LoadImage", "LoadImageMask"):
+            takes_image = True
+        if ct == "LoadImage":
+            load_ids.add(str(nid))
+    # 谁把 LoadImage 的 MASK 输出接到了自己身上
+    alpha_mask = False
     for node in (graph or {}).values():
         if not isinstance(node, dict):
             continue
-        if (node.get("class_type") or "") in ("LoadImage", "LoadImageMask"):
-            takes_image = True
-    return {"takes_image": takes_image}
+        for v in (node.get("inputs") or {}).values():
+            if isinstance(v, list) and len(v) == 2 and str(v[0]) in load_ids and v[1] == 1:
+                alpha_mask = True
+                break
+        if alpha_mask:
+            break
+    return {"takes_image": takes_image, "takes_alpha_mask": alpha_mask}
 
 
 def graph_kinds(graph: dict) -> list[str]:

@@ -294,6 +294,36 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
 陈年缓存倒进来。代价是历史被清空（ComfyUI 重启）后 `output` 那部分就没了——所以画布上的图由前端补，
 离线（`comfy=false`）时抽屉也不会是空的。
 
+### 遮罩（`node.masks`）
+
+2026-11-01 重构。上一版挂在 `gen.mask`（节点级）+ 独立 mask PNG，三个硬伤：切 gallery 时
+遮罩还停在第一张图上、重开靠「从导出 PNG 反推蓝色」（羽化/抗锯齿后必然走样）、图和遮罩是两个
+文件靠插槽顺序配对。现在：
+
+```jsonc
+"masks": { "<图片身份>": { "w": 1024, "h": 1024, "strokes": [
+  { "tool": "brush"|"eraser", "size": 48, "pts": [[x,y], ...] },
+  { "tool": "rect", "rect": [x, y, w, h] }        // MCP 的 set_mask 用这个
+], "cover": 17 } }
+```
+
+- **身份键**（`imgKeyOf`）只有一条要求：同一张图在上传前后必须算出同一个键。
+  顺序是 gallery 文件名 → 上传文件名 → `node:<id>` 兜底。上传成功时 `migrateMaskKey()`
+  把旧键搬过去——早期用 dataURL 兜底，上传把 dataURL 换成 `/api/view` 之后键就变了，
+  遮罩当场消失且**没有任何报错**（涂了半天跑出一张原图）。
+- **只存笔画不存位图**：10 笔约 2KB，重开是精确重放。
+- **提交口径**：`bakeMaskCanvas()` 把笔画烘进原图 alpha（涂过处 alpha=0），一个文件上传。
+  ComfyUI 的 `LoadImage` 输出 `mask = 1 - alpha`，即**透明 = 重绘**——和旧实现的「白底黑图」
+  正好相反，写反就是整张重绘或整张不动。实测数据见验收报告。
+- **预设靠 `takes_alpha_mask`**：`graph_takes()` 扫的是「有没有人在消费 `LoadImage` 的 MASK
+  输出（索引 1）」，不看名字、也不看有没有 `LoadImageMask`。所以 `analyze_graph` 仍然跳过
+  `LoadImageMask.image`——那种工作流在这套画布上跑不了遮罩，报 `takes_mask=true` 是空承诺。
+- **不吃遮罩就不让涂**：`maskCapable()` 决定工具条那颗按钮的 `disabled`。自动挑的工作流
+  （`wfAuto`）算「能」（生成时会切到吃遮罩的那张）；用户手选过又不吃遮罩就真禁用。
+- 编辑器是**全屏浮层**，canvas 内部尺寸 = 原图像素，显示尺寸由 JS 按 contain 算一次写进
+  `.me-frame`，落笔只有一处换算 `scale = doc.w / rect.width`——上一版挂在节点缩略图上，
+  对位链条是 `--ar → aspect-ratio → object-fit: contain → inset:0`，任一环断就错位。
+
 ### CSS 的三层结构（也是已知债）
 
 `style.css` 是几轮视觉迭代叠出来的，实际生效顺序是：**基础 token → 组件 → 覆盖层**。
@@ -347,7 +377,9 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
    HTTP 直连没有心跳通道，`alive` 就跟 `connected` 走——说它断了等于瞎猜。
    前端 `updateMcpChip()` 因此是三态：已连接（绿）/ 已断开（灰，连过但现在没心跳）/ 待接入（灰，从没连过）。
 
-不做的：工作流节点运行、鉴权。（遮罩/局部重绘/扩图已于 2026-10-31 整套移除，`LoadImageMask` 入口不再暴露。）
+不做的：工作流节点运行、鉴权、扩图。（遮罩 / 局部重绘于 2026-11-01 重构回归：遮罩按图片身份
+存矢量笔画，生成时烘进原图 alpha，走 `LoadImage` 的 MASK 输出——不需要 `LoadImageMask`，
+图和遮罩天然配对。扩图仍未做。）
 
 ### 测试为什么这么分层
 

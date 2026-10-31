@@ -369,6 +369,21 @@
         };
         title.appendChild(gb);
       }
+      // 这张图有遮罩就挂一颗药丸：不点开也能知道「它带着一块要重绘的区域」。
+      // 遮罩按图片身份存，切 gallery 换一张时药丸跟着变（没涂过的那张不显示）。
+      const mdoc = maskDocOf(n);
+      if (mdoc && mdoc.strokes && mdoc.strokes.length) {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'n-mask';
+        pill.textContent = `遮罩 ${mdoc.cover == null ? maskCover(mdoc) : mdoc.cover}%`;
+        pill.title = '点一下继续涂这块遮罩';
+        // pointerdown 必须拦：它先于 click 冒泡到 #stage，画布会当场开始拖节点，
+        // rerenderNode 把药丸这个 DOM 换掉之后 click 就再也不会触发了（菜单那节踩过同一个坑）
+        pill.onpointerdown = (ev) => ev.stopPropagation();
+        pill.onclick = (ev) => { ev.stopPropagation(); openMaskEditor(n); };
+        title.appendChild(pill);
+      }
     }
     if (n.type === 'wf') {
       const runBtn = document.createElement('button');
@@ -707,6 +722,9 @@
       id: `preset:${p.file}`,
       label: p.title || p.name,
       image: !!p.takes_image,
+      // 遮罩能力由服务端扫图给出，不看名字：
+      // alphaMask = 有人在消费 LoadImage 的 MASK 输出（烘 alpha 路线，唯一主路径）
+      alphaMask: !!p.takes_alpha_mask,
       category: p.category || 'other',
       catLabel: p.category_label || CAT_LABEL[p.category] || '其他',
     }));
@@ -2555,6 +2573,38 @@
         const name = await ensureUploaded(n);
         if (name) picked.push({ node: n, name, label: labelOf(n) });
       } catch { /* 纯文生图 */ }
+    }
+    // 遮罩：涂过就必须让这张图进模型，否则等于白涂。
+    // 它是 unshift 进 picked 的第一张——工作流的第一个 image 插槽拿到它，
+    // 而它本身就是「原图 + alpha」，所以图和遮罩天然配对，不存在两个文件错位的可能。
+    const mdoc = maskDocOf(n);
+    if (mdoc && mdoc.strokes.length && n.dataURL) {
+      const cur = presetOptions().find((o) => o.id === g.wf);
+      const canMask = cur && cur.alphaMask;
+      if (!canMask && !g.wfAuto) {
+        // 用户手选的工作流不吃遮罩：直接说清楚，别让涂了半天跑出一张全新的图（上一版就是这么坏的）
+        flash(`「${cur ? cur.label : '当前工作流'}」没有遮罩入口，涂的区域不会生效。换「Krea2 · 局部重绘」，或先清掉遮罩`);
+        return;
+      }
+      if (!canMask) {
+        const hit = presetOptions().find((o) => o.alphaMask);
+        if (!hit) {
+          flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），遮罩不会生效');
+          return;
+        }
+        if (hit.id !== g.wf) {
+          g.wf = hit.id;
+          flash(`这张图有遮罩，自动切到「${hit.label}」`);
+          queueSave();
+        }
+      }
+      try {
+        const name = await uploadMaskedImage(n, mdoc);
+        if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+      } catch (err) {
+        flash(`遮罩上传失败：${err.message}`);
+        return;
+      }
     }
     // 自动挑的工作流按「有没有参考图」纠正一次：有图走图生图，没图走文生图。
     // 只对自动挑的（wfAuto）生效——用户手选过的，哪怕选错也照他的来，别再偷偷换掉；
@@ -4569,16 +4619,34 @@
     fd.append('overwrite', 'true');
     const res = await api('/api/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(res.error || '上传失败');
+    const oldKey = imgKeyOf(n);          // 上传前的身份（node:<id>）
     n.uploaded = res.image;
     n.subfolder = res.subfolder || '';
     // 上传成功后改用服务端地址显示：base64 不再进存档（几张图就能撑爆 localStorage 配额）
     n.dataURL = artifactURL({ filename: res.image, subfolder: n.subfolder, type: res.type || 'input' });
+    migrateMaskKey(n, oldKey);           // 遮罩跟着换键，否则上传一次就丢
     queueSave();
     rerenderNode(n.id, true);
     return n.uploaded;
   }
 
   /* ---------------- 运行 ---------------- */
+  // 带遮罩上传：把笔画烘进原图的 alpha 通道再传，一个文件两用。
+  // 不走 ensureUploaded 的缓存（n.uploaded）——同一张图换个遮罩就是另一个文件，
+  // 复用它会把上一次的遮罩带进去。文件名固定成 <节点id>-mask.png + overwrite，
+  // 不按时间戳堆一堆垃圾；ComfyUI 每次请求都重新读文件，不按文件名缓存。
+  async function uploadMaskedImage(n, doc) {
+    const cv = await bakeMaskCanvas(n, doc);
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    if (!blob) throw new Error('遮罩编码失败');
+    const fd = new FormData();
+    fd.append('image', blob, `${n.id}-mask.png`);
+    fd.append('overwrite', 'true');
+    const res = await api('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(res.error || '遮罩上传失败');
+    return res.image;
+  }
+
   // 把一个 dataURL 传进 ComfyUI 的 input/，只回文件名。
   // 参考图走这条：它不像图片节点那样常驻在画布上，没必要为此造一个节点。
   async function uploadImageData(dataURL, filename) {
@@ -5496,6 +5564,9 @@
           // 存副本的话改了风格库，老画布还按旧句子出图，对不上号
           style: n.gen.style || null,
         } : null,
+        // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
+        // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
+        masks: n.masks && Object.keys(n.masks).length ? n.masks : undefined,
       })),
     };
   }
@@ -7363,6 +7434,7 @@
   // #linkDel 同一个路数）：放进 #world 会跟着画布缩放，200% 时工具条比图还大、25% 时点不着。
   const IMG_TOOLS = [
     ['crop', '裁剪', 'select', '拖一个框，裁出一张新的图片节点'],
+    ['mask', '遮罩', 'palette', '涂出要重绘的区域，只改涂过的地方'],
     ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
   ];
   const EDIT_LABEL = { upscale: '高清' };
@@ -7430,13 +7502,26 @@
     const bar = ensureImgTools();
     const show = !!n && !cropSession && !bigEditor;
     bar.classList.toggle('hidden', !show);
-    if (show) positionImgTools();
+    if (show) {
+      // 遮罩按钮跟着工作流能力走：不吃遮罩又手选过 → 直接禁用并说清原因，
+      // 别让人涂两分钟才被告知「这张工作流没有遮罩入口」（上一版就是这么坏的）
+      const maskBtn = bar.querySelector('[data-tool="mask"]');
+      if (maskBtn && n) {
+        const ok = maskCapable(n);
+        maskBtn.disabled = !ok;
+        maskBtn.title = ok
+          ? '涂出要重绘的区域，只改涂过的地方'
+          : '当前工作流没有遮罩入口：换「Krea2 · 局部重绘」，或把工作流交回自动';
+      }
+      positionImgTools();
+    }
   }
 
   function runImgTool(kind) {
     const n = imgToolNode();
     if (!n) return;
     if (kind === 'crop') { openCrop(n); return; }
+    if (kind === 'mask') { openMaskEditor(n); return; }
     createEditNode(n, kind);
   }
 
@@ -7472,6 +7557,346 @@
     }
     flash(`${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`);
     return n;
+  }
+
+  /* ---------------- 遮罩编辑器 ---------------- */
+  // 唯一真源是「笔画列表」，不是位图：
+  //   · 位图由重放重建 → 重开是精确还原（旧实现从导出的 PNG 反推蓝色，羽化/抗锯齿后必然走样）
+  //   · 10 笔约 2KB，存档无压力
+  //   · 预览与提交共用同一份数据，只是渲染参数不同（预览蓝色半透明 / 烘 alpha 时全黑不透明）
+  //
+  // 归属：遮罩属于「某一张图」，不属于节点。键由图片身份算出，切 gallery / 切 run 自动跟着走。
+  // 旧实现挂在 n.gen.mask 上，切到第二张图时遮罩还是第一张的——这是它最硬的逻辑错误。
+  const MASK_PREVIEW = 'rgba(58, 160, 255, 0.55)';
+  const MASK_SOLID = '#000';
+  const MASK_SIZE = { min: 8, max: 200, def: 48 };
+
+  // 图片身份的算法只有一个要求：**同一张图在上传前后必须算出同一个键**。
+  // 之前用 dataURL 兜底，上传把 dataURL 从 base64 换成 /api/view 之后键就变了，
+  // 遮罩当场「消失」——涂了半天跑出来一张原图，而且没有任何报错。
+  // 所以顺序是：gallery 文件名 → 上传文件名 → 节点兜底；上传成功时把旧键迁到新键。
+  function imgKeyOf(n) {
+    if (!n || n.type !== 'image') return '';
+    const g = n.gen || {};
+    const it = (g.gallery || [])[g.idx || 0];
+    if (it && it.filename) return `${it.type || 'output'}:${it.subfolder || ''}/${it.filename}`;
+    if (n.filename) return `input:${n.subfolder || ''}/${n.filename}`;
+    if (n.uploaded) return `input:${n.uploaded}`;
+    return `node:${n.id}`;
+  }
+
+  // 上传把「节点兜底键」换成「上传文件名键」，遮罩得跟着搬过去
+  function migrateMaskKey(n, oldKey) {
+    const newKey = imgKeyOf(n);
+    if (!oldKey || oldKey === newKey || !n.masks || !n.masks[oldKey]) return;
+    n.masks[newKey] = n.masks[oldKey];
+    delete n.masks[oldKey];
+  }
+
+  function maskDocOf(n) {
+    const k = imgKeyOf(n);
+    return k && n.masks ? n.masks[k] || null : null;
+  }
+
+  // 这个节点现在能不能涂遮罩：看工作流有没有遮罩入口（服务端扫图给的旗子，不看名字）。
+  // 自动挑的工作流（wfAuto）算「能」——生成时会自动切到吃遮罩的那张；
+  // 用户手选过的工作流不吃遮罩就真的禁用，不能让他涂完才发现白涂。
+  function maskCapable(n) {
+    const g = n && n.gen;
+    if (!g) return false;
+    const opts = presetOptions();
+    const cur = opts.find((o) => o.id === g.wf);
+    if (cur && cur.alphaMask) return true;
+    return !!g.wfAuto && opts.some((o) => o.alphaMask);
+  }
+
+  function putMaskDoc(n, doc) {
+    const k = imgKeyOf(n);
+    if (!k) return;
+    if (!n.masks) n.masks = {};
+    if (doc && doc.strokes.length) {
+      doc.cover = maskCover(doc);   // 缓存：renderAll 每次都会读它，别在渲染里现算
+      n.masks[k] = doc;
+    } else {
+      delete n.masks[k];
+    }
+    queueSave();
+    rerenderNode(n.id);
+  }
+
+  // solid=false：蓝色半透明预览（画在浮层上给人看）
+  // solid=true ：全黑不透明（烘 alpha 与统计覆盖率用——destination-out 只看 alpha）
+  function paintStrokes(ctx, doc, solid) {
+    ctx.clearRect(0, 0, doc.w, doc.h);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const s of doc.strokes || []) {
+      // 矩形遮罩：MCP 的 set_mask 用它（AI 涂不了笔，但能圈一块区域）。
+      // 和笔画共用同一份数据，所以浏览器打开时能看到 AI 圈的那块，也能接着改。
+      if (s.tool === 'rect') {
+        const r = s.rect || [];
+        if (!(r[2] > 0 && r[3] > 0)) continue;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = solid ? MASK_SOLID : MASK_PREVIEW;
+        ctx.fillRect(r[0], r[1], r[2], r[3]);
+        continue;
+      }
+      // 橡皮走 destination-out，颜色无关、只看 alpha，所以必须用不透明色：
+      // 拿 55% 的蓝去擦只能擦掉 55%，越擦越花
+      ctx.strokeStyle = s.tool === 'eraser' || solid ? MASK_SOLID : MASK_PREVIEW;
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+      ctx.lineWidth = s.size;
+      const pts = s.pts || [];
+      if (!pts.length) continue;
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0][0], pts[0][1], s.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.stroke();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // 覆盖率缩到 200 宽再数 alpha：2000×3000 的原图直接 getImageData 是 24MB，
+  // 每落一笔都算一次会明显卡手。
+  function maskCover(doc) {
+    if (!doc || !doc.strokes || !doc.strokes.length) return 0;
+    const w = Math.min(200, doc.w);
+    const h = Math.max(1, Math.round((doc.h / doc.w) * w));
+    const cv = document.createElement('canvas');
+    cv.width = w;
+    cv.height = h;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.scale(w / doc.w, w / doc.w);
+    paintStrokes(ctx, doc, true);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let on = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8) on++;
+    return Math.round((on / (w * h)) * 100);
+  }
+
+  function loadImageEl(src) {
+    return new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error('图片加载失败'));
+      im.src = src;
+    });
+  }
+
+  // 把遮罩烘进原图的 alpha 通道：涂过的地方 alpha=0（透明），其余 255。
+  // 实测 ComfyUI 的 LoadImage 是 mask = 1 - alpha，所以「透明 = 重绘」。
+  // 好处：图和遮罩是同一个文件，不存在两个文件配对错位的可能。
+  async function bakeMaskCanvas(n, doc) {
+    const img = await loadImageEl(n.dataURL);
+    const cv = document.createElement('canvas');
+    cv.width = img.naturalWidth;
+    cv.height = img.naturalHeight;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    if (doc && doc.strokes && doc.strokes.length) {
+      const m = document.createElement('canvas');
+      m.width = cv.width;
+      m.height = cv.height;
+      const mc = m.getContext('2d');
+      mc.scale(cv.width / doc.w, cv.height / doc.h);
+      paintStrokes(mc, doc, true);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.drawImage(m, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    return cv;
+  }
+
+  let maskSession = null;
+
+  function openMaskEditor(n) {
+    if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再涂'); return; }
+    if (maskSession) closeMaskEditor();
+    loadImageEl(n.dataURL)
+      .then((img) => buildMaskEditor(n, img))
+      .catch(() => flash('图片加载失败，没法涂遮罩'));
+  }
+
+  function closeMaskEditor() {
+    if (!maskSession) return;
+    try { maskSession.ac.abort(); } catch { /* 已经 abort 过 */ }
+    maskSession.root.remove();
+    maskSession = null;
+  }
+
+  function buildMaskEditor(n, img) {
+    const W = img.naturalWidth || 1024;
+    const H = img.naturalHeight || 1024;
+    const saved = maskDocOf(n);
+    // 尺寸对不上（换过图）就丢弃旧笔画：坐标空间变了，留着必然错位
+    const doc = saved && saved.w === W && saved.h === H
+      ? { w: W, h: H, strokes: saved.strokes.map((s) => ({ ...s, pts: s.pts.map((p) => p.slice()) })) }
+      : { w: W, h: H, strokes: [] };
+
+    const root = document.createElement('div');
+    root.id = 'maskEditor';
+    root.innerHTML = `
+      <div class="me-bar">
+        <span class="me-title">${esc(n.title)} · 遮罩</span>
+        <div class="me-tools">
+          <button type="button" class="me-btn" data-tool="brush" aria-pressed="true">画笔</button>
+          <button type="button" class="me-btn" data-tool="eraser" aria-pressed="false">橡皮</button>
+          <button type="button" class="me-btn" data-act="undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
+          <button type="button" class="me-btn" data-act="clear" title="清空全部笔画">清除</button>
+        </div>
+        <label class="me-size">粗细 <input type="range" min="${MASK_SIZE.min}" max="${MASK_SIZE.max}"
+          step="1" value="${MASK_SIZE.def}"><b>${MASK_SIZE.def}</b></label>
+        <span class="me-spacer"></span>
+        <span class="me-cover">遮罩 0%</span>
+        <button type="button" class="me-btn" data-act="cancel">取消</button>
+        <button type="button" class="me-apply" data-act="apply">应用</button>
+      </div>
+      <div class="me-stage">
+        <div class="me-frame">
+          <img class="me-img" alt="">
+          <canvas class="me-cv"></canvas>
+          <span class="me-hint">涂出要重绘的区域 · 滚轮调笔刷 · [ ] 调粗细 · Ctrl+Z 撤销 · Esc 取消</span>
+        </div>
+      </div>`;
+
+    const stage = root.querySelector('.me-stage');
+    const frame = root.querySelector('.me-frame');
+    const cv = root.querySelector('.me-cv');
+    const coverEl = root.querySelector('.me-cover');
+    const applyBtn = root.querySelector('[data-act="apply"]');
+    const undoBtn = root.querySelector('[data-act="undo"]');
+    const sizeEl = root.querySelector('.me-size input');
+    const sizeNum = root.querySelector('.me-size b');
+
+    root.querySelector('.me-img').src = n.dataURL;
+    cv.width = doc.w;
+    cv.height = doc.h;
+    const ctx = cv.getContext('2d');
+
+    const ac = new AbortController();
+    const sess = { n, doc, cv, ctx, root, frame, stage, ac, tool: 'brush', size: MASK_SIZE.def, stroke: null };
+    maskSession = sess;
+
+    const redraw = () => paintStrokes(ctx, doc, false);
+    const refresh = () => {
+      const pct = maskCover(doc);
+      coverEl.textContent = `遮罩 ${pct}%`;
+      applyBtn.disabled = false;
+      undoBtn.disabled = !doc.strokes.length;
+    };
+
+    // 显示尺寸按 contain 算一次写进 frame；落笔只在这一层换算
+    const fit = () => {
+      const aw = stage.clientWidth - 36;
+      const ah = stage.clientHeight - 36;
+      const k = Math.min(aw / doc.w, ah / doc.h, 1);
+      frame.style.width = `${Math.max(80, Math.round(doc.w * k))}px`;
+      frame.style.height = `${Math.max(80, Math.round(doc.h * k))}px`;
+    };
+    requestAnimationFrame(fit);
+    window.addEventListener('resize', fit, { signal: ac.signal });
+
+    const toDoc = (ev) => {
+      const r = cv.getBoundingClientRect();
+      const k = doc.w / r.width;
+      return [
+        Math.round(clamp((ev.clientX - r.left) * k, 0, doc.w)),
+        Math.round(clamp((ev.clientY - r.top) * k, 0, doc.h)),
+      ];
+    };
+
+    const endStroke = () => {
+      if (!sess.stroke) return;
+      sess.stroke = null;
+      refresh();
+    };
+
+    cv.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();          // 不让画布顺手开始拖节点/平移
+      if (ev.button !== 0) return;
+      const s = { tool: sess.tool, size: sess.size, pts: [toDoc(ev)] };
+      doc.strokes.push(s);
+      sess.stroke = s;
+      redraw();
+    }, { signal: ac.signal });
+
+    // 走笔挂在 window 上：挂在 canvas 上一快就划出边界，后面的 move 全丢，
+    // 画出来是一串孤立的圆点而不是线（旧实现踩过这个坑）
+    window.addEventListener('pointermove', (ev) => {
+      if (!sess.stroke) return;
+      const p = toDoc(ev);
+      const pts = sess.stroke.pts;
+      const last = pts[pts.length - 1];
+      if (last && Math.abs(last[0] - p[0]) + Math.abs(last[1] - p[1]) < 1) return;
+      pts.push(p);
+      redraw();
+    }, { signal: ac.signal });
+    window.addEventListener('pointerup', endStroke, { signal: ac.signal });
+    window.addEventListener('pointercancel', endStroke, { signal: ac.signal });
+
+    root.querySelectorAll('[data-tool]').forEach((b) => {
+      b.onclick = () => {
+        sess.tool = b.dataset.tool;
+        root.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        cv.style.cursor = sess.tool === 'eraser' ? 'cell' : 'crosshair';
+      };
+    });
+
+    const setSize = (v) => {
+      sess.size = Math.round(clamp(v, MASK_SIZE.min, MASK_SIZE.max));
+      sizeEl.value = sess.size;
+      sizeNum.textContent = sess.size;
+    };
+    sizeEl.oninput = () => setSize(Number(sizeEl.value));
+
+    root.querySelector('[data-act="undo"]').onclick = () => {
+      doc.strokes.pop();
+      redraw();
+      refresh();
+    };
+    root.querySelector('[data-act="clear"]').onclick = () => {
+      if (!doc.strokes.length) return;
+      doc.strokes.length = 0;
+      redraw();
+      refresh();
+    };
+    root.querySelector('[data-act="cancel"]').onclick = () => closeMaskEditor();
+    applyBtn.onclick = () => {
+      putMaskDoc(n, doc);
+      closeMaskEditor();
+      flash(doc.strokes.length ? `遮罩已保存（${maskCover(doc)}%）` : '已清掉遮罩');
+    };
+
+    // 滚轮调笔刷：在遮罩里滚轮不该去缩放画布
+    root.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      setSize(sess.size + (ev.deltaY < 0 ? 4 : -4));
+    }, { passive: false, signal: ac.signal });
+
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); closeMaskEditor(); return; }
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
+        ev.preventDefault();
+        doc.strokes.pop();
+        redraw();
+        refresh();
+        return;
+      }
+      if (ev.key === '[') { ev.preventDefault(); setSize(sess.size - 4); }
+      if (ev.key === ']') { ev.preventDefault(); setSize(sess.size + 4); }
+    }, { signal: ac.signal });
+
+    document.body.appendChild(root);
+    redraw();
+    refresh();
   }
 
   /* ---------------- 裁剪浮层 ---------------- */
