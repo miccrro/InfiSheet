@@ -6,16 +6,19 @@
 
 一个零依赖的本地 Web 应用：**单个 Python 文件**同时充当静态服务器和 ComfyUI 代理，**单页原生 JS** 负责画布编辑，
 所有状态存成 JSON 落在 `data/` 下。没有构建步骤，没有运行时依赖。
+MCP 服务（`mcp_server.py`）是同一套 API 的第二个入口：HTTP 挂在 `POST /mcp`，stdio 模式只做转发。
 
 ```
 浏览器 ──HTTP──> server.py ──HTTP/WS──> ComfyUI (127.0.0.1:8188)
-   │                  │
+   │                  │                        ↑
    └── static/*.js ───┘   读写 data/{canvas.json, projects/, history/, library/}
+                      ↑
+AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 ```
 
 ## 服务端 `server.py`
 
-单文件（约 1400 行），基于 `http.server.ThreadingHTTPServer`。
+单文件（约 1570 行），基于 `http.server.ThreadingHTTPServer`。
 
 | 层 | 说明 |
 |---|---|
@@ -45,7 +48,7 @@
 |---|---|
 | `index.html` | 静态骨架（顶栏 / 首页 / 舞台 / dock / 弹窗），图标用 `<span data-icon="home">` 占位 |
 | `icons.js` | 由 `tools/icons/gen.cjs` 从 IconPark 生成的静态 SVG path；`window.icon(name)` + `hydrateIcons()` |
-| `app.js` | 全部逻辑，一个 IIFE（约 5100 行） |
+| `app.js` | 全部逻辑，一个 IIFE（约 7600 行） |
 | `style.css` | 全部样式，按「token → 基础组件 → 迭代覆盖层」叠加 |
 
 `app.js` 内部大致分区（按出现顺序）：
@@ -308,13 +311,52 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
 配套：格子容器用 `<div role="button" tabIndex="0">` 而不是 `<button>`（button 是表单控件，flow-root，
 这类撑高法不可靠），回车/空格键手动补 `onkeydown`。
 
+### MCP 服务（`mcp_server.py`）
+
+给 AI 客户端用的第二个入口。**协议在 mcp_server，HTTP 外壳在 server**：
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| HTTP | `server.py` 的 `mcp_post()` | 解析 JSON、发 `Mcp-Session-Id`、通知回 202；协议错误回 JSON-RPC 的 `-32700` 而不是 400 页面 |
+| 协议 | `mcp_server.handle()` | `initialize` / `tools/list` / `tools/call` / `ping`；`resources/list`、`prompts/list` 回空表（有些客户端无条件拉） |
+| 工具 | `TOOLS` 注册表 | 21 个，装饰器 `@tool(name, desc, props, required)` 登记，schema 和实现写在一起 |
+| stdio | `stdio_main()` | 只做转发：每行 JSON → `POST /mcp`。服务没起来时 `_spawn_server()` 拉一次（`DETACHED_PROCESS`，桥退出后服务还在） |
+
+环境用 `configure(SimpleNamespace(...))` 注入（数据目录 + `comfy_request` / `analyze_graph` /
+`list_presets` / `job_status`），**不 import server**——避免循环依赖，也让协议与工具能脱离服务单测。
+
+三个必须守住的口径：
+
+1. **生成逻辑有两份实现，规则必须一致。** `prompt_plan` / `dims_target` / `bind_ref_images` /
+   `build_gen_graph` / `ref_marks` / `calc_dims` 在 mcp_server 里是 `app.js` 的 Python 移植。
+   改了一边不改另一边，就会出现「浏览器出的图和 AI 跑出来的图不一样」——这类 bug 极难查，
+   因为两边都「能跑」。改这些函数时对着两份代码一起改。
+2. **写画布走同一条持久化通路，带 rev 乐观锁。** `save_canvas(..., base_rev=)`：服务端只递增 rev，
+   客户端只上报「我是从哪一版改的」。落后就回 `conflict`，`mutate()` 重读重试；
+   浏览器那边的 `baseRev` 落后则回 `stale`，由前端拉最新版（先把本地压进撤销栈）而不是覆盖。
+   `beforeunload` 的 keepalive 保存也带 `baseRev`——否则「关标签页」就是一次绕过检查的强制覆盖。
+3. **MCP 的「当前项目」是独立的。** 存在 `data/mcp.json`，不碰浏览器 localStorage 那个；
+   没有就取最近修改的项目，再没有就自动建「MCP 画布」。`use_project` 才切。
+4. **「关闭服务」是先回响应再停进程。** `POST /api/shutdown` 立刻回 `{"ok":true}`，然后由后台线程
+   等 0.4s 再 `shutdown()` + `server_close()` + `os._exit(0)`。顺序反了响应会被掐断，前端只看到
+   「请求失败」，用户会以为按钮没生效。同源校验挡掉跨站 POST（本地服务没有鉴权）。
+   前端拿到 ok 后置 `state.serverDown`，`health()` 与 `pollProjectRev()` 直接短路——否则关闭后
+   那两发定时请求会一直往空端口打，控制台刷红。
+5. **「断开」靠心跳租约，不靠客户端通知。** 客户端死了不会发告别消息，所以 stdio 桥每 `lease/3` 秒
+   `POST /api/mcp/heartbeat` 续租，`alive` 由 `status()` **现算**（不落成状态，避免「谁去把它改回来」）。
+   HTTP 直连没有心跳通道，`alive` 就跟 `connected` 走——说它断了等于瞎猜。
+   前端 `updateMcpChip()` 因此是三态：已连接（绿）/ 已断开（灰，连过但现在没心跳）/ 待接入（灰，从没连过）。
+
+不做的：工作流节点运行、鉴权。（遮罩/局部重绘/扩图已于 2026-10-31 整套移除，`LoadImageMask` 入口不再暴露。）
+
 ### 测试为什么这么分层
 
 | 层 | 文件 | 依赖 | 能证明什么 |
 |---|---|---|---|
 | 冒烟 | `tests/smoke.py` | 只要 Python | 服务能起、静态/接口/项目 CRUD/防穿越 |
 | 接口回归 | `selftest.py` | **需要 ComfyUI** | 真提交一个 64×64 任务并轮询到 success、Range、502 分支 |
-| 浏览器 e2e | `tests/e2e/run.mjs` | Python + Chrome | 真实点击/渲染：图标填充、生成器布局、路由、控制台零报错 |
+| MCP | `tests/mcp.py` | 只要 Python | 协议握手、21 个工具、rev 乐观锁、stdio 桥（ComfyUI 在线时真出图） |
+| 浏览器 e2e | `tests/e2e/run.mjs` | Python + Chrome | 真实点击/渲染：图标填充、生成器布局、路由、MCP 改动自动同步、控制台零报错 |
 
 e2e 里凡涉及 `/api/assets` 的断言都只能写**相对关系**（格子数 ≥ 画布图数、计数文字 ＝ `${n} 项`、
 大图计数 ＝ `1 / ${当场格子数}`）：本机 ComfyUI 在线时会多出几十条真实产物，写死数字就变成环境依赖。

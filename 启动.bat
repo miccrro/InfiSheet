@@ -15,7 +15,7 @@ if errorlevel 1 (
 )
 
 echo ============================================
-echo   Comfy Canvas  -  local infinite canvas
+echo   InfiSheet  -  local infinite canvas
 echo   ComfyUI expected at http://127.0.0.1:8188
 echo ============================================
 echo.

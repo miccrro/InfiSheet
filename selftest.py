@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comfy 无限画布 · 零依赖回归自测
+"""InfiSheet · 无限画布 · 零依赖回归自测
 
 起一个临时实例（独立端口 + 独立数据目录），把服务端契约逐项断言完再关掉，
 不碰你正在用的 data/ 目录，也不需要浏览器。
@@ -141,7 +141,7 @@ class Checks:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Comfy 无限画布回归自测")
+    ap = argparse.ArgumentParser(description="InfiSheet · 无限画布回归自测")
     ap.add_argument("-v", "--verbose", action="store_true", help="打印请求明细")
     ap.add_argument("--no-run", action="store_true",
                     help="不真的往 ComfyUI 提交任务（只测接口契约）")
@@ -182,7 +182,7 @@ def main() -> int:
 
         status, _, raw = http("GET", base + "/")
         c.check("首页可访问且含品牌名",
-                status == 200 and "Comfy 无限画布" in raw.decode("utf-8", "replace"),
+                status == 200 and "InfiSheet · 无限画布" in raw.decode("utf-8", "replace"),
                 f"HTTP {status} {len(raw)}B")
         status, _, raw = http("GET", base + "/app.js")
         c.check("app.js 可访问",
@@ -356,7 +356,7 @@ def main() -> int:
                     "1": {"class_type": "EmptyImage",
                           "inputs": {"width": 96, "height": 48, "batch_size": 1, "color": 331933}},
                     "2": {"class_type": "SaveImage",
-                          "inputs": {"images": ["1", 0], "filename_prefix": "comfy-canvas/selftest"}},
+                          "inputs": {"images": ["1", 0], "filename_prefix": "infisheet/selftest"}},
                 }
                 status, run = jpost(base, "/api/run", {"graph": mini})
                 submitted = status == 200 and (run or {}).get("ok") is True

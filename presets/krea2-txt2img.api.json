@@ -66,7 +66,7 @@
   "9": {
    "_meta": { "title": "保存图片" },
    "class_type": "SaveImage",
-   "inputs": { "images": ["8", 0], "filename_prefix": "comfy-canvas/krea2" }
+   "inputs": { "images": ["8", 0], "filename_prefix": "infisheet/krea2" }
   }
  }
 }

@@ -1,0 +1,72 @@
+[
+ {
+  "id": "anime",
+  "label": "动漫",
+  "file": "anime.json",
+  "count": 53,
+  "cover": "./thumbs/anime-001.jpg"
+ },
+ {
+  "id": "photography",
+  "label": "摄影",
+  "file": "photography.json",
+  "count": 70,
+  "cover": "./thumbs/photography-001.jpg"
+ },
+ {
+  "id": "painting",
+  "label": "绘画",
+  "file": "painting.json",
+  "count": 47,
+  "cover": "./thumbs/painting-001.jpg"
+ },
+ {
+  "id": "drawing",
+  "label": "素描",
+  "file": "drawing.json",
+  "count": 38,
+  "cover": "./thumbs/drawing-001.jpg"
+ },
+ {
+  "id": "comics",
+  "label": "漫画",
+  "file": "comics.json",
+  "count": 35,
+  "cover": "./thumbs/comics-001.jpg"
+ },
+ {
+  "id": "cartoon",
+  "label": "卡通",
+  "file": "cartoon.json",
+  "count": 22,
+  "cover": "./thumbs/cartoon-001.jpg"
+ },
+ {
+  "id": "cover_art",
+  "label": "封面艺术",
+  "file": "cover_art.json",
+  "count": 29,
+  "cover": "./thumbs/cover_art-001.jpg"
+ },
+ {
+  "id": "design",
+  "label": "设计",
+  "file": "design.json",
+  "count": 19,
+  "cover": "./thumbs/design-001.jpg"
+ },
+ {
+  "id": "digital_painting",
+  "label": "数字绘画",
+  "file": "digital_painting.json",
+  "count": 19,
+  "cover": "./thumbs/digital_painting-001.jpg"
+ },
+ {
+  "id": "3d_render",
+  "label": "3D渲染",
+  "file": "3d_render.json",
+  "count": 65,
+  "cover": "./thumbs/3d_render-001.jpg"
+ }
+]
