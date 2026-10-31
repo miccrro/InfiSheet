@@ -1,0 +1,20 @@
+services:
+  infisheet:
+    build: .
+    image: infisheet:1.2.0
+    container_name: infisheet
+    ports:
+      - "8788:8788"
+    volumes:
+      # 画布快照 / 工作流库都在这里；不挂就是一次性容器
+      - ./data:/data
+    environment:
+      # 容器里的 127.0.0.1 是容器自己，ComfyUI 在宿主机上，得走这个别名
+      COMFY_URL: "http://host.docker.internal:8188"
+      # 想让同网段其他设备也能访问，就打开下面这行并换成自己的口令
+      # （不设令牌时服务只对本机开放，容器内靠 --yes-i-know 放行监听 0.0.0.0）
+      # INFISHEET_TOKEN: "change-me"
+    extra_hosts:
+      # Linux 上必须显式声明；Docker Desktop（Win/Mac）自带
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

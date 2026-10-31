@@ -1,0 +1,171 @@
+{
+ "title": "ZIT-INT8-文生图",
+ "note": "",
+ "graph": {
+  "127": {
+   "inputs": {
+    "unet_name": "Z-image\\z_image_turbo_int8_convrot.safetensors",
+    "weight_dtype": "default"
+   },
+   "class_type": "UNETLoader",
+   "_meta": {
+    "title": "UNET加载器"
+   }
+  },
+  "135": {
+   "inputs": {
+    "filename_prefix": "ComfyUI",
+    "images": [
+     "128:119",
+     0
+    ]
+   },
+   "class_type": "SaveImage",
+   "_meta": {
+    "title": "保存图像"
+   }
+  },
+  "150": {
+   "inputs": {
+    "value": "纯白色无缝虚拟工作室背景，无任何杂物与环境道具，神女凌汐的单张工作室摄影图，电影角色人像图，完整全身正面构图，3D国漫CG写实人物，完美世界玄幻角色质感。侧方45度柔和定向玄幻工作室布光，主光来自画面左侧，辅光做弱补光，形成层次丰富的明暗过渡，温和自然的阴影衰减，轮廓边缘带有淡淡的环境光勾边，干净通透的CG外观，无噪点无脏斑。\n五根手指\n神女凌汐，年轻神女，清冷绝美的精致五官，眼型狭长柔和，瞳孔通透有神，眼尾微微上扬，神态沉静疏离，唇色淡雅；身形挺拔修长，躯体线条舒展，肩膀时刻暗藏紧绷，能看出长期承受本源力量反噬带来的身体负重感。身体左侧萦绕寒冰本源的冷蓝色柔光，体表笼罩一层冷蓝色柔光丝绸质感柔光晕；身体右侧萦绕烈火本源的橙红暖光，体表笼罩一层淡橙红色丝绸质感柔光晕，半透明细碎冰火能量微光持续在丝绸表层缓缓游走流动，光点大小错落，不会过度耀眼刺眼，丝绸光晕柔和朦胧，不会完全遮挡躯体与服装本体轮廓。\n\n人设定位：冷艳诡谲、高冷强势，冥界高阶尊者，执掌幽暗冥力，气质疏离凌厉、自带压迫感\n上衣设计：玄黑暗金立领修身上衣，暗黑高定版型。立领束颈凌厉禁欲，衣身哑光黑缎拼接透视暗纱，胸前、腰侧暗绣冥纹古印，纹路隐而不现，仅暗光显色，剪裁修身利落，冷艳又极具气场。\n裙子设计：玄黑开叉冥纹战裙，暗黑战斗版型。高腰紧致收腰，单侧超高开衩，适配高速施法、瞬移对战。裙身双层结构，内层耐磨黑缎，外层透纱浮现金色冥纹，裙摆边缘做微碎破败质感，诡谲高级，压迫感十足。\n发饰设定：高冷束发垂髻，发丝利落不凌乱。主饰为做旧黑金冥纹发冠，造型锋利棱角分明；两侧垂细黑金流苏，暗光下微闪，冷冽诡魅，凸显尊者威严。\n鞋子设定：玄黑暗金高跟战靴，修身束口版型，靴身雕刻复古冥纹，哑光黑金配饰点缀，靴底防滑耐磨，兼顾凌厉气场与战斗灵活性。\n配饰搭配：黑金荆棘缠绕腰链，悬挂冥纹玉坠；暗黑细金锁骨链；手部哑光黑纹护袖，整体配饰冷硬凌厉、自带暗黑压迫感。\n材质质感：哑光黑缎厚重冷冽、无廉价反光；暗纱通透朦胧、暗藏纹路；黑金配饰做旧复古、质感冷硬，整体诡谲高级、气场强大。\n动态特效：周身萦绕淡淡幽冥黑雾，施法时冥纹亮起暗金流光，裙摆飘动散落黑色碎影，压迫感十足。\n\n凌汐笔直端正站立面向镜头，双肩放平，双臂自然垂落于身体两侧，五指放松舒展，完整展示从头到脚的全身形体，神情清冷沉静，面部细节精致细腻，皮肤带有真实细腻CG皮肤质感，保留细微皮肤肌理。PBR物理细腻材质渲染，底层长袍织物纹理，外层丝绸面料顺滑缎面反光、柔和的高光过渡、丝绸自然垂坠褶皱、水晶鞋通透折射与环境反光全部表现到位，3D国漫CG高质量渲染，克制柔和的冰火丝绸光泽光晕特效，光晕严格限定在人物身体周边，不向外大幅溢出。60%冰蓝冷色调，30%炽红橙焰色调，10%纯白色背景色调，色彩平衡和谐，画面干净锐利。\n"
+   },
+   "class_type": "PrimitiveStringMultiline",
+   "_meta": {
+    "title": "字符串（多行）"
+   }
+  },
+  "128:132": {
+   "inputs": {
+    "aspect_ratio": "9:16 (Portrait Widescreen)",
+    "megapixels": 2,
+    "multiple": 16
+   },
+   "class_type": "ResolutionSelector",
+   "_meta": {
+    "title": "分辨率选择器",
+    "cnr_id": "comfy-core",
+    "ver": "0.22.0"
+   }
+  },
+  "128:116": {
+   "inputs": {
+    "width": [
+     "128:132",
+     0
+    ],
+    "height": [
+     "128:132",
+     1
+    ],
+    "batch_size": 1
+   },
+   "class_type": "EmptyLatentImage",
+   "_meta": {
+    "title": "空Latent",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.75"
+   }
+  },
+  "128:130": {
+   "inputs": {
+    "conditioning": [
+     "128:111",
+     0
+    ]
+   },
+   "class_type": "ConditioningZeroOut",
+   "_meta": {
+    "title": "条件零化"
+   }
+  },
+  "128:115": {
+   "inputs": {
+    "add_noise": "enable",
+    "noise_seed": 250256298868338,
+    "steps": 10,
+    "cfg": 1,
+    "sampler_name": "res_multistep",
+    "scheduler": "simple",
+    "start_at_step": 0,
+    "end_at_step": 1000,
+    "return_with_leftover_noise": "disable",
+    "model": [
+     "127",
+     0
+    ],
+    "positive": [
+     "128:111",
+     0
+    ],
+    "negative": [
+     "128:130",
+     0
+    ],
+    "latent_image": [
+     "128:116",
+     0
+    ]
+   },
+   "class_type": "KSamplerAdvanced",
+   "_meta": {
+    "title": "K采样器(高级)"
+   }
+  },
+  "128:119": {
+   "inputs": {
+    "samples": [
+     "128:115",
+     0
+    ],
+    "vae": [
+     "128:125",
+     0
+    ]
+   },
+   "class_type": "VAEDecode",
+   "_meta": {
+    "title": "VAE解码",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.75"
+   }
+  },
+  "128:125": {
+   "inputs": {
+    "vae_name": "ae.safetensors"
+   },
+   "class_type": "VAELoader",
+   "_meta": {
+    "title": "加载VAE"
+   }
+  },
+  "128:111": {
+   "inputs": {
+    "text": [
+     "150",
+     0
+    ],
+    "clip": [
+     "128:126",
+     0
+    ]
+   },
+   "class_type": "CLIPTextEncode",
+   "_meta": {
+    "title": "CLIP文本编码器",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.75"
+   }
+  },
+  "128:126": {
+   "inputs": {
+    "clip_name": "qwen_3_4b.safetensors",
+    "type": "qwen_image",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader",
+   "_meta": {
+    "title": "加载CLIP"
+   }
+  }
+ }
+}

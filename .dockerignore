@@ -1,0 +1,11 @@
+# 运行期产物不进镜像：容器里的数据在 /data 卷上
+data/
+dist/
+__pycache__/
+*.pyc
+tests/.tmp/
+node_modules/
+.git/
+.workbuddy/
+.github/
+*.md.bak
