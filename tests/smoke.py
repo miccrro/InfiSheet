@@ -16,6 +16,7 @@ import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -184,15 +185,22 @@ def main() -> int:
             text = raw.decode("utf-8", "replace")
             check(f"静态资源 {path}", status == 200 and must in text, f"{status} {len(raw)}B")
 
-        status, raw = request(base, "/presets/krea2-txt2img.api.json")
-        preset = json.loads(raw or b"{}")
-        check("预设直链可读", status == 200 and isinstance(preset, dict) and len(preset) > 0, f"{status} {len(preset)} 节点")
-
         # 预设的「吃不吃图」由服务端扫图给出，前端靠它挑工作流：
         # 按名字猜的时候选中过 Moss_图像编辑 —— 那是纯文生图，参考图根本没进图。
         status, raw = request(base, "/api/library")
         lib = json.loads(raw or b"{}")
         by_file = {p["file"]: p for p in (lib.get("presets") or [])}
+
+        # 直链文件名从库里取，不写死：预设改过一次名（krea2-txt2img → krea2-文生图），
+        # 写死的话这条断言会因为一个改名整条红掉，看起来像功能坏了。
+        txt2img = next((p for p in by_file.values() if p.get("category") == "txt2img"), None)
+        if txt2img:
+            status, raw = request(base, "/presets/" + urllib.parse.quote(txt2img["file"]))
+            preset = json.loads(raw or b"{}")
+            check("预设直链可读", status == 200 and isinstance(preset, dict) and len(preset) > 0,
+                  f"{status} {len(preset)} 节点 {txt2img['file']}")
+        else:
+            check("预设直链可读", False, "库里没有 txt2img 预设")
         check("库接口给每个预设标了 takes_image",
               status == 200 and all("takes_image" in p for p in by_file.values()),
               f"{len(by_file)} 个预设")

@@ -493,9 +493,16 @@ def main() -> int:
 
         # ---------- 需要 ComfyUI：真实出图 ----------
         if comfy_online():
+            # 工作流名从 list_workflows 取，别写死：预设改过一次名
+            # （krea2-txt2img → krea2-文生图），写死会让这条真机用例因为改名整条红掉
+            _wfo, wfs = c.tool("list_workflows")
+            txt2img = next((p for p in (wfs.get("presets") or [])
+                            if p.get("category") == "txt2img"), None)
+            wf_file = (txt2img or {}).get("file") or ""
+            check("真机出图前能挑到 txt2img 工作流", bool(wf_file), wf_file or "none")
             out, data = c.tool("add_image_node", {
                 "prompt": "a single red circle on white paper, top view",
-                "workflow": "krea2-txt2img.api.json", "width": 96, "height": 48, "size": "custom",
+                "workflow": wf_file, "width": 96, "height": 48, "size": "custom",
             })
             rid = (data.get("node") or {}).get("id") or ""
             out, data = c.tool("run_node", {"node": rid, "wait": True, "timeout_s": 240})

@@ -2987,6 +2987,18 @@ try {
     !!maskOpen && maskOpen.tools.join('/') === '画笔/橡皮' && /遮罩 0%/.test(maskOpen.cover),
     maskOpen ? `${maskOpen.tools.join('/')} ${maskOpen.cover}` : 'none');
 
+  // 老存档的节点 wf 是纯文生图（不吃遮罩），wfAuto 还是 true。以前这种情况按钮直接
+  // disabled，用户只看到「点了没反应」。现在一律允许打开，并在打开时把工作流换成吃遮罩的那个。
+  const wfSwitched = await page.evaluate(`(() => {
+    const box = document.querySelector('[data-panel-for="${pick.img}"] .wfsel');
+    const badge = document.getElementById('queueBadge');
+    return { wf: box ? box.textContent.trim() : 'no-box',
+             flash: badge && !badge.classList.contains('hidden') ? badge.textContent.trim() : '' };
+  })()`);
+  check('不吃遮罩的工作流：打开编辑器时自动换成「局部重绘」并说明',
+    /局部重绘/.test(wfSwitched.wf) && /已换成/.test(wfSwitched.flash),
+    JSON.stringify(wfSwitched));
+
   const [ml, mt, mw, mh] = maskOpen.rect;
   const strokeMask = () => page.drag(
     { x: ml + mw * 0.2, y: mt + mh * 0.5 },
@@ -3044,6 +3056,12 @@ try {
   check('存档只存笔画，不存位图',
     !!maskDoc && Array.isArray(maskDoc.strokes) && !maskDoc.png && !maskDoc.url,
     maskDoc ? Object.keys(maskDoc).join(',') : 'none');
+  // wfAuto 以前从不落盘：刷新后变 undefined，用户手选过的选择就丢了。
+  // 现在它必须真的在存档里（工作流是不是「手选的」全靠它区分）。
+  const maskGen = (maskNode || {}).gen || {};
+  check('自动换过的遮罩工作流落盘，且 wfAuto 字段不再丢',
+    /局部重绘/.test(String(maskGen.wf || '')) && typeof maskGen.wfAuto === 'boolean',
+    JSON.stringify({ wf: maskGen.wf, wfAuto: maskGen.wfAuto }));
 
   // 清掉，别影响后面的用例
   await page.evaluate(`(() => {
@@ -3054,6 +3072,53 @@ try {
   await page.waitFor(`!!document.querySelector('#maskEditor [data-act="clear"]')`, 5000);
   await page.click('#maskEditor [data-act="clear"]', { settle: 150 });
   await page.click('#maskEditor [data-act="apply"]', { settle: 400 });
+
+  // 反向也要对：遮罩清掉了，工作流还挂在「局部重绘」上。它的 mask 来自图片 alpha，
+  // 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，出图跟原图逐位相同。
+  // 用户只会看到「生成成功，图没变」，这是最难自查的一类坏。自动挑的应该自己换回来。
+  const mTitle = await page.center(`#nodes .node[data-id="${pick.img}"] .node-title`);
+  await page.clickAt(mTitle.x, mTitle.y, { settle: 350 });
+  const wfBack = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const hits = [];
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/presets/')) hits.push(decodeURIComponent(u));
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'wf-back' });
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
+      // 只糊自己这个任务：别的 pid 一律走真实请求
+      if (u.startsWith('/api/job')) {
+        return u.includes('wf-back')
+          ? json({ ok: true, status: 'success', progress: 100, artifacts: [] })
+          : real(url, opts);
+      }
+      return real(url, opts);
+    };
+    const ta = document.querySelector('[data-panel-for="${pick.img}"] .gen-prompt');
+    if (ta) {
+      ta.focus();
+      document.execCommand('insertText', false, 'a cat');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const run = document.querySelector('[data-panel-for="${pick.img}"] .gen-run');
+    if (run) run.click();
+    for (let k = 0; k < 80 && !hits.length; k++) await sleep(100);
+    // 让这个假任务在自己的桩还生效时收尾，别把轮询带出去干扰后面的用例
+    for (let k = 0; k < 20; k++) {
+      const st = document.querySelector('[data-panel-for="${pick.img}"] .gen-status');
+      if (st && /完成|失败|错误/.test(st.textContent)) break;
+      await sleep(100);
+    }
+    window.fetch = real;
+    const box = document.querySelector('[data-panel-for="${pick.img}"] .wfsel');
+    return { hits, wf: box ? box.textContent.trim() : '' };
+  })()`);
+  check('遮罩清掉后不会再用「局部重绘」跑（否则出图跟原图逐位相同）',
+    wfBack.hits.length > 0 && !wfBack.hits.some((h) => /局部重绘/.test(h)),
+    JSON.stringify(wfBack));
 
   // ---- 进度百分比不许「有几率消失」 ----
   // 真实竞态：轮询某一拍拿不到数字（服务端 /api/job 的 progress 为 null —— 排队中、
@@ -3092,6 +3157,9 @@ try {
       // 失败是 app 允许的路径（「这张传不上去就跳过」），正好走纯文生图。
       if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
       if (u.startsWith('/api/job')) {
+        // 只认自己这个 pid：前面用例留下的任务也在轮询 /api/job，
+        // 不区分的话它们会把 ticks 一口一口吃掉，这条用例就会偶发卡在 30%
+        if (!u.includes('pct-test')) return real(url, opts);
         const t = ticks[Math.min(i++, ticks.length - 1)];
         return json(Object.assign({ ok: true, progress: null }, t));
       }

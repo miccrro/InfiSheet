@@ -318,8 +318,17 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
 - **预设靠 `takes_alpha_mask`**：`graph_takes()` 扫的是「有没有人在消费 `LoadImage` 的 MASK
   输出（索引 1）」，不看名字、也不看有没有 `LoadImageMask`。所以 `analyze_graph` 仍然跳过
   `LoadImageMask.image`——那种工作流在这套画布上跑不了遮罩，报 `takes_mask=true` 是空承诺。
-- **不吃遮罩就不让涂**：`maskCapable()` 决定工具条那颗按钮的 `disabled`。自动挑的工作流
-  （`wfAuto`）算「能」（生成时会切到吃遮罩的那张）；用户手选过又不吃遮罩就真禁用。
+- **工作流按「有没有遮罩」推导，不按记忆**：`reconcileWorkflow()` 每次生成前对一次，两个方向
+  都要对，任一对不上都是「生成成功但图没变」这种最难自查的坏：
+  - 有遮罩 + 工作流不吃遮罩 → mask 根本没进图，涂了白涂；
+  - 没遮罩 + 工作流吃遮罩 → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，出图与原图逐位相同。
+  自动挑的（`wfAuto`）两边都自己切并 `flash` 说明；用户手选过的不动，只提示并中止这一次。
+- **`pickWorkflow()` 不挑吃遮罩的工作流**：`krea2-局部重绘` 的分类是 `img2img`，按文件名排序
+  还排在最前，所以「按参考图自动挑」会一路挑到它——那等于每次都跑一次「什么都不改」。
+  自动挑选的候选一律先滤掉 `alphaMask`，它只能由遮罩编辑器（`ensureMaskWorkflow`）显式选中。
+- **工具条按钮只按机器能力禁用**：`maskCapable()` 只看这台机器上有没有吃遮罩的工作流，
+  不看当前选的是哪张。早期按「当前工作流吃不吃」判断，老存档（wf 是文生图）一进来按钮就是
+  灰的，用户只会认为功能坏了；现在打开时由 `ensureMaskWorkflow()` 当场切过去并说明换成了什么。
 - 编辑器是**全屏浮层**，canvas 内部尺寸 = 原图像素，显示尺寸由 JS 按 contain 算一次写进
   `.me-frame`，落笔只有一处换算 `scale = doc.w / rect.width`——上一版挂在节点缩略图上，
   对位链条是 `--ar → aspect-ratio → object-fit: contain → inset:0`，任一环断就错位。

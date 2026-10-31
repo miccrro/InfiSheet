@@ -737,21 +737,27 @@
     const wants = Array.isArray(need) ? need : [need];
     let saved = '';
     try { saved = localStorage.getItem('infisheet-default-wf') || ''; } catch { /* 隐私模式 */ }
+    // 靠遮罩驱动的（局部重绘）不进自动挑选：它的 mask 来自图片的 alpha 通道，
+    // 一张普通参考图喂进去 alpha 全是不透明 → mask 全 0 → 什么都不重绘，出图跟原图逐位相同。
+    // 只有用户在遮罩编辑器里明确要重绘时，才由 ensureMaskWorkflow 显式选它。
+    const auto = list.filter((o) => !o.alphaMask);
     for (const want of wants) {
       // 设置里指定的「默认工作流」只要同类就优先用——否则那个设置就成了摆设
       const mine = saved ? list.find((o) => o.id === saved) : null;
       if (mine && mine.category === want) return saved;
-      const hit = list.find((o) => o.category === want);
+      const hit = auto.find((o) => o.category === want);
       if (hit) return hit.id;
     }
-    return list.length ? list[0].id : '';
+    return (auto[0] || list[0] || {}).id || '';
   }
   function defaultWorkflowId() {
     const list = presetOptions();
     let saved = '';
     try { saved = localStorage.getItem('infisheet-default-wf') || ''; } catch { /* 隐私模式 */ }
     if (saved && list.some((o) => o.id === saved)) return saved;
-    return list.length ? list[0].id : '';
+    // 同上：兜底别落到局部重绘上，否则新建的图片节点一生成就是「原图原样回来」
+    const auto = list.filter((o) => !o.alphaMask);
+    return (auto[0] || list[0] || {}).id || '';
   }
 
   // 工作流库变了（新增/删除/导入）就重新拉一次：
@@ -2578,26 +2584,9 @@
     // 它是 unshift 进 picked 的第一张——工作流的第一个 image 插槽拿到它，
     // 而它本身就是「原图 + alpha」，所以图和遮罩天然配对，不存在两个文件错位的可能。
     const mdoc = maskDocOf(n);
-    if (mdoc && mdoc.strokes.length && n.dataURL) {
-      const cur = presetOptions().find((o) => o.id === g.wf);
-      const canMask = cur && cur.alphaMask;
-      if (!canMask && !g.wfAuto) {
-        // 用户手选的工作流不吃遮罩：直接说清楚，别让涂了半天跑出一张全新的图（上一版就是这么坏的）
-        flash(`「${cur ? cur.label : '当前工作流'}」没有遮罩入口，涂的区域不会生效。换「Krea2 · 局部重绘」，或先清掉遮罩`);
-        return;
-      }
-      if (!canMask) {
-        const hit = presetOptions().find((o) => o.alphaMask);
-        if (!hit) {
-          flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），遮罩不会生效');
-          return;
-        }
-        if (hit.id !== g.wf) {
-          g.wf = hit.id;
-          flash(`这张图有遮罩，自动切到「${hit.label}」`);
-          queueSave();
-        }
-      }
+    const needMask = !!(mdoc && mdoc.strokes.length && n.dataURL);
+    if (!reconcileWorkflow(n, picked, needMask)) return;
+    if (needMask) {
       try {
         const name = await uploadMaskedImage(n, mdoc);
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
@@ -2607,24 +2596,8 @@
       }
     }
     // 自动挑的工作流按「有没有参考图」纠正一次：有图走图生图，没图走文生图。
-    // 只对自动挑的（wfAuto）生效——用户手选过的，哪怕选错也照他的来，别再偷偷换掉；
-    // 高清/视频/音频也不碰（它们各有专门入口，按图多图少去改只会把功能改坏）。
-    if (g.wfAuto) {
-      const cur = presetOptions().find((o) => o.id === g.wf);
-      const cat = cur ? cur.category : '';
-      if (!cat || cat === 'txt2img' || cat === 'img2img') {
-        const want = picked.length ? 'img2img' : 'txt2img';
-        if (cat !== want) {
-          const better = pickWorkflow(want);
-          const hit = presetOptions().find((o) => o.id === better);
-          if (better && better !== g.wf) {
-            g.wf = better;
-            flash(`按${picked.length ? '参考图' : '纯文生图'}自动切到「${hit ? hit.label : better}」`);
-            queueSave();
-          }
-        }
-      }
-    }
+    // 这段逻辑已经挪进 reconcileWorkflow（上面调用），因为它必须先和遮罩对齐——
+    // 分两处判断时，遮罩那边切到「局部重绘」，这边又按分类切回去，最后涂了等于没涂。
     g.busy = true; g.status = '准备工作流…'; refreshGenPanel(n);
     // 队列条目在这里就建：上传参考图、分析工作流、构建图都有可能失败，
     // 那些失败同样要能在队列里看到（否则「点了生成没反应」查无实据）。
@@ -5553,6 +5526,9 @@
         // 否则刷新后图片节点只剩一张图，参数和多图切换全丢（运行态 busy/status 不存）
         gen: n.gen ? {
           prompt: n.gen.prompt, wf: n.gen.wf, aspect: n.gen.aspect, size: n.gen.size,
+          // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
+          // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
+          wfAuto: n.gen.wfAuto !== false,
           custom: n.gen.custom || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
           batch: n.gen.batch, gallery: n.gen.gallery, idx: n.gen.idx || 0,
           // 生成历史：每次一条（时间/提示词/种子/尺寸/产物）。上限见 RUN_CAP，别让存档无限长
@@ -7503,15 +7479,14 @@
     const show = !!n && !cropSession && !bigEditor;
     bar.classList.toggle('hidden', !show);
     if (show) {
-      // 遮罩按钮跟着工作流能力走：不吃遮罩又手选过 → 直接禁用并说清原因，
-      // 别让人涂两分钟才被告知「这张工作流没有遮罩入口」（上一版就是这么坏的）
+      // 只有「这台机器上压根没有吃遮罩的工作流」才禁用；工作流不对会在点的时候自动切
       const maskBtn = bar.querySelector('[data-tool="mask"]');
-      if (maskBtn && n) {
-        const ok = maskCapable(n);
+      if (maskBtn) {
+        const ok = maskCapable();
         maskBtn.disabled = !ok;
         maskBtn.title = ok
-          ? '涂出要重绘的区域，只改涂过的地方'
-          : '当前工作流没有遮罩入口：换「Krea2 · 局部重绘」，或把工作流交回自动';
+          ? '涂出要重绘的区域，只改涂过的地方（会自动切到吃遮罩的工作流）'
+          : '没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」）';
       }
       positionImgTools();
     }
@@ -7598,16 +7573,110 @@
     return k && n.masks ? n.masks[k] || null : null;
   }
 
-  // 这个节点现在能不能涂遮罩：看工作流有没有遮罩入口（服务端扫图给的旗子，不看名字）。
-  // 自动挑的工作流（wfAuto）算「能」——生成时会自动切到吃遮罩的那张；
-  // 用户手选过的工作流不吃遮罩就真的禁用，不能让他涂完才发现白涂。
-  function maskCapable(n) {
-    const g = n && n.gen;
-    if (!g) return false;
+  // 能不能涂遮罩：只看这台机器上有没有吃遮罩的工作流。
+  // 不看当前选的是哪张——点遮罩时如果不对就当场切过去（ensureMaskWorkflow）。
+  // 之前按「当前工作流吃不吃」来禁用按钮，结果老存档（wf 是文生图、wfAuto 还丢了）
+  // 一进来按钮就是灰的，用户只会认为功能坏了。
+  function maskCapable() {
+    return presetOptions().some((o) => o.alphaMask);
+  }
+
+  // 工作流被自动换掉之后，把面板上那颗按钮的字同步过去。
+  // 不刷的话只有 3 秒的 flash 说了一句，按钮还写着旧名字——用户会以为没生效，
+  // 下次点生成又是同一轮「怎么又给我改了」。
+  function paintWfChip(n) {
+    const box = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .wfsel`);
+    const span = box && box.querySelector('.gm-btn span');
+    if (!span) return;
+    const hit = presetOptions().find((o) => o.id === n.gen.wf);
+    span.textContent = hit ? hit.label : (n.gen.wf || '（空）');
+    const btn = box.querySelector('.gm-btn');
+    if (btn) btn.title = span.textContent;
+  }
+
+  // 换工作流的唯一入口：改值 + 刷按钮 + 存档，三件事别分家
+  function setWf(n, id) {
+    if (!n || !n.gen || !id || n.gen.wf === id) return;
+    n.gen.wf = id;
+    paintWfChip(n);
+    queueSave();
+  }
+
+  // 工作流必须和「有没有遮罩」对上，两个方向都要对：
+  //   有遮罩 + 工作流不吃遮罩 → mask 根本没进图，涂了白涂（上一版就是这么坏的）
+  //   没遮罩 + 工作流吃遮罩   → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，
+  //                            出来跟原图逐位相同，最容易被当成「生成坏了」
+  // 返回 false 表示这次不该跑（要么没救了，要么得让用户自己决定），调用方直接中止。
+  function reconcileWorkflow(n, picked, needMask) {
+    const g = n.gen;
     const opts = presetOptions();
     const cur = opts.find((o) => o.id === g.wf);
-    if (cur && cur.alphaMask) return true;
-    return !!g.wfAuto && opts.some((o) => o.alphaMask);
+    const auto = g.wfAuto !== false;      // 没存过 wfAuto 的老存档按「自动」处理
+    const want = picked.length ? 'img2img' : 'txt2img';
+    if (needMask) {
+      if (cur && cur.alphaMask) return true;
+      const hit = opts.find((o) => o.alphaMask);
+      if (!hit) {
+        flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），遮罩不会生效');
+        return false;
+      }
+      g.wf = hit.id;
+      paintWfChip(n);
+      flash(`这张图有遮罩，自动切到「${hit.label}」`);
+      queueSave();
+      return true;
+    }
+    if (cur && cur.alphaMask) {
+      // 手选过就让他自己决定：静默换掉会变成「我选的又被改了」
+      if (!auto) {
+        flash(`「${cur.label}」要靠遮罩才有效：这张图没涂，跑出来会和原图一样`);
+        return false;
+      }
+      const better = pickWorkflow(want);
+      if (better && better !== g.wf) {
+        const hit = opts.find((o) => o.id === better);
+        g.wf = better;
+        paintWfChip(n);
+        flash(`这张图没涂遮罩，自动切回「${hit ? hit.label : better}」`);
+        queueSave();
+      }
+      return true;
+    }
+    // 自动挑的按「有没有参考图」纠正一次；手选过的照他的来，别再偷偷换掉。
+    // 高清 / 视频 / 音频不碰（各有专门入口，按图多图少去改只会把功能改坏）。
+    if (auto && (!cur || cur.category === 'txt2img' || cur.category === 'img2img')) {
+      const cat = cur ? cur.category : '';
+      if (cat !== want) {
+        const better = pickWorkflow(want);
+        const hit = opts.find((o) => o.id === better);
+        if (better && better !== g.wf) {
+          g.wf = better;
+          paintWfChip(n);
+          flash(`按${picked.length ? '参考图' : '纯文生图'}自动切到「${hit ? hit.label : better}」`);
+          queueSave();
+        }
+      }
+    }
+    return true;
+  }
+
+  // 当前工作流吃不了遮罩就切到能吃的那张，并说清楚换成了什么（不静默换）
+  function ensureMaskWorkflow(n) {
+    const g = n && n.gen;
+    if (!g) return null;
+    const opts = presetOptions();
+    const cur = opts.find((o) => o.id === g.wf);
+    if (cur && cur.alphaMask) return cur;
+    const hit = opts.find((o) => o.alphaMask);
+    if (!hit) return null;
+    const from = cur ? cur.label : '当前工作流';
+    g.wf = hit.id;
+    paintWfChip(n);   // 面板上的按钮立刻改成新名字，别只靠那 3 秒的提示
+    // 不钉 wfAuto：工作流是「按有没有遮罩」推导出来的，不是用户手选。
+    // 钉住的话，清掉遮罩之后节点会永远卡在局部重绘上，跑出来跟原图一模一样。
+    queueSave();
+    flash(`「${from}」不吃遮罩，已换成「${hit.label}」`);
+    return hit;
   }
 
   function putMaskDoc(n, doc) {
@@ -7718,6 +7787,11 @@
 
   function openMaskEditor(n) {
     if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再涂'); return; }
+    // 进编辑器之前先把工作流对齐：涂了却因为工作流不吃遮罩而不生效，是最难查的一类问题
+    if (!ensureMaskWorkflow(n)) {
+      flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），涂了也不会生效');
+      return;
+    }
     if (maskSession) closeMaskEditor();
     loadImageEl(n.dataURL)
       .then((img) => buildMaskEditor(n, img))
