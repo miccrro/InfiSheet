@@ -2626,6 +2626,8 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 #imgTools .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 #imgTools .it-btn:active { background: rgba(255, 255, 255, 0.2); }
+/* 「扩图」是开关：开着的时候按钮亮着，提示「再点一次收起」 */
+#imgTools .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
 #imgTools .it-btn .oi { width: 15px; height: 15px; }
 /* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，九个图标里有五个是「涂抹 / 编辑」类，
    猜不出来。整条因此宽到 ~590px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
@@ -2684,9 +2686,9 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 
 /* ---------- 图片浮层外壳（裁剪 / 扩图共用） ---------- */
 /* 这一套 .crop-* 是「图片 + 浮层」的通用外壳：标题 + 比例按钮 + 舞台 + 底栏。
-   裁剪是在原图上拉框，扩图是在新画布上把原图摆中间、四条新边标出来。
-   两边共用同一份样式，改一处两边一起变——「统一」靠的是共用，不是照着抄一遍。 */
-#cropMask, #outpaintMask {
+   裁剪是在原图上拉框；扩图把中间的舞台搬到了节点自己身上（见下面「扩图」一节），
+   只留下比例按钮 / 底栏按钮这两套控件和裁剪共用，改一处两边一起变。 */
+#cropMask {
   position: fixed; inset: 0; z-index: 120;
   display: grid; place-items: center;
   background: rgba(8, 9, 12, 0.74);
@@ -2769,19 +2771,24 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .crop-btn.primary:hover { background: #8bbcfd; border-color: #8bbcfd; color: #08111f; }
 .crop-btn.primary:active { background: #5b98ef; }
 
-/* ---------- 扩图：同一个外壳，换中间的舞台 ---------- */
-/* 舞台就是**新画布**：原图按同样的缩放摆在正中间，四条新边用蓝色标出来。
-   底色是棋盘格——扩出来的像素此刻还不存在，真实产物里它们也是透明的，
+/* ---------- 扩图：边框直接长在节点图上 ---------- */
+/* 舞台就是**新画布**：铺满缩略图（--ar 已经被改成 nw/nh），原图按 ox/oy 摆进去，
+   四条新边标蓝。底色是棋盘格——扩出来的像素此刻还不存在，真实产物里它们也是透明的，
    棋盘格比纯色更诚实（纯黑会让人以为已经填上了）。 */
-.out-wrap {
-  position: relative; width: fit-content; margin-inline: auto; line-height: 0;
-}
-/* 可拖的边框：八个锚点直接复用小裁剪浮层那套 .crop-sel .ch（尺寸、光标、形状都一致）。
-   锚点挂在边框外 6px，而 .out-stage 必须 overflow:hidden 才保得住圆角，
-   所以边框单独放在舞台外面一层，由 .out-wrap 当定位父级。 */
-.out-sel { inset: 0; cursor: default; touch-action: none; }
-.out-stage {
-  position: relative; overflow: hidden; border-radius: 10px;
+/* overflow 必须放开：锚点挂在框外 6px，缩略图默认 overflow:hidden 会把它们剪掉一半。
+   圆角交给 .op-stage 自己裁。 */
+.node.image .thumb.op-mode { overflow: visible; }
+/* 扩图模式下这些都不该露头：图片本体由 .op-stage 里的那份摆，
+   缩略图里原有的 img / 遮罩预览 / 大图 / 翻页 / 生成历史全让位 */
+.node.image .thumb.op-mode > img,
+.node.image .thumb.op-mode > .mask-ov,
+.node.image .thumb.op-mode > .img-zoom,
+.node.image .thumb.op-mode > .img-count,
+.node.image .thumb.op-mode > .img-nav,
+.node.image .thumb.op-mode > .img-hist,
+.node.image .thumb.op-mode > .gen-overlay { display: none; }
+.op-stage {
+  position: absolute; inset: 0; overflow: hidden; border-radius: 8px;
   background-color: #101114;
   background-image:
     linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
@@ -2789,28 +2796,30 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   background-size: 16px 16px;
   background-position: 0 0, 8px 8px;
 }
-/* 尺寸由 draw() 按「新画布整体塞进视口」算好写死，原图按同一比例绝对定位，
-   所以不能再吃 .crop-stage img 的 max-width / max-height（那会把图缩到和舞台对不上） */
-.out-stage img {
+/* 尺寸由 draw() 按「新画布塞进缩略图」算好写死，原图按同一比例绝对定位，
+   所以不能再吃 .thumb img 的 width:100%（那会把图拉满整个新画布） */
+.op-stage img {
   position: absolute; display: block;
   max-width: none; max-height: none; border-radius: 0;
 }
-.out-bands { position: absolute; inset: 0; pointer-events: none; }
-.out-bands i { position: absolute; background: rgba(110, 168, 254, 0.18); }
+.op-bands { position: absolute; inset: 0; pointer-events: none; }
+.op-bands i { position: absolute; background: rgba(110, 168, 254, 0.18); }
 /* 原图边界：一圈虚线，说清「这条线以内是原来的像素，外面是模型要补的」 */
-.out-orig {
+.op-orig {
   position: absolute; pointer-events: none; box-sizing: border-box;
   border: 1px dashed rgba(110, 168, 254, 0.85);
 }
-.out-pad {
-  display: flex; align-items: center; gap: 8px; margin-right: 8px;
-  font-size: 11.5px; color: #8f8f8f; white-space: nowrap;
-}
-.out-pad input[type="range"] { width: 96px; accent-color: #6ea8fe; }
-.out-pad b { min-width: 32px; text-align: right; color: #e2e2e2; font-variant-numeric: tabular-nums; }
-/* 选了目标比例时「四周各扩」不参与计算，灰掉说明它为什么拖了没反应 */
-.out-pad.is-off { opacity: 0.4; }
-.out-pad.is-off input { cursor: not-allowed; }
+/* 八个锚点直接复用裁剪那套 .crop-sel .ch（形状、光标都一致），只把位置改成铺满缩略图 */
+.op-sel { inset: 0; cursor: default; touch-action: none; }
+
+/* 边框下面那条：比例档 + 尺寸读数 + 完成。
+   和生成面板同属这个节点，所以宽度只有节点那么宽，比例档排两行也认了 */
+.op-bar { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.op-ratios { display: flex; flex-wrap: wrap; gap: 4px; }
+.op-ratios .crop-ratio { height: 22px; padding: 0 8px; font-size: 11px; }
+.op-foot { display: flex; align-items: center; gap: 8px; }
+.op-size { font-size: 11px; color: #8f8f8f; font-variant-numeric: tabular-nums; }
+.op-foot .crop-btn { height: 24px; padding: 0 10px; font-size: 11px; }
 
 /* 纯图片节点标题上的「生成」药丸：这里不挂生成面板，点它才展开。
    灰底（表示「没开」）而不是蓝底，免得和左边的尺寸标签抢眼 */
