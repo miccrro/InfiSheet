@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comfy 无限画布 · 本地服务
+"""InfiSheet · 无限画布 · 本地服务
 
 零依赖（Python 标准库）的本地服务，把浏览器画布接到本机 ComfyUI：
   * 静态页面 / 静态资源
@@ -31,6 +31,7 @@ import struct
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import mcp_server
+
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 PRESETS = ROOT / "presets"
@@ -46,6 +49,14 @@ DATA = ROOT / "data"
 LIBRARY = DATA / "library"
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
+
+# 实际监听的端口（main() 里回填）。MCP 的安装面板要把「客户端该连哪个端口」写进配置，
+# 而它可能不是默认的 8788。
+PORT = 8788
+
+# serve_forever 的那个实例（main() 里回填）。「关闭服务」按钮要能把循环停掉——
+# 没有它就只能 os.kill 自己，端口释放和连接收尾都得靠运气。
+SERVER = None
 
 # 输出类节点：从 /history 里取产物时用得上的节点类型
 OUTPUT_TYPES = {
@@ -58,10 +69,61 @@ _oi_lock = threading.Lock()
 
 # --------------------------------------------------------------------------- #
 # 进度：后端订阅 ComfyUI 的 websocket（浏览器直连会被 ComfyUI 的 Origin 校验挡掉）
+#
+# 关键：ComfyUI 的 progress / progress_state 事件是**指名发给提交任务的那个 client_id**
+# 的（server.py: send_json 里 `elif sid in self.sockets`）。所以监听用的 clientId 和
+# /prompt 里带的 client_id 必须是同一个字符串，否则一条都收不到——之前两边一个写死
+# 「canvas-progress」、一个随机 uuid，于是画布上永远只有「生成中…」没有百分比。
+# （所以下面这个常量是唯一出处：别的文件里再写一遍这个字符串，进度就又哑了）
 # --------------------------------------------------------------------------- #
+PROGRESS_CLIENT = "canvas-progress"
 PROGRESS: dict[str, int] = {}
+PROGRESS_NODES: dict[str, dict[str, tuple[float, float]]] = {}
 PROGRESS_LOCK = threading.Lock()
 _ws_started = False
+
+
+def _progress_update(pid, node_id, value, total) -> None:
+    """把「某个节点跑到第几步」累加成整条任务的百分比。
+
+    两种消息都往同一张表里记，按节点 id 去重：
+    - progress_state：一条消息带所有节点的 value/max（新版 ComfyUI，5.x 起）；
+    - progress：一次一个节点（老版本）。两种是同时发的，写的是同一组数字。
+
+    两条硬规则，都是实测踩出来的：
+
+    1. **只算「有步数」的节点**（max > 1）。progress_state 会把 VAEDecode / SaveImage /
+       CLIPTextEncode / EmptyLatentImage 这些一次性节点也列进来，它们的 max 恒为 1 ——
+       一进分母，百分比当场往回跳。Krea2 实测：采样跑满 99%，开始解码那一下变成 94%
+       （14/14 → 14/15），用户看到的就是「进度倒退」。
+    2. **不做全局「只许往前」**（试过）：多采样器工作流里，第二个采样器开工时和「解码挤进
+       分母」长得很像，一刀切禁掉会让第二个采样器的整段过程都显示 99%。真正该挡的是第 1 条，
+       剩下的往后退都是真的（比如同一节点被重跑）。
+
+    分子 = 各采样器已跑步数之和，分母 = 各采样器步数之和。只按「当前那个节点」算会在
+    多采样器工作流里从 100% 跳回 0%（Qwen 的 refiner 链就是），看着像重来了。
+    """
+    if not pid or not total or not isinstance(value, (int, float)):
+        return
+    key = str(node_id if node_id is not None else "")
+    with PROGRESS_LOCK:
+        if len(PROGRESS_NODES) > 300:      # 任务表不清理，长跑一天也就这么多
+            PROGRESS_NODES.clear()
+            PROGRESS.clear()
+        nodes = PROGRESS_NODES.setdefault(str(pid), {})
+        # 同一节点重跑（自动重试/重采样）时 value 会退回 0，直接覆盖，不要把进度钉死
+        nodes[key] = (float(value), float(total))
+        # 只有 max > 1（真按步跑）的节点才算数。**不能**「一个都没有时退回全部节点」：
+        # 采样器开工前那一瞬间表里只有 EmptyLatentImage(1/1)、CLIPTextEncode(0/1) 这些，
+        # 退回全部就会算出 50% → 67% → 7% 这种先跳高再掉下来的假数字（实测抓到过）。
+        # 采样器还没报数时干脆不写，前端照旧显示「生成中…」。
+        pool = [v for v in nodes.values() if v[1] > 1]
+        steps = sum(m for _, m in pool)
+        if steps <= 0:
+            return
+        done = sum(v for v, _ in pool)
+        # 99 封顶：采样器跑满时解码还没完，写 100 会「卡在 100% 等很久」
+        PROGRESS[str(pid)] = max(0, min(99, int(round(done / steps * 100))))
 
 
 def _ws_recv(sock: socket.socket, n: int) -> bytes:
@@ -112,7 +174,7 @@ def _ws_loop() -> None:
             sock = socket.create_connection((host, port), timeout=10)
             key = base64.b64encode(os.urandom(16)).decode()
             sock.sendall(
-                (f"GET /ws?clientId=canvas-progress HTTP/1.1\r\nHost: {host}:{port}\r\n"
+                (f"GET /ws?clientId={PROGRESS_CLIENT} HTTP/1.1\r\nHost: {host}:{port}\r\n"
                  "Upgrade: websocket\r\nConnection: Upgrade\r\n"
                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode()
             )
@@ -135,17 +197,16 @@ def _ws_loop() -> None:
                     msg = json.loads(data.decode("utf-8"))
                 except Exception:
                     continue
-                if msg.get("type") != "progress":
+                if msg.get("type") not in ("progress", "progress_state"):
                     continue
                 d = msg.get("data") or {}
-                pid, value, total = d.get("prompt_id"), d.get("value"), d.get("max")
-                if not pid or not isinstance(value, (int, float)) or not total:
-                    continue
-                pct = max(0, min(100, round(value / total * 100)))
-                with PROGRESS_LOCK:
-                    if len(PROGRESS) > 500:
-                        PROGRESS.clear()
-                    PROGRESS[pid] = pct
+                if msg.get("type") == "progress":
+                    _progress_update(d.get("prompt_id"), d.get("node"), d.get("value"), d.get("max"))
+                else:
+                    pid = d.get("prompt_id")
+                    for node_id, st in (d.get("nodes") or {}).items():
+                        if isinstance(st, dict):
+                            _progress_update(pid, node_id, st.get("value"), st.get("max"))
         except Exception:
             time.sleep(3)
         finally:
@@ -531,6 +592,10 @@ def analyze_graph(graph: dict) -> dict:
             decl = spec.get(name)
             if not decl:
                 continue
+            # 遮罩入口（LoadImageMask）不再暴露：遮罩功能已移除。留着它只会退化成
+            # 一个「文件名下拉」，用户选了也不生效——比没有更糟。
+            if ct == "LoadImageMask" and name == "image":
+                continue
             vtype = decl[0]
             slot = {
                 "key": f"{node_id}.{name}",
@@ -703,10 +768,167 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# MCP 安装：把「客户端该怎么配」算出来，必要时替他写进配置文件
+#
+# 为什么要在应用里做这件事：MCP 的门槛全在第一步——用户得知道有这么个端点、要写 stdio 命令、
+# 路径还不能写错。顶栏那盏「MCP 待接入」的灯就是最好的入口：点它，配置直接给你抄。
+#
+# 写配置是**侵入性操作**（改的是用户全局的 mcp.json），所以三条底线：
+#   ① 只写白名单里的三个已知路径，不接受任意路径；
+#   ② 写之前先解析现有 JSON，解析不了就原样留着并如实报错，绝不覆盖；
+#   ③ 覆盖前一定备份（<文件名>.bak-时间戳），写用临时文件 + os.replace（半截文件不会留下）。
+# --------------------------------------------------------------------------- #
+MCP_CLIENTS = (
+    ("workbuddy", "WorkBuddy / CodeBuddy"),
+    ("claude", "Claude Desktop"),
+    ("cursor", "Cursor"),
+)
+
+
+def mcp_home() -> Path:
+    """客户端配置的根目录。测试用 INFISHEET_MCP_HOME 指到临时目录，别碰真配置。"""
+    raw = os.environ.get("INFISHEET_MCP_HOME")
+    return Path(raw) if raw else Path.home()
+
+
+def mcp_config_path(cid: str) -> Path:
+    home = mcp_home()
+    if cid == "workbuddy":
+        return home / ".workbuddy" / "mcp.json"
+    if cid == "cursor":
+        return home / ".cursor" / "mcp.json"
+    if cid == "claude":
+        if os.name == "nt":
+            appdata = os.environ.get("APPDATA") or str(home / "AppData" / "Roaming")
+            return Path(appdata) / "Claude" / "claude_desktop_config.json"
+        if sys.platform == "darwin":
+            return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        return home / ".config" / "Claude" / "claude_desktop_config.json"
+    raise KeyError(cid)
+
+
+def mcp_python_cmd() -> str:
+    """写进用户配置的 python 解释器。
+
+    不能直接用 sys.executable：这个服务可能是被某个应用自带的运行时拉起来的
+    （实测 WorkBuddy 走的是 `...\\.workbuddy-ai\\binaries\\python\\...\\python.exe`），
+    那条路径会随应用升级 / 卸载消失，用户照着抄完，过几天 MCP 就起不来了。
+    所以：自带的运行时一律不用，优先 PATH 里的 python；再不行就留一个裸 "python" 让客户端自己找。
+    """
+    def bundled(path: str) -> bool:
+        return "workbuddy" in path.lower()
+
+    exe = sys.executable or ""
+    if exe and not bundled(exe):
+        return exe
+    # PATH 里第一个 python 往往就是应用自带的那个，得往后翻一个真正属于系统的
+    names = ("python.exe", "python") if os.name == "nt" else ("python3", "python")
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if not folder or bundled(folder):
+            continue
+        for name in names:
+            cand = Path(folder) / name
+            if cand.is_file():
+                return str(cand)
+    hit = shutil.which("python") or shutil.which("python3") or ""
+    return hit if hit and not bundled(hit) else "python"
+
+
+def mcp_entry(cid: str) -> dict:
+    """给某个客户端用的完整配置片段（顶层就是 mcpServers，直接抄/直接合都行）。"""
+    args = [str(ROOT / "mcp_server.py")]
+    if PORT != 8788:
+        args += ["--port", str(PORT)]
+    server = {"command": mcp_python_cmd(), "args": args}
+    if cid != "claude":          # Claude Desktop 的 stdio 条目没有 type 字段
+        server = {"type": "stdio", **server}
+    return {"mcpServers": {"infisheet": server}}
+
+
+def mcp_setup_payload() -> dict:
+    clients = []
+    for cid, label in MCP_CLIENTS:
+        path = mcp_config_path(cid)
+        clients.append({
+            "id": cid, "label": label, "path": str(path),
+            "exists": path.is_file(), "config": mcp_entry(cid),
+        })
+    return {
+        "ok": True,
+        "port": PORT,
+        "endpoint": f"http://127.0.0.1:{PORT}/mcp",
+        "python": mcp_python_cmd(),
+        "script": str(ROOT / "mcp_server.py"),
+        "clients": clients,
+    }
+
+
+def mcp_install(cid: str) -> dict:
+    """把 infisheet 这一条合并进客户端的配置文件。失败就抛 ValueError（调用方回 400）。"""
+    try:
+        path = mcp_config_path(cid)
+    except KeyError:
+        raise ValueError(f"不认识的客户端：{cid}")
+
+    data: dict = {}
+    backup = None
+    if path.is_file():
+        raw = path.read_text(encoding="utf-8-sig").strip()
+        if raw:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"现有配置不是合法 JSON（第 {exc.lineno} 行），没有动它：{path}")
+            if not isinstance(data, dict):
+                raise ValueError(f"现有配置的顶层不是对象，没有动它：{path}")
+            backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+            shutil.copy2(path, backup)
+
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+        data["mcpServers"] = servers
+    servers["infisheet"] = mcp_entry(cid)["mcpServers"]["infisheet"]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return {
+        "ok": True, "path": str(path),
+        "backup": str(backup) if backup else None,
+        "entry": servers["infisheet"],
+    }
+
+
+def _shutdown_soon(delay: float = 0.4) -> None:
+    """先让响应发出去，再停掉 serve_forever。
+
+    顺序不能反：shutdown() 会让 serve_forever 立刻返回、main() 收尾关 socket，
+    这时还没发完的响应会被掐断，前端只看到「请求失败」，用户会以为按钮没生效。
+    """
+    time.sleep(delay)
+    srv = SERVER
+    try:
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        # 还有 ComfyUI 进度 ws 之类的后台线程，正常退出可能被它们拖着；
+        # 这是「用户明确要求关掉」的场景，直接结束进程，别留半开的端口。
+        os._exit(0)
+
+
+# --------------------------------------------------------------------------- #
 # HTTP 处理
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ComfyCanvas/1.0"
+    server_version = "InfiSheet/1.1"
     protocol_version = "HTTP/1.1"
 
     # ---------- 基础输出 ----------
@@ -767,12 +989,89 @@ class Handler(BaseHTTPRequestHandler):
         if os.environ.get("CANVAS_VERBOSE"):
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    # ---------- MCP（Streamable HTTP + JSON-RPC 2.0） ----------
+    def mcp_post(self):
+        """MCP 的唯一入口。协议细节全在 mcp_server.py，这里只管 HTTP 外壳：
+
+        * 请求体不是 JSON → -32700（JSON-RPC 的 parse error），不是 400 页面
+        * 通知（没有 id）→ 202 + 空 body
+        * initialize 发一个 Mcp-Session-Id，客户端之后会带着它回来（我们无状态，照收）
+        """
+        raw = self.read_body()
+        if not raw:
+            return self._send(400, b"", "text/plain; charset=utf-8")
+        payload = None
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            resp = mcp_server.error_response(-32700, "JSON 解析失败")
+        else:
+            # 桥替客户端报个名（见 mcp_server.note_client）：必须在 handle 之前，
+            # 否则 tools/call 里 _touch() 会先把身份填成泛称「MCP 客户端」。
+            # 两个头一起给：X-MCP-Client 是客户端自报的（可能把我们自己当成它），
+            # X-MCP-Host 是拉起这个桥的应用，自报不可用时顶上去。
+            try:
+                mcp_server.note_client(self.headers.get("X-MCP-Client") or "",
+                                       self.headers.get("X-MCP-Host") or "")
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                resp = mcp_server.handle(payload)
+            except Exception as exc:  # noqa: BLE001
+                resp = mcp_server.error_response(-32603, f"{type(exc).__name__}: {exc}")
+        sid = self.headers.get("Mcp-Session-Id") or ""
+        if isinstance(payload, dict) and payload.get("method") == "initialize" and not sid:
+            sid = uuid.uuid4().hex
+            mcp_server.note_session(sid)
+        extra = {"Mcp-Session-Id": sid} if sid else {}
+        if resp is None:
+            return self._send(202, b"", "text/plain; charset=utf-8", extra)
+        body = json.dumps(resp, ensure_ascii=False).encode("utf-8")
+        self._send(200, body, "application/json; charset=utf-8", extra)
+
+    def api_shutdown(self):
+        """关闭本地服务（设置面板里的「关闭服务」）。
+
+        本地服务没有鉴权，所以这里做一次同源校验：浏览器跨站发 POST 会带 Origin，
+        挡掉「随便一个网页顺手把别人画布服务关掉」这种事。非浏览器客户端不带 Origin，
+        照常放行（它们本来就跑在同一台机器上）。
+        """
+        origin = self.headers.get("Origin") or ""
+        host = self.headers.get("Host") or ""
+        if origin and urllib.parse.urlsplit(origin).netloc != host:
+            self.drain_body()
+            return self.fail("跨站请求被拒绝", 403)
+        self.drain_body()
+        self.json_out({"ok": True, "stopping": True})
+        threading.Thread(target=_shutdown_soon, daemon=True).start()
+
+    def mcp_heartbeat(self):
+        """stdio 桥的保活：每隔 lease/3 秒来一次，顺便问一下租约多长。
+
+        这是「断开」唯一的判据：桥是客户端拉起来的，客户端关窗 / 崩溃 / 被强杀之后
+        桥跟着没了，就没人再敲这个门，租约一过 /api/health 里的 alive 变 false，
+        顶栏那盏灯自己变灰（不用刷新页面）。HTTP 直连没有这条通道，也就不判它死活。
+        """
+        self.drain_body()
+        try:
+            mcp_server.note_heartbeat(self.headers.get("X-MCP-Client") or "",
+                                      self.headers.get("X-MCP-Host") or "")
+            lease = mcp_server.lease()
+        except Exception as exc:  # noqa: BLE001
+            return self.fail(f"{type(exc).__name__}: {exc}", 500)
+        return self.json_out({"ok": True, "lease": lease})
+
     # ---------- 路由 ----------
     def do_GET(self):
         self._body_read = False
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         try:
+            if path == "/mcp":
+                # Streamable HTTP 的 GET 用来开 SSE 服务端推送。本项目没有「服务端主动推」，
+                # 按规范回 405 而不是 404 —— 客户端据此知道这个端点存在、只是不支持流。
+                return self._send(405, b"", "text/plain; charset=utf-8",
+                                  {"Allow": "POST, DELETE"})
             if path.startswith("/api/"):
                 return self.api_get(path, query)
             return self.serve_static(path)
@@ -831,7 +1130,13 @@ class Handler(BaseHTTPRequestHandler):
     def api_get(self, path: str, query: dict):
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL,
-                   "features": ["presets", "projects", "canvas_history", "ui_import"]}
+                   "features": ["presets", "projects", "canvas_history", "ui_import", "mcp"]}
+            # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
+            # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
+            try:
+                out["mcp"] = mcp_server.status()
+            except Exception:  # noqa: BLE001
+                out["mcp"] = {"connected": False}
             try:
                 stats = comfy_json("/system_stats", timeout=10)
                 queue = comfy_json("/queue", timeout=10)
@@ -849,6 +1154,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 out.update({"comfy": False, "error": str(exc)})
             return self.json_out(out)
+
+        if path == "/api/mcp/setup":
+            # 「怎么把 AI 接进来」全在这里：端点、stdio 命令、三个客户端的配置文件路径与片段
+            try:
+                return self.json_out(mcp_setup_payload())
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         if path.startswith("/api/models/"):
             folder = path.rsplit("/", 1)[-1]
@@ -900,7 +1212,17 @@ class Handler(BaseHTTPRequestHandler):
             f = DATA / "projects" / f"{pid}.json"
             if not f.exists():
                 return self.fail("项目不存在", 404)
-            return self.json_out({"ok": True, "id": pid, "canvas": json.loads(f.read_text(encoding="utf-8-sig"))})
+            canvas = json.loads(f.read_text(encoding="utf-8-sig"))
+            # ?meta=1：只回版本号。前端每几秒探一次「画布被别的会话（MCP）改了吗」，
+            # 全量读一遍画布再比字符串太重了。
+            if (query.get("meta") or [""])[0] in ("1", "true"):
+                return self.json_out({
+                    "ok": True, "id": pid, "rev": int(canvas.get("rev") or 0),
+                    "savedAt": canvas.get("savedAt") or 0,
+                    "lastWriter": canvas.get("lastWriter") or "",
+                    "nodes": len(canvas.get("nodes") or []),
+                })
+            return self.json_out({"ok": True, "id": pid, "canvas": canvas})
         if path == "/api/canvas/history":
             return self.json_out({"ok": True, "items": list_canvas_history()})
 
@@ -950,6 +1272,25 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- POST 接口 ----------
     def api_post(self, path: str):
+        if path == "/mcp":
+            return self.mcp_post()
+
+        if path == "/api/mcp/heartbeat":
+            return self.mcp_heartbeat()
+
+        if path == "/api/shutdown":
+            return self.api_shutdown()
+
+        if path == "/api/mcp/install":
+            # 替用户把配置写进客户端文件。白名单客户端 + 备份 + 原子写，见 mcp_install()
+            payload = self.read_json() or {}
+            try:
+                return self.json_out(mcp_install(str(payload.get("client") or "")))
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
+
         if path == "/api/presets":
             payload = self.read_json() or {}
             graph = payload.get("graph")
@@ -991,6 +1332,34 @@ class Handler(BaseHTTPRequestHandler):
             result["ok"] = True
             return self.json_out(result)
 
+        if path == "/api/queue/cancel":
+            # 取消**一个**任务（队列面板逐条取消用）。
+            # 只发 /queue {"delete": [pid]} 对「正在跑」的那条无效——它不在 pending 里，
+            # 已经在执行了；那种情况必须 /interrupt。反过来，/interrupt 掐的是**当前正在执行的那个**，
+            # 所以必须先查队列确认 pid 真的在 running 里，否则取消一条排队任务会把别人的任务杀掉。
+            payload = self.read_json() or {}
+            pid = str(payload.get("prompt_id") or "").strip()
+            if not pid:
+                return self.fail("缺少 prompt_id", 400)
+            try:
+                queue = comfy_json("/queue", timeout=15)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"连不上 ComfyUI：{exc}", 502)
+            running = [item[1] for item in queue.get("queue_running") or [] if len(item) > 1]
+            pending = [item[1] for item in queue.get("queue_pending") or [] if len(item) > 1]
+            if pid not in running and pid not in pending:
+                # 已经跑完 / 刚被取消 / ComfyUI 重启后记录丢了：不是错误，面板只需要知道「它不在了」
+                return self.json_out({"ok": True, "prompt_id": pid, "removed": False,
+                                      "interrupted": False, "reason": "任务已结束或不在队列里"})
+            comfy_request("POST", "/queue", json.dumps({"delete": [pid]}).encode("utf-8"))
+            interrupted = False
+            if pid in running:
+                comfy_request("POST", "/interrupt", b"{}")
+                interrupted = True
+            return self.json_out({"ok": True, "prompt_id": pid, "removed": True,
+                                  "interrupted": interrupted,
+                                  "was": "running" if interrupted else "pending"})
+
         if path == "/api/run":
             payload = self.read_json() or {}
             graph = payload.get("graph") or {}
@@ -1002,7 +1371,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.fail(str(exc), 400)
             if not isinstance(graph, dict) or not graph:
                 return self.fail("缺少 API 图（graph）", 400)
-            client_id = payload.get("client_id") or str(uuid.uuid4())
+            client_id = payload.get("client_id") or PROGRESS_CLIENT
             body = json.dumps({"prompt": graph, "client_id": client_id}).encode("utf-8")
             status, _, raw = comfy_request("POST", "/prompt", body)
             try:
@@ -1042,7 +1411,9 @@ class Handler(BaseHTTPRequestHandler):
             name = str(payload.get("name") or "未命名画布")[:40]
             pid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
             canvas = {"version": 2, "name": name, "nodes": [], "links": [], "groups": [],
-                      "view": {"x": 140, "y": 120, "k": 0.85}, "savedAt": int(time.time() * 1000)}
+                      "view": {"x": 140, "y": 120, "k": 0.85}, "seq": 1,
+                      "rev": 0, "lastWriter": "canvas",
+                      "savedAt": int(time.time() * 1000)}
             projects_dir()
             (DATA / "projects" / f"{pid}.json").write_text(
                 json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1056,11 +1427,30 @@ class Handler(BaseHTTPRequestHandler):
             canvas = payload.get("canvas")
             if not isinstance(canvas, dict):
                 return self.fail("canvas 必须是对象", 400)
+            path = DATA / "projects" / f"{pid}.json"
+            prev = {}
+            if path.exists():
+                try:
+                    prev = json.loads(path.read_text(encoding="utf-8-sig"))
+                except Exception:  # noqa: BLE001
+                    prev = {}
+            prev_rev = int((prev or {}).get("rev") or 0)
+            base = payload.get("baseRev")
+            try:
+                base = int(base) if base is not None else None
+            except (TypeError, ValueError):
+                base = None
+            # 版本对不上就别盖：画布刚被别的会话（MCP 桥 / 另一个标签页）改过。
+            # 前端拿到 stale 会去读最新一版，而不是把自己手里那份旧状态写回去。
+            if base is not None and base < prev_rev:
+                return self.json_out({"ok": True, "stale": True, "rev": prev_rev,
+                                      "lastWriter": (prev or {}).get("lastWriter") or ""})
+            canvas["rev"] = prev_rev + 1
+            canvas["lastWriter"] = "canvas"
             canvas["savedAt"] = int(time.time() * 1000)
             projects_dir()
-            (DATA / "projects" / f"{pid}.json").write_text(
-                json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
-            return self.json_out({"ok": True, "id": pid})
+            path.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
+            return self.json_out({"ok": True, "id": pid, "rev": canvas["rev"]})
         if path == "/api/canvas":
             payload = self.read_json() or {}
             canvas = payload.get("canvas")
@@ -1110,6 +1500,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.json_out({"ok": True, "name": name})
 
     def api_delete(self, path: str):
+        if path == "/mcp":
+            # 客户端主动结束会话。我们无状态，删掉的只是一句「好的」。
+            self.drain_body()
+            return self._send(204, b"", "text/plain; charset=utf-8")
         if path.startswith("/api/presets/"):
             name = urllib.parse.unquote(path.split("/api/presets/", 1)[1])
             if not re.fullmatch(r"[\w\u4e00-\u9fa5 .\-]{1,120}\.json", name):
@@ -1272,6 +1666,22 @@ def safe_library_path(name: str):
     return LIBRARY / f"{name}.json"
 
 
+def graph_takes(graph: dict) -> dict:
+    """这个工作流**吃不吃**外部喂进去的图。
+
+    前端靠这面旗子挑工作流：高清必须挑真有 LoadImage 的，纯文生图流程会把参考图默默丢掉。
+    按名字猜（"图像编辑"四个字）迟早猜错——Moss_图像编辑 就是纯文生图。
+    遮罩（LoadImageMask）那面旗子已经跟着功能一起删了，见 analyze_graph 里的说明。
+    """
+    takes_image = False
+    for node in (graph or {}).values():
+        if not isinstance(node, dict):
+            continue
+        if (node.get("class_type") or "") in ("LoadImage", "LoadImageMask"):
+            takes_image = True
+    return {"takes_image": takes_image}
+
+
 def graph_kinds(graph: dict) -> list[str]:
     """从 API 图推断该工作流能产出哪些媒体类型。"""
     kinds: set[str] = set()
@@ -1298,7 +1708,8 @@ def list_presets() -> list[dict]:
             continue
         out.append({"name": f.stem, "title": g.get("title") or f.stem,
                     "file": f.name, "nodes": len(g.get("graph") or {}),
-                    "kinds": graph_kinds(g.get("graph") or {})})
+                    "kinds": graph_kinds(g.get("graph") or {}),
+                    **graph_takes(g.get("graph") or {})})
     return out
 
 
@@ -1342,7 +1753,7 @@ def job_status(pid: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Comfy 无限画布本地服务")
+    parser = argparse.ArgumentParser(description="InfiSheet · 无限画布本地服务")
     parser.add_argument("--port", type=int, default=8788)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--comfy", default=None, help="ComfyUI 地址，如 http://127.0.0.1:8188")
@@ -1351,6 +1762,9 @@ def main():
     parser.add_argument("--data", default=None,
                         help="运行时数据目录（默认 ./data）：画布快照与工作流库都放这里，便于多实例与自测")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--mcp-lease", type=float, default=30.0,
+                        help="MCP 心跳租约（秒）：stdio 桥超过这么久没心跳就判离线，顶栏灯变灰；"
+                             "0 = 不做租约（灯永不熄灭）")
     args = parser.parse_args()
 
     global COMFY_URL, DATA, LIBRARY, PRESETS
@@ -1365,9 +1779,21 @@ def main():
     LIBRARY.mkdir(parents=True, exist_ok=True)
     start_progress_ws()
 
+    # MCP 工具需要的东西一次性注入：数据目录 + ComfyUI 代理 + 工作流/图分析。
+    # 用注入而不是 import server，是为了让 mcp_server 能脱离服务单独跑协议测试。
+    mcp_server.configure(types.SimpleNamespace(
+        root=ROOT, static=STATIC, presets=PRESETS, data=DATA, library=LIBRARY,
+        comfy_json=comfy_json, comfy_request=comfy_request,
+        analyze_graph=analyze_graph, list_presets=list_presets, job_status=job_status,
+        client_id=PROGRESS_CLIENT, mcp_lease=args.mcp_lease,
+    ))
+
+    global PORT, SERVER
+    PORT = args.port
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    SERVER = httpd
     url = f"http://{args.host}:{args.port}/"
-    print(f"Comfy 无限画布: {url}")
+    print(f"InfiSheet · 无限画布: {url}")
     print(f"ComfyUI:       {COMFY_URL}")
     print("Ctrl+C 退出")
     if not args.no_browser:

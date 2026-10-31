@@ -1,6 +1,6 @@
 {
-  "name": "comfy-canvas",
-  "version": "1.0.0",
+  "name": "infisheet",
+  "version": "1.1.0",
   "private": true,
   "description": "本地 ComfyUI 的无限画布：把工作流拆成节点摆到画布上，连线、调参、运行、出图",
   "type": "module",
@@ -13,6 +13,8 @@
     "check": "node tools/check.mjs",
     "test": "python tests/smoke.py",
     "test:api": "python selftest.py",
+    "test:images": "python tests/images.py",
+    "test:mcp": "python tests/mcp.py",
     "test:e2e": "node tests/e2e/run.mjs",
     "shots": "node tests/e2e/walkthrough.mjs",
     "icons": "node tools/icons/gen.cjs",

@@ -4,7 +4,7 @@
 
 | 依赖 | 版本 | 用途 |
 |---|---|---|
-| Python | 3.9+ | 跑 `server.py`、`selftest.py`、`tests/smoke.py`、`tools/pack.py` |
+| Python | 3.9+ | 跑 `server.py`、`mcp_server.py`、`selftest.py`、`tests/smoke.py`、`tests/mcp.py`、`tools/pack.py` |
 | Node.js | **22+** | 只有测试/图标/打包脚本用；`tests/e2e/cdp.mjs` 依赖全局 `WebSocket` |
 | Chrome / Chromium | 任意近期版本 | 只有 e2e 用；找不到时设 `CHROME_PATH=/path/to/chrome` |
 | ComfyUI | 0.4+（默认 `127.0.0.1:8188`） | 产品要它才出图；`npm test` 不需要，`npm run test:api` 需要 |
@@ -29,6 +29,7 @@ npm run dev          # 8788 + 不自动开浏览器
 npm run check        # 所有 js 语法检查 + py_compile（不装 linter 也能跑）
 npm test             # 冒烟：起隔离实例，验静态/接口/项目 CRUD/防穿越（不需要 ComfyUI）
 npm run test:api     # 完整接口回归：会真的往 ComfyUI 丢一个 64×64 任务
+npm run test:mcp     # MCP 协议与工具（不用浏览器）
 npm run test:e2e     # 浏览器 e2e：headed 用 HEADED=1
 npm run shots        # 截一套图到 tests/.tmp/shots/（改完 UI 看效果用）
 npm run icons        # 重新生成 static/icons.js
@@ -45,6 +46,7 @@ selftest.py            # 需要 ComfyUI 的接口回归
 static/                # 前端三件套 + icons.js（生成物）
 presets/               # 内置 API 工作流
 tests/smoke.py         # 无依赖冒烟
+tests/mcp.py           # MCP 协议 / 工具 / rev 锁 / stdio 桥
 tests/e2e/             # CDP 驱动的浏览器测试与截图脚本
   cdp.mjs              #   驱动核心（起 Chrome / eval / 点 / 拖 / 截图）
   run.mjs              #   断言式 e2e（npm run test:e2e）

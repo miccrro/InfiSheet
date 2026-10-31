@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Comfy 无限画布</title>
+<title>InfiSheet · 无限画布</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='5' fill='%231a1a1a'/%3E%3Ccircle cx='10' cy='10' r='4' fill='%2309caf5'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/style.css" />
 </head>
@@ -37,8 +37,25 @@
     <div id="statusChip">
       <span id="saveState" class="chip-dim">已保存</span>
       <span class="chip-sep"></span>
+      <!-- MCP 接入灯：有 AI 客户端握手成功才亮。不亮时也给一句话，否则用户不知道
+           这个能力存在、更不知道该怎么把它点亮。 -->
+      <span id="mcpSeg" class="chip-seg hidden">
+        <span id="mcpChip" class="chip-mcp pending" role="button" tabindex="0"
+              title="点一下看怎么把 AI 接进来（MCP 安装）">
+          <span class="dot" id="mcpDot"></span>
+          <span id="mcpText">MCP 待接入</span>
+          <span class="mcp-go" aria-hidden="true">›</span>
+        </span>
+        <span class="chip-sep"></span>
+      </span>
       <span class="dot" id="healthDot"></span>
       <span id="healthText">正在连接 ComfyUI…</span>
+      <span class="chip-sep"></span>
+      <button id="queueBtn" class="chip-btn" title="任务队列：画布上所有排队 / 生成中 / 已完成的任务">
+        <span class="ico" data-icon="time" aria-hidden="true"></span>
+        <span>任务</span>
+        <span id="queueCount" class="qb-count hidden">0</span>
+      </button>
     </div>
   </div>
 
@@ -49,7 +66,7 @@
         <div class="home-brand">
           <span class="logo-orb"></span>
           <div>
-            <b>Comfy 无限画布</b>
+            <b>InfiSheet · 无限画布</b>
             <span>本地 ComfyUI 的可视化创作台</span>
           </div>
         </div>
@@ -174,6 +191,67 @@
   </main>
 </div>
 
+<!-- MCP 接入：点顶栏那盏灯打开。MCP 的门槛全在第一步（端点、stdio 命令、路径），
+     所以这里直接把能抄的配置摆出来，还能一键写进客户端配置文件。 -->
+<div id="mcpSetup" class="hidden">
+  <div class="sheet">
+    <header>
+      <strong>接入 MCP · 让 AI 直接操作这块画布</strong>
+      <button id="mcpSetupClose" title="关闭">✕</button>
+    </header>
+    <div class="mcp-body">
+      <div class="mcp-status" id="mcpSetupStatus">
+        <span class="dot" id="mcpSetupDot"></span>
+        <span id="mcpSetupState">正在读取…</span>
+      </div>
+
+      <div class="mcp-row">
+        <span class="mcp-k">HTTP 端点</span>
+        <code id="mcpSetupEndpoint">…</code>
+        <button class="mcp-btn" data-copy="endpoint">复制</button>
+      </div>
+
+      <p class="mcp-tip">
+        两种接法，任选其一：<b>stdio 桥</b>（推荐，客户端自己拉起进程，服务没起会自动启动）；
+        或者自己先跑 <code>python server.py</code>，在客户端里填上面的 HTTP 端点。
+      </p>
+
+      <div class="mcp-tabs" id="mcpSetupTabs"></div>
+
+      <div class="mcp-pane">
+        <div class="mcp-row">
+          <span class="mcp-k">配置文件</span>
+          <code id="mcpSetupPath">…</code>
+          <span class="mcp-flag" id="mcpSetupExists"></span>
+        </div>
+        <pre class="mcp-json" id="mcpSetupJson"></pre>
+        <div class="mcp-actions">
+          <button class="mcp-btn primary" id="mcpSetupCopy">复制这段 JSON</button>
+          <button class="mcp-btn" id="mcpSetupWrite">写入这个文件</button>
+          <span class="mcp-note" id="mcpSetupNote"></span>
+        </div>
+      </div>
+
+      <p class="mcp-tip dim">
+        写完之后：WorkBuddy / CodeBuddy 到<b>连接器管理右上角「自定义连接器」点 Trust</b>（新条目不会自动生效）；
+        Claude Desktop 重启客户端即可。接上之后顶栏那盏灯会自己变绿，不用刷新页面。
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- 服务关掉之后：页面还在，但后端没了。不遮的话每个操作都会静默失败，用户会以为画布坏了 -->
+<div id="serverDown" class="hidden">
+  <div class="sd-card">
+    <div class="sd-dot"></div>
+    <h2>服务已关闭</h2>
+    <p id="serverDownText">正在关闭…</p>
+    <p class="sd-hint">画布这份内容还在浏览器里，但后端停了：生成、保存、取图都不会再响应。<br>
+      重新开始：双击项目目录里的 <b>启动.bat</b>，再刷新这一页。</p>
+    <button type="button" id="serverDownReload">重新连接</button>
+  </div>
+</div>
+
 <!-- 工作流选择弹窗：固定尺寸，左导航 + 右内容 -->
 <div id="modal" class="hidden">
   <div class="sheet">
@@ -222,10 +300,30 @@
 </div>
 <script src="/icons.js"></script>
 <script src="/app.js"></script>
+<!-- 生成队列面板：同样是 body 直接子节点。
+     #statusChip 带 overflow:hidden（还要防它被裁），而且它在最后一层样式里可能带
+     backdrop-filter（会变成 fixed 的包含块）——挂里面定位必歪。 -->
+<div id="queuePanel" class="hidden" role="dialog" aria-label="生成队列">
+  <header>
+    <strong>生成队列</strong>
+    <span id="queueSummary" class="qs-sum">还没有任务</span>
+    <span class="qs-gap"></span>
+    <button id="queueCancelAll" class="qs-btn" type="button">全部取消</button>
+    <button id="queueClear" class="qs-btn" type="button">清空已结束</button>
+  </header>
+  <div id="queueList"></div>
+</div>
 <!-- 对齐 / 分布悬浮条：选中 2 个以上节点时浮出。
      必须是 body 的直接子节点：dockWrap 带 backdrop-filter，会成为 fixed 的包含块，
      放里面的话 position: fixed 会变成相对 dockWrap 定位。 -->
 <div id="alignBar" class="hidden" role="toolbar" aria-label="对齐与分布"></div>
+
+<!-- 连线中点的删除按钮：点中一条连线时浮出。位置由 app.js 按曲线真实中点算（屏幕坐标），
+     大小不随缩放变化——放到 #world 里会跟着缩放，200% 时按钮大得像块膏药、25% 时点不着。 -->
+<button id="linkDel" class="hidden" type="button"
+        title="删除这条连线（也可以选中后按 Delete）" aria-label="删除这条连线">
+  <span class="ico" data-icon="close" aria-hidden="true"></span>
+</button>
 
 </body>
 </html>

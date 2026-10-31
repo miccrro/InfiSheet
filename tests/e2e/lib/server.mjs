@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const ROOT = path.resolve(E2E_DIR, '../..'); // comfy-canvas/
+export const ROOT = path.resolve(E2E_DIR, '../..'); // infisheet/
 export const TMP = path.join(ROOT, 'tests', '.tmp');
 
 const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
@@ -36,10 +36,12 @@ export function seedProject(dataDir, fixtureName = 'canvas-basic.json', id = '20
   return id;
 }
 
-export async function startServer({ port, dataDir }) {
-  const proc = spawn(PY, ['-X', 'utf8', 'server.py', '--port', String(port), '--data', dataDir, '--no-browser'], {
+export async function startServer({ port, dataDir, extraArgs = [] }) {
+  const proc = spawn(PY, ['-X', 'utf8', 'server.py', '--port', String(port), '--data', dataDir,
+    '--no-browser', ...extraArgs], {
     cwd: ROOT,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    // MCP 安装会往客户端配置里写条目：指到临时 HOME，别碰用户真的 ~/.workbuddy/mcp.json
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', INFISHEET_MCP_HOME: path.join(dataDir, 'mcp-home') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';
@@ -49,7 +51,10 @@ export async function startServer({ port, dataDir }) {
   const t0 = Date.now();
   while (Date.now() - t0 < 20000) {
     try {
-      const r = await fetch(base + 'api/health', { signal: AbortSignal.timeout(1500) });
+      // 探 /api/projects 而不是 /api/health：后者会顺手去问 ComfyUI，ComfyUI 没开时
+      // 本机那条代理要两秒甚至十几秒才吐「connection refused」，探测直接被 abort，
+      // 整套 e2e 会误报「server 没起来」（真机踩过两次）。这里只想知道「http 起没起」。
+      const r = await fetch(base + 'api/projects', { signal: AbortSignal.timeout(3000) });
       if (r.ok) return { proc, base, stop: () => stopServer(proc) };
     } catch { /* 还没起来 */ }
     if (proc.exitCode !== null) break;

@@ -1,0 +1,74 @@
+{
+ "title": "Vosr+2图像高清化(10秒4K)",
+ "note": "",
+ "graph": {
+  "2": {
+   "class_type": "VOSR2ModelLoader",
+   "inputs": {
+    "model": "VOSR2",
+    "dtype": "default"
+   },
+   "_meta": {
+    "title": "VOSR2ModelLoader"
+   }
+  },
+  "1": {
+   "class_type": "VOSR2Upscale",
+   "inputs": {
+    "model": [
+     "2",
+     0
+    ],
+    "image": [
+     "7",
+     0
+    ],
+    "upscale": 4,
+    "seed": 437011392293293,
+    "color_alignment": "wavelet",
+    "tile_size": 512,
+    "tile_overlap": 64,
+    "vae_tile_size": 512,
+    "vae_tile_overlap": 64
+   },
+   "_meta": {
+    "title": "VOSR2Upscale"
+   }
+  },
+  "3": {
+   "class_type": "LoadImage",
+   "inputs": {
+    "image": "视频_00001.png"
+   },
+   "_meta": {
+    "title": "LoadImage"
+   }
+  },
+  "7": {
+   "class_type": "PDIMAGE_LongerSize",
+   "inputs": {
+    "image": [
+     "3",
+     0
+    ],
+    "size": 1024,
+    "interpolation": "bicubic"
+   },
+   "_meta": {
+    "title": "PDIMAGE_LongerSize"
+   }
+  },
+  "4": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "images": [
+     "1",
+     0
+    ]
+   },
+   "_meta": {
+    "title": "SaveImage"
+   }
+  }
+ }
+}

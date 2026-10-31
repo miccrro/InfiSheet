@@ -6,8 +6,8 @@
     python tools/pack.py --out D:/x   # 指定输出目录
 
 打包规则：
-- 只收白名单（server.py / selftest.py / 启动.bat / README.md / 验收报告.md / static / presets /
-  package.json 等工程文件），data/、node_modules、tests/.tmp、__pycache__、dist 一律不进；
+- 只收白名单（server.py / mcp_server.py / selftest.py / 启动.bat / README.md / 验收报告.md / static /
+  presets / package.json 等工程文件），data/、node_modules、tests/.tmp、__pycache__、dist 一律不进；
 - zip 内路径统一用 `/`、文件名用 UTF-8 —— Windows 自带压缩会用反斜杠，macOS/Linux 解压会变成怪名字。
 """
 
@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 INCLUDE_FILES = [
     "server.py",
+    "mcp_server.py",
     "selftest.py",
     "启动.bat",
     "README.md",
@@ -59,12 +60,12 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
         pass
 
     written: list[Path] = []
-    app_zip = out_dir / f"comfy-canvas-{version}-{stamp}.zip"
+    app_zip = out_dir / f"infisheet-{version}-{stamp}.zip"
     with zipfile.ZipFile(app_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in INCLUDE_FILES:
             p = ROOT / name
             if p.is_file():
-                zf.write(p, f"comfy-canvas/{name}")
+                zf.write(p, f"infisheet/{name}")
         for name in INCLUDE_DIRS:
             d = ROOT / name
             if not d.is_dir():
@@ -73,17 +74,17 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
                 rel = p.relative_to(ROOT).as_posix()
                 if rel.endswith(".pyc") or "/.tmp/" in "/" + rel:
                     continue
-                zf.write(p, f"comfy-canvas/{rel}")
+                zf.write(p, f"infisheet/{rel}")
     written.append(app_zip)
 
     if with_data:
-        data_zip = out_dir / f"comfy-canvas-data-{version}-{stamp}.zip"
+        data_zip = out_dir / f"infisheet-data-{version}-{stamp}.zip"
         data_dir = ROOT / "data"
         with zipfile.ZipFile(data_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             if data_dir.is_dir():
                 for p in sorted(data_dir.rglob("*")):
                     if p.is_file():
-                        zf.write(p, f"comfy-canvas/{p.relative_to(ROOT).as_posix()}")
+                        zf.write(p, f"infisheet/{p.relative_to(ROOT).as_posix()}")
         written.append(data_zip)
     return written
 

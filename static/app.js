@@ -1,4 +1,4 @@
-/* Comfy 无限画布 · 前端
+/* InfiSheet · 无限画布 · 前端
    节点模型：text（提示词）/ image（图片）/ wf（工作流）
    连线只允许 text→文本插槽、image→图片插槽 */
 (() => {
@@ -9,7 +9,7 @@
   const world = $('#world');
   const nodesEl = $('#nodes');
   const linksEl = $('#links');
-  const STORE_KEY = 'comfy-canvas-v2';
+  const STORE_KEY = 'infisheet-v2';
 
   const state = {
     nodes: [],
@@ -19,16 +19,18 @@
     selected: new Set(),
     linkSel: null,
     projectId: null,
+    rev: 0,            // 服务端给的存档版本号：保存时回传，落后就说明有人（MCP）改过
     groups: [],
     workflows: { presets: [], items: [] },   // boot 时从 /api/library 拉取
     name: '未命名画布',
     snap: false,
     linksHidden: false,
     minimapOn: false,
-    panelSide: 'bottom',   // 生成器面板贴在哪一侧：bottom / top / left / right
     dockSide: 'bottom',    // 底部工具条停在哪：bottom / left / right / top
     panMode: false,
     bootAt: Date.now(),
+    jobs: [],      // 生成队列（运行态，不进存档也不进撤销栈），见「生成队列」一节
+    mcpSeen: false,    // 「MCP 已连接」这盏灯是不是已经提示过（同一次会话只弹一次）
     hydrated: false,   // 启动恢复完成前，禁止把状态回写（避免空画布覆盖已存内容）
   };
 
@@ -171,12 +173,24 @@
     pasteClipboard('duplicate');
   }
 
+  // 「这一轮是不是还在跑」——遮罩/进度条的显隐只认它。
+  // busy 之外还留一个 finishing：完成的那一刻 busy 已经落了，但 100% 要在图上停 700ms 再走。
+  function overlayVisible(n) {
+    const g = n.gen || {};
+    return !!g.busy || !!g.finishing;
+  }
+
   function paintProgress(n, pct) {
+    const shown = overlayVisible(n);
+    // 工作流节点顶部那条进度条（图片节点没有，见 buildNode）
     const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .node-progress`);
     if (el) {
-      el.classList.add('on');
       const bar = el.querySelector('i');
-      if (pct == null) {
+      el.classList.toggle('on', shown);
+      if (!shown) {
+        el.classList.remove('indet');
+        bar.style.width = '0%';
+      } else if (pct == null) {
         el.classList.add('indet');
       } else {
         el.classList.remove('indet');
@@ -186,27 +200,46 @@
     // 图片中央的「生成中 42%」跟着进度走
     const ov = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .gen-overlay`);
     if (ov) {
-      ov.classList.remove('hidden');
-      const label = ov.querySelector('.gen-overlay-text');
-      if (label) label.textContent = pct == null ? '生成中…' : `生成中 ${pct}%`;
+      ov.classList.toggle('hidden', !shown);
+      if (shown) {
+        const label = ov.querySelector('.gen-overlay-text');
+        if (label) label.textContent = genOverlayText(n, pct);
+      }
     }
   }
 
-  function setProgress(n, pct) { n.progress = pct; paintProgress(n, pct); }
+  // 运行中：**只有数字才作数**。null / undefined 表示「这一拍没拿到新数字」——
+  // 服务端可能只是暂时没有步数可报（排队中、ws 还没到第一个采样器、history 先落库但
+  // 还没 completed）。上一次的 12% 仍然有效，擦了的话画面就会变成
+  // 「生成中 12% → 生成中… → 生成中 30%」，用户看到的就是「百分比有几率消失」。
+  function setProgress(n, pct) {
+    if (typeof pct === 'number') n.progress = pct;
+    paintProgress(n, n.progress);
+  }
+
+  // 新一轮开始才清零：这是唯一该把数字扔掉的时候
+  function resetProgress(n) {
+    n.progress = null;
+    if (n.gen) n.gen.finishing = false;
+    paintProgress(n, null);
+  }
 
   function finishProgress(n) {
+    n.progress = 100;
+    if (n.gen) n.gen.finishing = true;      // busy 已经落了，靠它把 100% 再撑 700ms
     paintProgress(n, 100);
-    n.progress = null;
     setTimeout(() => {
-      const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .node-progress`);
-      if (el) { el.classList.remove('on', 'indet'); el.querySelector('i').style.width = '0%'; }
+      if (n.gen) n.gen.finishing = false;
+      n.progress = null;
+      paintProgress(n, null);
     }, 700);
   }
 
   function clearProgress(n) {
     n.progress = null;
-    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .node-progress`);
-    if (el) { el.classList.remove('on', 'indet'); el.querySelector('i').style.width = '0%'; }
+    if (n.gen) n.gen.finishing = false;
+    // 以前这里只重置顶部那条 bar：图片节点没有 bar，等于什么都没做，遮罩会留在图上
+    paintProgress(n, null);
   }
 
   /* ---------------- 工具 ---------------- */
@@ -240,7 +273,12 @@
     if (zb) zb.textContent = `${Math.round(k * 100)}%`;
     scheduleMinimap();
     world.style.transform = `translate(${x}px, ${y}px) scale(${k})`;
+    // 生成器面板不吃画布的缩放：把 1/k 递给 CSS，面板自己反着缩回去，形状/字号恒定。
+    // 和 positionAlignBar / positionLinkDel 是同一个路数——屏幕坐标的东西就归屏幕管。
+    world.style.setProperty('--gp-k', String(1 / (k || 1)));
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
+    positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
+    positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
     const cell = clamp(28 * k, 16, 112);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
@@ -307,6 +345,31 @@
     const title = document.createElement('div');
     title.className = 'node-title';
     title.innerHTML = `<span class="n-icon">${NODE_ICON[n.type] || ''}</span><span class="n-name">${esc(n.title)}</span>`;
+    // 图片节点：像素尺寸和名字放同一行（以前它浮在图片右上角，正好压在画面内容上）
+    let dimEl = null;
+    if (n.type === 'image') {
+      dimEl = document.createElement('span');
+      dimEl.className = 'n-dim';
+      title.appendChild(dimEl);
+      // 纯图片节点：只放图，不摆生成面板（加载图片进来的就是这种）。想要生成时点这颗药丸。
+      if (n.plain) {
+        const gb = document.createElement('button');
+        gb.type = 'button';
+        gb.className = 'n-genon';
+        gb.title = '这个节点只放图。点一下给它加上生成面板（拿它当参考图去生成）';
+        gb.textContent = '生成';
+        gb.onclick = (ev) => {
+          ev.stopPropagation();
+          delete n.plain;
+          selectOnly(n.id);
+          rerenderNode(n.id);
+          queueSave();
+          commit();
+          flash('已打开生成面板');
+        };
+        title.appendChild(gb);
+      }
+    }
     if (n.type === 'wf') {
       const runBtn = document.createElement('button');
       runBtn.className = 'n-run primary';
@@ -337,11 +400,16 @@
       handle.onpointerdown = (ev) => { ev.preventDefault(); ev.stopPropagation(); startResize(ev, n); };
       card.appendChild(handle);
     }
-    // 顶部进度条：生成/运行时显示百分比
-    const prog = document.createElement('div');
-    prog.className = 'node-progress';
-    prog.innerHTML = '<i></i>';
-    card.appendChild(prog);
+    // 顶部进度条：生成/运行时显示百分比。
+    // 只有**工作流节点**需要它：那是它运行时唯一的反馈（没有中央遮罩可用）。
+    // 图片节点不要——卡片顶就是画面顶，怎么摆都会压着图片，而画面中央那块「生成中 42%」
+    // 已经把同样的信息盖在图上了；文本节点更用不上（它不会跑）。用户要求直接去掉。
+    if (n.type === 'wf') {
+      const prog = document.createElement('div');
+      prog.className = 'node-progress';
+      prog.innerHTML = '<i></i>';
+      card.appendChild(prog);
+    }
     el.appendChild(card);
 
     if (n.type === 'text') {
@@ -388,21 +456,25 @@
           ev.stopPropagation();
           openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0, nodeImageInfo(n));
         };
-        const dim = document.createElement('span');
-        dim.className = 'img-dim';
-        thumb.appendChild(dim);
         const im = thumb.querySelector('img');
+        // 框跟着图片的真实比例走。以前是「按 clientWidth 算一个 px 高度写上去」，而 CSS 里还留着
+        // min-height:200 兜底 —— 2:1 的图算出来 190px，被 min-height 顶到 200，object-fit:contain
+        // 就在上下各补一条黑边（用户红框圈出来的就是这两条）。现在不写高度了：img 用 height:auto，
+        // 框天然等于图片高度，多一条边都没有。只有极端的竖长图会被 max-height 截住。
         const fit = () => {
-          const w = thumb.clientWidth || 344;
-          const ratio = im.naturalWidth && im.naturalHeight ? im.naturalWidth / im.naturalHeight : 1;
-          const h = Math.round(Math.min(760, Math.max(150, w / ratio)));
-          thumb.style.height = `${h}px`;
-          if (im.naturalWidth) dim.textContent = `${im.naturalWidth} × ${im.naturalHeight}`;
+          thumb.classList.remove('is-empty');
+          if (im.naturalWidth) dimEl && (dimEl.textContent = `${im.naturalWidth} × ${im.naturalHeight}`);
+          // 把比例交给框：框用 aspect-ratio 自己算出高，图片就成了「刚好装下」，
+          // object-fit 没空间可补 —— 横图不上下留边、竖图不左右留边。
+          if (im.naturalWidth && im.naturalHeight) {
+            thumb.style.setProperty('--ar', (im.naturalWidth / im.naturalHeight).toFixed(4));
+          }
           scheduleLayout();
         };
         if (im.complete && im.naturalWidth) requestAnimationFrame(fit);
         im.addEventListener('load', fit);
       } else {
+        thumb.classList.add('is-empty');
         thumb.innerHTML = `
           <div class="thumb-empty">
             <span class="ph-big">${NODE_ICON.image}</span>
@@ -412,14 +484,15 @@
                 ${icon('upload')}
                 <span>上传图片</span>
               </button>
-              <button class="try-item" data-try="generate">
+              ${n.plain ? '' : `<button class="try-item" data-try="generate">
                 ${icon('magic')}
                 <span>文本生图</span>
-              </button>
+              </button>`}
             </div>
           </div>`;
         thumb.querySelector('[data-try="upload"]').onclick = (ev) => { ev.stopPropagation(); pickImage(n); };
-        thumb.querySelector('[data-try="generate"]').onclick = (ev) => {
+        const tryGen = thumb.querySelector('[data-try="generate"]');
+        if (tryGen) tryGen.onclick = (ev) => {
           ev.stopPropagation();
           const panel = card.parentElement.querySelector('.gen-prompt');
           if (panel) panel.focus();
@@ -479,7 +552,8 @@
       }
       // 挂在 .node 上而不是 .node-card：标题行在卡片外面（在 flow 里占高度），
       // 挂卡片上的话「面板放上方」会压住标题——bottom:100% 相对整个节点才对。
-      el.appendChild(buildGenPanel(n));
+      // 纯图片节点（n.plain）不挂：它就是一张图，下面不该拖着一个「提示词 + 工作流 + 生成」。
+      if (!n.plain) el.appendChild(buildGenPanel(n));
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
       imgIn.onpointerdown = (ev) => { ev.stopPropagation(); startPortDrag(ev, n.id, 'in'); };
@@ -617,14 +691,20 @@
   }
 
   // 生成器下拉只用内置预设：库工作流是「我的存档」，容易和模板混在一起
+  // takes_image 由服务端扫图得出（server.py: graph_takes）：
+  // 挑工作流必须看能力，不能看名字里的「图像编辑」——Moss_图像编辑 其实是纯文生图。
   function presetOptions() {
     const w = state.workflows || { presets: [], items: [] };
-    return w.presets.map((p) => ({ id: `preset:${p.file}`, label: p.title || p.name }));
+    return w.presets.map((p) => ({
+      id: `preset:${p.file}`,
+      label: p.title || p.name,
+      image: !!p.takes_image,
+    }));
   }
   function defaultWorkflowId() {
     const list = presetOptions();
     let saved = '';
-    try { saved = localStorage.getItem('comfy-canvas-default-wf') || ''; } catch { /* 隐私模式 */ }
+    try { saved = localStorage.getItem('infisheet-default-wf') || ''; } catch { /* 隐私模式 */ }
     if (saved && list.some((o) => o.id === saved)) return saved;
     return list.length ? list[0].id : '';
   }
@@ -969,8 +1049,12 @@
   function pollPrompt(pid, onTick, onDone) {
     const t0 = Date.now();
     let lostPolls = 0;
+    // 取消之后，那一两次「已经在飞」的请求回来照样会走完 then —— 不挡的话它会把
+    // 「已取消」刷成「生成中」，甚至按中断报错。停机后一律不许再回调。
+    let stopped = false;
     const timer = setInterval(async () => {
       const res = await api(`/api/job?pid=${encodeURIComponent(pid)}`);
+      if (stopped) return;
       const secs = Math.round((Date.now() - t0) / 1000);
       if (!res.ok) { clearInterval(timer); onDone([], res.error || '查询失败', secs); return; }
       if (res.status === 'queued' || res.status === 'running') {
@@ -988,6 +1072,8 @@
       clearInterval(timer);
       onDone(res.artifacts || [], res.error, secs);
     }, 1500);
+    // 返回「停止轮询」的句柄（对象，不是函数）：队列面板取消任务时用它把前端这侧掐掉
+    return { stop() { stopped = true; clearInterval(timer); } };
   }
 
   /* ---------------- 参考图：连线来的 + @ 引用的 ---------------- */
@@ -1038,7 +1124,10 @@
     const wrap = nodesEl.querySelector(`[data-refs-for="${CSS.escape(n.id)}"]`);
     if (!wrap) return;
     const refs = refsOf(n);
-    wrap.classList.toggle('hidden', refs.length === 0);
+    // 套了风格也在这排里占一格：风格和参考图都是「这次真正会送进去的东西」，
+    // 图能看见、风格只是一颗写着名字的按钮，心里没底。缩略图 + ✕ 跟参考图一个手感。
+    const styleRef = (n.gen && n.gen.style && n.gen.style.cn) ? n.gen.style : null;
+    wrap.classList.toggle('hidden', refs.length === 0 && !styleRef);
     wrap.innerHTML = '';
     refs.forEach((r, i) => {
       const item = document.createElement('div');
@@ -1075,6 +1164,28 @@
       };
       wrap.appendChild(item);
     });
+
+    if (styleRef) {
+      const item = document.createElement('div');
+      item.className = 'gen-ref gen-ref-style';
+      item.title = `已套用风格：${styleRef.cn}（点一下换风格）`;
+      item.innerHTML = `<img src="${esc(styleThumbByRef(styleRef))}" alt="" draggable="false" />
+        <span class="gen-ref-tag">风格</span>
+        <button class="gen-ref-x" title="取消风格">✕</button>`;
+      // 点格子 = 换个风格（锚在同一行那颗风格按钮上，省得再算位置）
+      item.onclick = () => {
+        const chip = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-style`);
+        openStyleMenu(chip || item, n);
+      };
+      item.querySelector('.gen-ref-x').onclick = (ev) => {
+        ev.stopPropagation();
+        n.gen.style = null;
+        paintStyleChip(document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-style`), null);
+        renderRefs(n);
+        queueSave(); commit();
+      };
+      wrap.appendChild(item);
+    }
   }
 
   /* ---------------- 提示词编辑器（contenteditable） ---------------- */
@@ -1657,16 +1768,6 @@
     armPopClose(anchor);
   }
 
-  // 面板位置：全局偏好（存 localStorage），切换后重建所有面板
-  const PANEL_SIDES = [['bottom', '下方'], ['top', '上方'], ['left', '左侧'], ['right', '右侧']];
-  function setPanelSide(side) {
-    if (!PANEL_SIDES.some(([k]) => k === side)) return;
-    state.panelSide = side;
-    // 注意：setGlobalFlag 只存 '1'/'0'，这里要存字符串，直接写 localStorage
-    try { localStorage.setItem('comfy-canvas-panel-side', side); } catch { /* noop */ }
-    renderAll();          // 面板的 data-side 和按钮文字都在 buildGenPanel 里，重画一次最省事
-    queueSave();
-  }
   // 底部工具条停在哪：底部居中 / 左下 / 右下 / 顶部居中。
   // 位置写在 #dockWrap 的 data-dock 上，CSS 四条规则各管一处——和生成器面板同一套思路。
   const DOCK_SIDES = [['bottom', '底部居中'], ['left', '左侧居中'], ['right', '右侧居中'], ['top', '顶部居中']];
@@ -1677,7 +1778,7 @@
   function setDockSide(side) {
     if (!DOCK_SIDES.some(([k]) => k === side)) return;
     state.dockSide = side;
-    try { localStorage.setItem('comfy-canvas-dock-side', side); } catch { /* noop */ }
+    try { localStorage.setItem('infisheet-dock-side', side); } catch { /* noop */ }
     applyDockSide();
   }
   function openDockMenu(anchor) {
@@ -1704,38 +1805,371 @@
     armPopClose(anchor);
   }
 
-  function openSideMenu(anchor) {
+  /* ---------------- 风格（Krea2 的 397 个预设） ----------------
+   * 素材在 static/styles/（tools/import_styles.py 从素材包导入，只做一次）。
+   * index.json 只有分类清单，点开某个分类才拉那一份 —— 397 条提示词加起来 400KB，
+   * 不该为了一个按钮在首屏全下下来。
+   * 每条风格是一句**模板**：`Style: … Influenced by: … Subject:{prompt}`，
+   * 生成时把用户提示词填进 {prompt}，拼好的整句才是真正发给模型的东西。
+   */
+  const STYLE_BASE = 'styles/';
+  let styleCats = null;      // [{id,label,file,count,cover}]
+  const stylePacks = {};     // catId → 条目数组（拉过就留着，来回切分类不重下）
+  let styleCat = 'anime';    // 上次看的分类：动漫放第一个，用户最常用
+  let styleQuery = '';       // 搜索词：非空时跨全部分类找
+  let styleSeq = 0;          // 搜索是异步的，回包顺序不保证 —— 只认最后一次
+
+  async function loadStyleIndex() {
+    if (styleCats) return styleCats;
+    const res = await fetch(`${STYLE_BASE}index.json`, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`风格库读取失败 ${res.status}`);
+    styleCats = await res.json();
+    return styleCats;
+  }
+
+  async function loadStylePack(id) {
+    if (stylePacks[id]) return stylePacks[id];
+    const cat = (await loadStyleIndex()).find((c) => c.id === id);
+    if (!cat) throw new Error('没有这个风格分类');
+    const res = await fetch(`${STYLE_BASE}${cat.file}`, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`读不到「${cat.label}」`);
+    stylePacks[id] = await res.json();
+    return stylePacks[id];
+  }
+
+  // 节点上只存 {cat, i, cn}，不存整条提示词：
+  // ① 存进画布存档会把 400 字英文重复一遍；② 风格提示词改了就跟着一起旧。
+  async function styleOf(ref) {
+    if (!ref || typeof ref !== 'object' || !ref.cat) return null;
+    const pack = await loadStylePack(ref.cat).catch(() => null);
+    const entry = pack && pack[ref.i];
+    return entry ? { ...entry, cat: ref.cat, i: ref.i } : null;
+  }
+
+  // 把风格模板套到用户提示词上。模板里没有 {prompt} 就串在前面 ——
+  // 丢主体比丢风格严重，别为了「干净」把用户的词扔了。
+  function applyStylePrompt(text, entry) {
+    const tpl = String((entry && entry.prompt) || '').trim();
+    if (!tpl) return String(text || '');
+    const subject = String(text || '').trim();
+    if (!tpl.includes('{prompt}')) return subject ? `${tpl} ${subject}` : tpl;
+    if (!subject) {
+      // 只选了风格、没写主体：把「Subject:」这半句一起摘掉，
+      // 否则请求里留一个悬空的冒号（模型会把下一句当成主体名）
+      return tpl.replace(/[,，;；:]?\s*Subject\s*:\s*\{prompt\}/gi, '')
+        .replace(/\{prompt\}/g, '').replace(/[\s,，]+$/, '').trim();
+    }
+    return tpl.replace(/\{prompt\}/g, subject).trim();
+  }
+
+  // 缩略图文件名就是 `<分类>-<序号>.jpg`，序号从 1 开始，而存档里的指针 i 是从 0 开始的
+  // （见 tools/import_styles.py 的 `for i, s in enumerate(items, 1)`）。差一位就是另一张图。
+  function styleThumbByRef(ref) {
+    if (!ref || !ref.cat || !Number.isFinite(Number(ref.i))) return '';
+    return `${STYLE_BASE}thumbs/${ref.cat}-${String(Number(ref.i) + 1).padStart(3, '0')}.jpg`;
+  }
+
+  // 「风格」这颗按钮：没套用是调色盘 + 文字，套用后直接换成那张风格的缩略图。
+  // 光看名字（尤其「动漫风格」「动漫风格 2」这种）分不出画风，缩略图一眼就认得。
+  function paintStyleChip(btn, ref) {
+    if (!btn) return;
+    const on = !!(ref && ref.cn);
+    const thumb = on ? styleThumbByRef(ref) : '';
+    const ico = btn.querySelector('.gs-ico');
+    const name = btn.querySelector('.gs-name');
+    if (name) name.textContent = on ? ref.cn : '风格';
+    if (ico) ico.innerHTML = thumb ? `<img src="${esc(thumb)}" alt="" draggable="false" />` : icon('palette');
+    btn.classList.toggle('on', on);
+    btn.classList.toggle('has-thumb', !!thumb);
+    btn.title = on ? `已套用风格：${ref.cn}（点一下换掉）`
+      : '给这次生成套一个风格：397 个预设（动漫 / 摄影 / 绘画 …）';
+  }
+
+  function styleThumbURL(rel) {
+    return `${STYLE_BASE}${String(rel || '').replace(/^\.\//, '')}`;
+  }
+
+  function openStyleMenu(anchor, n) {
+    // 同一个按钮再点一次：收起（自己开的窗口自己关，别在用户脸上反复开关）
+    if (popAnchor === anchor && document.querySelector('.style-pop')) { closePopMenu(); return; }
     closePopMenu();
-    const menu = document.createElement('div');
-    menu.className = 'popmenu side-menu';
-    menu.onpointerdown = (ev) => ev.stopPropagation();
-    const head = document.createElement('div');
-    head.className = 'popmenu-title';
-    head.textContent = '面板位置';
-    menu.appendChild(head);
-    PANEL_SIDES.forEach(([key, label]) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.dataset.side = key;
-      b.textContent = label;
-      b.classList.toggle('active', state.panelSide === key);
-      b.onclick = (ev) => { ev.stopPropagation(); closePopMenu(); setPanelSide(key); };
-      menu.appendChild(b);
-    });
-    document.body.appendChild(menu);
-    placePopMenu(menu, anchor);
-    popAnchor = anchor;
+    const pop = document.createElement('div');
+    pop.className = 'popmenu style-pop';
+    pop.onpointerdown = (ev) => ev.stopPropagation();
+    pop.innerHTML = `
+      <div class="sp-head">
+        <strong>风格</strong><span class="sp-n"></span>
+        <button type="button" class="sp-x" title="关闭">×</button>
+      </div>
+      <input class="sp-q" placeholder="搜索：吉卜力 / watercolor / 赛博朋克…" spellcheck="false" />
+      <div class="sp-tabs"></div>
+      <div class="sp-body"><div class="sp-grid"></div></div>
+      <div class="sp-foot"></div>`;
+    document.body.appendChild(pop);
+    // 高度得按「按钮上下还剩多少地方」先算好，不能写死：
+    // 写死 540 的话，按钮在中部时上下都放不下，placePopMenu 会把它顶到视口顶部，
+    // 结果整块压在按钮和生成面板上（e2e 抓到过）。滚动交给 .sp-body。
+    const ar = anchor.getBoundingClientRect();
+    const gap = 6, edge = 8;
+    const spaceBelow = window.innerHeight - ar.bottom - gap - edge;
+    const spaceAbove = ar.top - gap - edge;
+    const useBelow = spaceBelow >= Math.min(540, spaceAbove);
+    pop.style.height = `${Math.max(240, Math.min(540, useBelow ? spaceBelow : spaceAbove))}px`;
+    placePopMenu(pop, anchor);
+    popAnchor = anchor;        // 顺序别换：placePopMenu 要用 anchor，armPopClose 要认它
     armPopClose(anchor);
+    // 每次打开从「上次那个分类的第一页」开始：搜索词留着的话，输入框是空的、列表却是筛过的，
+    // 看着像列表丢了东西。分类记住，搜索不记。
+    styleQuery = '';
+    styleSeq++;
+
+    const tabsEl = pop.querySelector('.sp-tabs');
+    const gridEl = pop.querySelector('.sp-grid');
+    const countEl = pop.querySelector('.sp-n');
+    const qEl = pop.querySelector('.sp-q');
+    const footEl = pop.querySelector('.sp-foot');
+    const cur = () => (n.gen && n.gen.style) || null;
+
+    const commitStyle = (next) => {
+      n.gen.style = next;
+      paintStyleChip(anchor, next);
+      // 参考图那排也要跟着长/收一格：风格缩略图和参考图并排放，才是「这次真送进去的东西」
+      // 的全貌。commit() 只推进撤销栈，不重建面板，所以这里得自己叫一次。
+      renderRefs(n);
+      queueSave();
+      commit();
+      closePopMenu();
+      flash(next ? `风格：${next.cn}` : '已取消风格');
+    };
+
+    const paintTabs = () => {
+      tabsEl.innerHTML = '';
+      (styleCats || []).forEach((c) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = `${c.label} ${c.count}`;
+        b.classList.toggle('on', !styleQuery.trim() && c.id === styleCat);
+        b.onclick = () => {
+          styleCat = c.id;
+          styleQuery = '';
+          qEl.value = '';
+          paintTabs();
+          paintGrid();
+        };
+        tabsEl.appendChild(b);
+      });
+    };
+
+    const paintFoot = () => {
+      footEl.innerHTML = '';
+      const r = cur();
+      if (r && r.cn) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'sp-clear';
+        b.textContent = `不用风格（当前：${r.cn}）`;
+        b.onclick = () => commitStyle(null);
+        footEl.appendChild(b);
+      }
+      const tip = document.createElement('p');
+      tip.className = 'sp-tip-line';
+      tip.textContent = '风格会拼在提示词前面：Style: … Subject: 你的提示词';
+      footEl.appendChild(tip);
+    };
+
+    const render = (list, note) => {
+      countEl.textContent = note || `${list.length} 个`;
+      gridEl.innerHTML = '';
+      if (!list.length) {
+        gridEl.innerHTML = '<p class="sp-tip">没有匹配的风格</p>';
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      list.forEach((e) => {
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'sp-cell';
+        cell.title = `${e.name_cn || e.name}\n${e.name}\n\n${String(e.prompt || '').slice(0, 220)}…`;
+        const box = document.createElement('div');
+        box.className = 'sp-img';     // 固定高度，靠 CSS 撑，不用 aspect-ratio（见 style.css 注释）
+        if (e.thumb) {
+          const img = document.createElement('img');
+          img.src = styleThumbURL(e.thumb);
+          img.alt = '';
+          img.loading = 'lazy';
+          box.appendChild(img);
+        }
+        cell.appendChild(box);
+        const lab = document.createElement('span');
+        lab.className = 'sp-name';
+        lab.textContent = e.name_cn || e.name;
+        cell.appendChild(lab);
+        const r = cur();
+        if (r && r.cat === e.cat && r.i === e.i) cell.classList.add('on');
+        cell.onclick = (ev) => {
+          ev.stopPropagation();
+          commitStyle({ cat: e.cat, i: e.i, cn: e.name_cn || e.name });
+        };
+        frag.appendChild(cell);
+      });
+      gridEl.appendChild(frag);
+    };
+
+    async function paintGrid() {
+      const q = styleQuery.trim().toLowerCase();
+      const mine = ++styleSeq;
+      gridEl.innerHTML = '<p class="sp-tip">读取中…</p>';
+      try {
+        if (q) {
+          const cats = await loadStyleIndex();
+          const all = [];
+          for (const c of cats) {
+            const pack = await loadStylePack(c.id).catch(() => []);
+            pack.forEach((e, i) => all.push({ ...e, cat: c.id, i, catLabel: c.label }));
+          }
+          if (mine !== styleSeq) return;       // 又敲了一个字，这批结果作废
+          const hit = all.filter((e) => `${e.name_cn} ${e.name} ${e.catLabel}`.toLowerCase().includes(q));
+          render(hit, `找到 ${hit.length} 个`);
+        } else {
+          const pack = await loadStylePack(styleCat);
+          if (mine !== styleSeq) return;
+          render(pack.map((e, i) => ({ ...e, cat: styleCat, i })), null);
+        }
+      } catch (err) {
+        if (mine !== styleSeq) return;
+        gridEl.innerHTML = `<p class="sp-tip">${err.message}</p>`;
+      }
+    }
+
+    qEl.oninput = () => { styleQuery = qEl.value; paintTabs(); paintGrid(); };
+    qEl.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') closePopMenu();
+      // 回车 = 直接套用第一个结果：搜的就是想要的，别逼着再挪一次鼠标
+      if (ev.key === 'Enter') {
+        const first = gridEl.querySelector('.sp-cell');
+        if (first) first.click();
+      }
+    };
+    pop.querySelector('.sp-x').onclick = (ev) => { ev.stopPropagation(); closePopMenu(); };
+
+    paintFoot();
+    loadStyleIndex().then(() => { paintTabs(); return paintGrid(); })
+      .catch((err) => { gridEl.innerHTML = `<p class="sp-tip">${err.message}</p>`; });
+  }
+
+  /* ---------------- 面板放大编辑区（独立窗口） ---------------- */
+  // 展开键放大的不是那块输入框，是**整个面板**：上排按钮、参考图、提示词、底栏原样搬进
+  // 一个居中的大窗口（用户截的绿框是那颗键，红框是整块面板）。不复制 DOM —— 直接把面板
+  // 元素挪进去，事件、状态、双向同步全都天然成立；关窗再放回节点里，画布上那块就回来了。
+  let bigEditor = null;      // { mask, node, panel, home }
+
+  function closeBigEditor(keepFocus) {
+    if (!bigEditor) return;
+    const {
+      mask, node, panel, home, onInput,
+    } = bigEditor;
+    bigEditor = null;
+    if (panel && onInput) panel.removeEventListener('input', onInput);
+    // 放回节点里。节点可能在这期间被重建过（rerenderNode），家没了就直接扔掉这块面板，
+    // 否则它会以「无主浮层」的形式留在窗口里
+    if (panel) {
+      panel.classList.remove('in-big');
+      if (home && home.isConnected) home.appendChild(panel);
+      else panel.remove();
+    }
+    mask.remove();
+    if (node) {
+      queueSave();
+      commit();
+      if (keepFocus) closeRefMenu();
+    }
+  }
+
+  function openBigEditor(n) {
+    // 同一颗按钮再点一次＝收起（自己开的窗口自己关）
+    if (bigEditor && bigEditor.node === n) { closeBigEditor(); return; }
+    closeBigEditor();
+    const panel = document.querySelector(`.gen-panel[data-panel-for="${CSS.escape(n.id)}"]`);
+    if (!panel) return;
+    const mask = document.createElement('div');
+    mask.className = 'be-mask';
+    mask.innerHTML = `
+      <div class="be-box" role="dialog" aria-modal="true" aria-label="放大编辑面板">
+        <div class="be-head">
+          <span class="be-ico">${icon('image')}</span>
+          <span class="be-title">${esc(n.title || '图片')}</span>
+          <span class="be-dim"></span>
+          <span class="be-count"></span>
+          <button type="button" class="be-x" title="关闭（Esc）">×</button>
+        </div>
+        <div class="be-body"></div>
+        <div class="be-foot">
+          <span class="be-tip">这是同一块面板，改动实时写回画布 · Esc 关闭</span>
+          <button type="button" class="be-done">完成</button>
+        </div>
+      </div>`;
+    document.body.appendChild(mask);
+    const home = panel.parentElement;
+    const body = mask.querySelector('.be-body');
+    const ta = panel.querySelector('.gen-prompt');
+    const count = mask.querySelector('.be-count');
+    const dim = mask.querySelector('.be-dim');
+    body.appendChild(panel);
+    panel.classList.add('in-big');
+    // 头部补一个「2048 × 1024」：大窗里看不到节点标题行，尺寸得跟着过来
+    if (dim && n.dataURL) {
+      const probe = new Image();
+      probe.onload = () => { dim.textContent = `${probe.naturalWidth} × ${probe.naturalHeight}`; };
+      probe.src = n.dataURL;
+    }
+    // 字数跟着面板里的提示词走（面板自己会在 input 上 absorb，这里只是把数字搬过来）
+    const paintCount = () => { if (count) count.textContent = `${promptText(ta).length} 字`; };
+    paintCount();
+    const onInput = () => paintCount();
+    panel.addEventListener('input', onInput);
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (refMenu) { closeRefMenu(); return; }   // Esc 先关 @ 菜单，再关窗口
+      closeBigEditor(true);
+    };
+    mask.addEventListener('keydown', onKey);
+    mask.addEventListener('pointerdown', (ev) => { if (ev.target === mask) closeBigEditor(); });
+    mask.querySelector('.be-x').onclick = () => closeBigEditor();
+    mask.querySelector('.be-done').onclick = () => closeBigEditor();
+    bigEditor = {
+      mask, node: n, panel, home, onInput,
+    };
+    // 打开就把光标放到末尾：多数人是「接着改」，不是从头写
+    requestAnimationFrame(() => {
+      ta.focus();
+      const r = document.createRange();
+      r.selectNodeContents(ta);
+      r.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    });
   }
 
   function buildGenPanel(n) {
-    // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值
-    n.gen = {
+    // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值。
+    // **两件事必须同时做到**：
+    // 1. 原地补（不换对象）——正在跑的那次 generateImage 在开头就把 n.gen 存成了局部变量 g，
+    //    换对象之后它的状态与轮询句柄全写进一个没人读的旧对象：面板停在「完成 · 26s」，
+    //    队列面板的取消也停不掉这次轮询（真机测出来的）。
+    // 2. 只补**缺的**字段（`=== undefined`）——用 Object.assign(n.gen, defaults) 会把已有的
+    //    gallery / prompt 一起冲掉，多图节点会当场变成空图（e2e 抓到的）。
+    const g = n.gen || (n.gen = {});
+    const DEFAULTS = {
       prompt: '', wf: defaultWorkflowId(), aspect: '1:1', size: '1k', custom: null,
       batch: 1, seedMode: 'random', seed: null,
-      status: '', busy: false, gallery: [], idx: 0, extras: [], ...(n.gen || {}),
+      status: '', busy: false, gallery: [], idx: 0, extras: [],
+      style: null,   // {cat, i, cn}：只存指针，提示词在 static/styles/ 里按需读
     };
-    const g = n.gen;
+    Object.keys(DEFAULTS).forEach((k) => { if (g[k] === undefined) g[k] = DEFAULTS[k]; });
     // 旧存档里的 preview/standard/hd 换成 1K/2K/4K（口径也从「短边」改成了「长边」）。
     // 'custom' 不在 SIZES 里但它是合法档位：漏判会把用户自己填的宽高悄悄顶回 1K——
     // 「我明明填了 512×512，出来却是 1024×1024」就是这么来的。宽高不全才回落。
@@ -1746,17 +2180,20 @@
     // 存档里的工作流可能已被删掉/改名：回落到第一个可用工作流，避免点生成才报错
     if (!presetOptions().some((o) => o.id === g.wf)) g.wf = defaultWorkflowId();
     const panel = document.createElement('div');
-    panel.className = `gen-panel${g.wide ? ' wide' : ''}`;
+    // 不再有「加宽面板」这一档：那颗按钮改成开独立放大编辑区了，宽度固定在左右各外扩 20px
+    panel.className = 'gen-panel';
     panel.dataset.panelFor = n.id;
-    panel.dataset.side = state.panelSide;   // 贴哪一侧由全局偏好决定，CSS 里四条规则分别定位
+    panel.dataset.side = 'bottom';          // 面板固定贴在节点下方（位置按钮已删除）
     panel.onpointerdown = (ev) => ev.stopPropagation();
 
     const ICON = {
       upload: icon('upload'),
+      plus: icon('plus'),
       grid: icon('material'),
       mark: icon('magic'),
       clear: icon('clear'),
       expand: icon('expand'),
+      palette: icon('palette'),
       wf: icon('wf'),
       arrow: icon('arrowUpBold'),
     };
@@ -1764,25 +2201,27 @@
     // 顶部 chips
     const chips = document.createElement('div');
     chips.className = 'gen-chips';
+    // 动作按钮单独包一层：面板只有 364px 宽，五个按钮横着排不下（「风格」选中后还要
+    // 显示中文名），以前是 nowrap + overflow 可见，最后两个按钮直接画到面板外面去了。
+    // 换行只发生在这层，两端的「位置」和「展开」保持不动。
+    const actions = document.createElement('div');
+    actions.className = 'gen-chips-main';
+    chips.appendChild(actions);
     const mkChip = (label, icon, fn, title) => {
       const b = document.createElement('button');
       b.className = 'chip';
       b.innerHTML = `${icon}<span>${label}</span>`;
       if (title) b.title = title;
       b.onclick = (ev) => { ev.stopPropagation(); fn(); };
-      chips.appendChild(b);
+      // 点按钮不抢焦点。两个好处：
+      // 1. 光标留在提示词框里，选完风格 / 清空之后能接着打字（原来点一下就丢了光标）；
+      // 2. 不会挂上 `button:focus-visible` 那圈蓝色方框 —— 用户截图里那颗「多出来的框」
+      //    就是它。键盘用户 Tab 过来照样有焦点圈，那才是该看见圈的时候。
+      b.addEventListener('pointerdown', (ev) => ev.preventDefault());
+      actions.appendChild(b);
       return b;
     };
-    // 位置：面板贴节点哪一侧。放在 chips 行最右边（margin-left:auto），不占额外高度
-    const SIDE_LABEL = { bottom: '下方', top: '上方', left: '左侧', right: '右侧' };
-    const sideBtn = document.createElement('button');
-    sideBtn.className = 'chip gen-side';
-    sideBtn.title = '生成器面板出现的位置（上 / 下 / 左 / 右）';
-    sideBtn.textContent = `${SIDE_LABEL[state.panelSide] || '下方'} ▾`;
-    sideBtn.onclick = (ev) => { ev.stopPropagation(); openSideMenu(sideBtn); };
-    chips.appendChild(sideBtn);
-
-    mkChip('上传', ICON.upload, () => pickImage(n), '上传本地图片到这个节点');
+    mkChip('上传', ICON.plus, () => pickImage(n), '上传本地图片到这个节点');
     mkChip('画布素材', ICON.grid, () => {
       const src = state.nodes.find((x) => x.type === 'image' && x.id !== n.id && x.dataURL);
       if (!src) { flash('画布上还没有其他图片可用'); return; }
@@ -1798,18 +2237,21 @@
       if (ta) { fillPrompt(ta, '', n); ta.dispatchEvent(new Event('input', { bubbles: true })); }
       queueSave(); commit();
     }, '清空下面的提示词');
-    const grow = document.createElement('span');
-    grow.className = 'grow';
-    chips.appendChild(grow);
+    // 风格：放在「清空」后面（对齐参考图里那一格）。选了就把 Style 模板拼到提示词前面，
+    // 按钮直接显示中文风格名，一眼能看出这张图带着什么风格在跑。
+    const styleBtn = mkChip('风格', ICON.palette, () => openStyleMenu(styleBtn, n), '给这次生成套一个风格');
+    styleBtn.classList.add('gen-style');
+    // 图标与名字分成两个 span：paintStyleChip 要把左边那颗换成风格的缩略图
+    styleBtn.innerHTML = `<span class="gs-ico">${ICON.palette}</span><span class="gs-name">风格</span>`;
+    paintStyleChip(styleBtn, g.style);
+    // 展开：不再「把面板加宽 60px」（那点宽度解决不了长提示词），改成单开一块放大的编辑区
     const expand = document.createElement('button');
     expand.className = 'chip icon-only';
     expand.innerHTML = ICON.expand;
-    expand.title = '展开 / 收窄面板';
+    expand.title = '把整个面板放到大窗口里编辑';
     expand.onclick = (ev) => {
       ev.stopPropagation();
-      g.wide = !g.wide;
-      panel.classList.toggle('wide', g.wide);
-      queueSave();
+      openBigEditor(n);
     };
     chips.appendChild(expand);
     panel.appendChild(chips);
@@ -1997,8 +2439,28 @@
     return panel;
   }
 
+  // 图片中央那行字：排队时明说排队，有百分比就报数字。
+  // 以前查不到进度一律写「生成中…」——队列里排着的时候也这么说，看着像卡住了。
+  // 0% 也不报：2048² 上采样器的第一步要跑七八秒，这期间一直挂着「0%」像卡死，
+  // 而进度条自己已经从 2% 起画了，眼睛能看出它动过。
+  // 写成 function 声明不是为了好看：e2e 的 pickFn 只认 `function name(`，箭头函数抠不出来。
+  function pctText(p) {
+    return typeof p === 'number' && p > 0 ? ` ${p}%` : '';
+  }
+
+  function genOverlayText(n, pctOverride) {
+    // 传进来的不是数字（null/undefined）就退回节点上记着的那个：调用方「这一拍没新数字」
+    // 不代表画面上该把已知的百分比抹掉。
+    const pct = typeof pctOverride === 'number'
+      ? pctOverride
+      : (typeof n.progress === 'number' ? n.progress : null);
+    if (typeof pct === 'number' && pct > 0) return `生成中 ${pct}%`;
+    const phase = n.gen && n.gen.job ? n.gen.job.phase : '';
+    return phase === 'queued' ? '排队中…' : '生成中…';
+  }
+
   function refreshGenPanel(n) {
-    const el = nodesEl.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
+    const el = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
     if (!el) return;
     const st = el.querySelector('.gen-status');
     if (st) { st.textContent = n.gen.status || ''; st.title = n.gen.status || ''; }
@@ -2007,21 +2469,28 @@
       btn.disabled = !!n.gen.busy;
       btn.classList.toggle('busy', !!n.gen.busy);
     }
-    // 生成中：图片上盖一层「生成中 42%」
+    // 生成中：图片上盖一层「生成中 42%」。显隐和 paintProgress 用**同一个**判据，
+    // 否则两边一打架就会出现「迟到的 tick 把遮罩重新点亮」或「完成的 100% 被提前收掉」。
     const ov = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .gen-overlay`);
     if (ov) {
-      ov.classList.toggle('hidden', !n.gen.busy);
-      if (n.gen.busy) {
-        const pct = typeof n.progress === 'number' ? n.progress : null;
+      const shown = overlayVisible(n);
+      ov.classList.toggle('hidden', !shown);
+      if (shown) {
         const label = ov.querySelector('.gen-overlay-text');
-        if (label) label.textContent = pct == null ? '生成中…' : `生成中 ${pct}%`;
+        if (label) label.textContent = genOverlayText(n);
       }
     }
   }
 
   async function generateImage(n) {
+    // 纯图片节点没有 gen，也就没有生成面板；走到这里说明有人在没面板的情况下点了生成
+    // （以前这里会直接 g.busy 崩在空指针上）。给它一句话，别让它以为点了没反应。
+    if (!n.gen) { flash('这个节点只放图：点标题上的「生成」把面板打开再生成'); return; }
     const g = n.gen;
     if (g.busy) return;
+    // 自动重试复用同一条队列记录：否则每重试一次就多一行，用户会以为提交了好几遍
+    const keepJob = g.jobReuse && g.job ? g.job : null;
+    g.jobReuse = false;
     g.retried = 0;          // 手动发起的一次生成，重置「已自动重试」标记
     if (!g.wf) { flash('先在面板里选一个工作流'); return; }
     // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
@@ -2029,7 +2498,16 @@
       .map((l) => getNode(l.from)).filter(Boolean);
     const textIn = inLinks.find((x) => x.type === 'text');
     const rawPrompt = (textIn ? (textIn.value || '') : g.prompt) || '';
-    if (!rawPrompt.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); return; }
+    // 风格：把模板套在提示词外层（Style: … Subject: 你的词）。这里必须 await ——
+    // 风格提示词不在节点上、而是要按需从 styles/ 读，读不到就照常生成（不能因为风格库挂了就不出图）。
+    let styleEntry = null;
+    if (g.style && g.style.cat) {
+      styleEntry = await styleOf(g.style).catch(() => null);
+      if (!styleEntry) flash(`风格「${g.style.cn || g.style.cat}」读不到了，这次按无风格生成`);
+    }
+    const promptText = styleEntry ? applyStylePrompt(rawPrompt, styleEntry) : rawPrompt;
+    // 只选了风格、没写提示词也能出图（模板本身就是完整的提示词）
+    if (!promptText.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); return; }
     // 参考图全上传（能传几张算几张）。以前只传第一张：用户 @ 了两张，第二张根本进不去，
     // 提示词里还留着指代——「@ 的图识别不准」有一半是这里。
     const refs = refsOf(n);
@@ -2049,21 +2527,34 @@
       } catch { /* 纯文生图 */ }
     }
     g.busy = true; g.status = '准备工作流…'; refreshGenPanel(n);
+    // 队列条目在这里就建：上传参考图、分析工作流、构建图都有可能失败，
+    // 那些失败同样要能在队列里看到（否则「点了生成没反应」查无实据）。
+    g.job = keepJob || newJob(n, 'image', { wf: g.wf, title: rawPrompt });
+    patchJob(g.job, { phase: 'running', note: '准备中' });
     try {
       const graph = await loadGraphById(g.wf);
       if (!graph) throw new Error('工作流为空');
       const a = await postJson('/api/analyze', { graph });
+      // 分析这一步也要几十毫秒到几秒：取消可能就发生在这里
+      if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
       const dims = calcDims(g.aspect, g.size, g.custom);
       // 工作流能吃几张图（Qwen 编辑流是 images.image_1..4）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
       const cap = (a.slots || []).filter((s) => s.kind === 'image').length;
       const use = cap > 0 ? picked.slice(0, cap) : [];
-      const prompt = refMarks(rawPrompt, use);   // @[甲] → 图1，和送进去的顺序一一对应
+      const prompt = refMarks(promptText, use);   // @[甲] → 图1，和送进去的顺序一一对应
       if (!prompt) throw new Error('提示词里只有 @ 引用，没有文字');
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
         { mode: g.seedMode, value: g.seed });
       const res = await postJson('/api/run', { graph: built.graph });
       if (!res.ok) throw new Error(JSON.stringify(res.error || {}).slice(0, 180));
+      // 取消发生在「提交请求已经发出」这段缝里：图确实进了 ComfyUI 队列，得再撤一次，
+      // 否则用户点了取消，画布上过一会儿还是冒出一张图。
+      if (g.job && g.job.phase === 'canceled') {
+        await postJson('/api/queue/cancel', { prompt_id: res.prompt_id }).catch(() => {});
+        g.busy = false;
+        return;
+      }
       // 把这次真正用到的种子记到生成器上：切「固定」时直接复用它就能复现这一张。
       // 注意别再往 n.values 里塞——那是**工作流节点**的插槽值表，图片节点根本没有这个字段，
       // 写了就是 `Cannot set properties of undefined`：图已经在队列里跑了，面板却报「失败」。
@@ -2094,14 +2585,24 @@
       const batchNote = built.batch && built.batch.value > 1
         ? (built.batch.applied ? ` · ${built.batch.value} 张` : ' · 张数不生效（这张工作流没有批量插槽）')
         : '';
+      // 风格：拼进提示词的英文模板在画布上是看不见的，不说一句用户会以为「我明明选了风格」
+      const styleNote = styleEntry ? ` · 风格 ${(g.style && g.style.cn) || styleEntry.name_cn || ''}` : '';
       g.pid = res.prompt_id;
-      g.status = `排队中 · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}`;
+      g.status = `排队中 · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote}`;
+      // 队列条目补上「多大、跑到哪一步」：条目在建的时候还不知道工作流吃不吃尺寸
+      patchJob(g.job, {
+        phase: 'queued', pid: res.prompt_id, progress: null, note: '',
+        wf: wfLabel(g.wf), dims: `${dims.width}×${dims.height}`,
+      });
       refreshGenPanel(n);
-      setProgress(n, null);
-      pollPrompt(res.prompt_id,
+      resetProgress(n);            // 新一轮开始，把上一次的数字清掉
+      // 轮询句柄挂在**任务**上（不是节点或 gen 上）：任务对象的身份是稳定的，
+      // 面板重建、gen 被拷贝都不会让它丢，取消时一定能停掉这一次轮询。
+      g.job.poll = pollPrompt(res.prompt_id,
         (label, secs, p) => {
-          g.status = `${label}${p == null ? '' : ' ' + p + '%'} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote} · ${secs}s`;
+          g.status = `${label}${pctText(p)} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote} · ${secs}s`;
           setProgress(n, p);
+          patchJob(g.job, { phase: label === '排队中' ? 'queued' : 'running', progress: p, secs });
           refreshGenPanel(n);
         },
         async (arts, err, secs) => {
@@ -2113,19 +2614,32 @@
             // 显存/模型/工作流这三类重试一百次也一样，只报原因。
             if (c.retry && !g.retried) {
               g.retried = 1;
+              g.jobReuse = true;          // 同一条队列记录继续用它
               g.status = `${c.title} · 自动重试一次…`;
+              patchJob(g.job, { phase: 'queued', note: '自动重试一次' });
               refreshGenPanel(n);
               setTimeout(() => { generateImage(n); }, 800);
               return;
             }
             g.retried = 0;
             g.status = `${c.title}：${err}${c.hint ? ' · ' + c.hint : ''}`;
+            finishJob(g.job, 'error', c.title);
             refreshGenPanel(n);
             return;
           }
           g.retried = 0;
           const imgs = arts.filter((x) => x.kind === 'image');
-          if (!imgs.length) { clearProgress(n); g.status = `完成 · ${secs}s（无图片，检查工作流是否有保存节点）`; refreshGenPanel(n); return; }
+          if (!imgs.length) {
+            clearProgress(n);
+            g.status = `完成 · ${secs}s（无图片，检查工作流是否有保存节点）`;
+            finishJob(g.job, 'done', '无图片');
+            refreshGenPanel(n);
+            return;
+          }
+          // 先把**上一批图**结算成一条历史（老存档没有 runs 时靠这一步迁移），再覆盖 gallery。
+          // 反过来做的话，迁移会把这次刚出的图当成「更早的一次」，和下面 pushRun 那条重复——
+          // 一次生成就在角标上写成「2 次」（实测踩到过：历史里两条指向同一个 krea2_0002x.png）。
+          runsOf(n);
           g.gallery = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
           g.idx = 0;
           n.dataURL = g.gallery[0].url;
@@ -2135,6 +2649,9 @@
           pushRun(n, {
             at: Date.now(), prompt: rawPrompt || '', seed: built.seed ? built.seed.value : null,
             w: dims.width, h: dims.height, batch: Number(g.batch) || 1, wf: g.wf || '',
+            // 风格记成和节点上一样的 {cat,i,cn}：派生 / 复现时能原样套回去，
+            // 光记一个中文名就只能看了
+            style: g.style ? { ...g.style } : null,
             items: g.gallery.slice(),
           });
           g.status = `完成 · ${secs}s · ${imgs.length} 张`;
@@ -2146,6 +2663,7 @@
             g.status = `完成 · ${secs}s · ${short.note}`;
             flash(`提交了 ${short.want} 张，只回来 ${short.got} 张：工作流里某个节点把批量并成了一路`);
           }
+          finishJob(g.job, 'done', `${imgs.length} 张`);
           finishProgress(n);
           rerenderNode(n.id, true);
           queueSave();
@@ -2154,6 +2672,9 @@
       g.busy = false;
       clearProgress(n);
       g.status = `失败：${err.message}`;
+      // 还没提交到 ComfyUI 就失败（分析/构建阶段）：队列里留一条失败记录，
+      // 否则「点了生成、什么都没发生」在队列面板上查不到任何痕迹。
+      finishJob(g.job, 'error', err.message.slice(0, 40));
       refreshGenPanel(n);
     }
   }
@@ -2414,23 +2935,20 @@
     try { localStorage.setItem(key, on ? '1' : '0'); } catch { /* noop */ }
   }
 
-  function autosaveOn() { return globalFlag('comfy-canvas-autosave', true); }
+  function autosaveOn() { return globalFlag('infisheet-autosave', true); }
 
   function applyGlobalViewPrefs() {
-    state.snap = globalFlag('comfy-canvas-snap', !!state.snap);
-    state.linksHidden = !globalFlag('comfy-canvas-links', !state.linksHidden);
-    state.minimapOn = globalFlag('comfy-canvas-minimap', !!state.minimapOn);
-    let side = 'bottom';
-    try { side = localStorage.getItem('comfy-canvas-panel-side') || 'bottom'; } catch { /* noop */ }
-    state.panelSide = ['bottom', 'top', 'left', 'right'].includes(side) ? side : 'bottom';
+    state.snap = globalFlag('infisheet-snap', !!state.snap);
+    state.linksHidden = !globalFlag('infisheet-links', !state.linksHidden);
+    state.minimapOn = globalFlag('infisheet-minimap', !!state.minimapOn);
     let dock = 'bottom';
-    try { dock = localStorage.getItem('comfy-canvas-dock-side') || 'bottom'; } catch { /* noop */ }
+    try { dock = localStorage.getItem('infisheet-dock-side') || 'bottom'; } catch { /* noop */ }
     state.dockSide = ['bottom', 'left', 'right', 'top'].includes(dock) ? dock : 'bottom';
     applyDockSide();
   }
 
   // ---------- 画布背景 ----------
-  const CANVAS_BG_KEY = 'comfy-canvas-bg';
+  const CANVAS_BG_KEY = 'infisheet-bg';
   const CANVAS_BGS = [
     { id: 'graphite', name: '石墨', bg: '#1a1a1a', line: '#474747',
       glowA: 'transparent', glowB: 'transparent', vignette: 'transparent' },
@@ -2507,6 +3025,35 @@
     applyCanvasBg(next);
     return next;
   }
+  /* ---------------- 关闭服务 ---------------- */
+  // 后端是本机的一个 python 进程。关掉它之后**所有**标签页和 MCP 客户端都会断，
+  // 所以：设置里二次确认 + 关完盖一层说明，别让用户对着一堆静默失败的按钮猜。
+  async function stopServer() {
+    closeSettingsSheet();
+    const box = document.getElementById('serverDown');
+    const txt = document.getElementById('serverDownText');
+    if (box) box.classList.remove('hidden');
+    if (txt) txt.textContent = '正在关闭…';
+    state.serverDown = true;      // 先把轮询停掉，否则接下来那几发 fetch 会把控制台刷红
+    let r = null;
+    try { r = await postJson('/api/shutdown', {}); } catch { r = null; }
+    if (!r || r.ok === false) {
+      state.serverDown = false;
+      if (box) box.classList.add('hidden');
+      flash(`没关掉：${(r && r.error) || '请求没有响应'}（也许服务已经停了）`);
+      return;
+    }
+    // 等它真的退：health 连不上就是关了（进程退出时会把 8788 一起放掉）
+    for (let i = 0; i < 25; i++) {
+      await new Promise((res) => setTimeout(res, 200));
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        if (!res.ok) break;
+      } catch { break; }
+    }
+    if (txt) txt.textContent = '服务已关闭。';
+  }
+
   function openSettingsSheet() {
     closeSettingsSheet();
     const box = document.createElement('div');
@@ -2556,6 +3103,13 @@
             <button type="button" id="setImport">导入画布 JSON</button>
             <button type="button" id="setHistory">历史画布…</button>
           </div>
+          <div class="set-sep"></div>
+          <div class="set-group">服务</div>
+          <p class="set-tip">本地服务 <b>127.0.0.1:8788</b>（ComfyUI 由它代理）。关掉之后所有标签页都会断连，
+            要重新双击项目里的 启动.bat 才能再开。</p>
+          <div class="set-actions" id="setSrvActions">
+            <button type="button" class="danger" id="setShutdown">关闭服务…</button>
+          </div>
         </div>
       </div>`;
     // 背景：色板 / 自定义颜色 / 纹理
@@ -2598,7 +3152,7 @@
       sel.appendChild(opt);
     });
     sel.onchange = () => {
-      try { localStorage.setItem('comfy-canvas-default-wf', sel.value); } catch { /* ignore */ }
+      try { localStorage.setItem('infisheet-default-wf', sel.value); } catch { /* ignore */ }
       flash('默认工作流已保存');
     };
     const snap = box.querySelector('#setSnap');
@@ -2609,22 +3163,22 @@
     links.checked = !state.linksHidden;
     mini.checked = !!state.minimapOn;
     auto.checked = autosaveOn();
-    snap.onchange = () => { state.snap = snap.checked; setGlobalFlag('comfy-canvas-snap', snap.checked); queueSave(); };
+    snap.onchange = () => { state.snap = snap.checked; setGlobalFlag('infisheet-snap', snap.checked); queueSave(); };
     links.onchange = () => {
       state.linksHidden = !links.checked;
-      setGlobalFlag('comfy-canvas-links', links.checked);
+      setGlobalFlag('infisheet-links', links.checked);
       renderLinks(); queueSave();
     };
     mini.onchange = () => {
       state.minimapOn = mini.checked;
-      setGlobalFlag('comfy-canvas-minimap', mini.checked);
+      setGlobalFlag('infisheet-minimap', mini.checked);
       const mm = document.getElementById('minimap');
       if (mm) mm.classList.toggle('hidden', !state.minimapOn);
       setViewTool('minimap', state.minimapOn);
       renderMinimap(); queueSave();
     };
     auto.onchange = () => {
-      setGlobalFlag('comfy-canvas-autosave', auto.checked);
+      setGlobalFlag('infisheet-autosave', auto.checked);
       if (auto.checked) saveToServer();   // 重新打开时立刻补一次保存
       flash(auto.checked ? '已开启自动保存' : '已关闭自动保存（仍存本机）');
     };
@@ -2638,6 +3192,18 @@
     box.querySelector('#setExport').onclick = () => { closeSettingsSheet(); exportCanvas(); };
     box.querySelector('#setImport').onclick = () => { closeSettingsSheet(); importCanvas(); };
     box.querySelector('#setHistory').onclick = () => { closeSettingsSheet(); openCanvasHistory(); };
+    const shut = box.querySelector('#setShutdown');
+    if (shut) {
+      shut.onclick = () => {
+        const wrap = box.querySelector('#setSrvActions');
+        wrap.className = 'set-srv-confirm';
+        wrap.innerHTML = '<span>确定关闭？正在跑的生成会中断。</span>'
+          + '<button type="button" id="setSrvCancel">取消</button>'
+          + '<button type="button" class="danger" id="setSrvGo">确定关闭</button>';
+        wrap.querySelector('#setSrvCancel').onclick = () => openSettingsSheet();
+        wrap.querySelector('#setSrvGo').onclick = () => stopServer();
+      };
+    }
     box.onclick = (ev) => { if (ev.target === box) closeSettingsSheet(); };
     document.body.appendChild(box);
   }
@@ -3066,7 +3632,7 @@
   }
 
   function renderLinks() {
-    if (state.linksHidden) { linksEl.innerHTML = ''; return; }
+    if (state.linksHidden) { linksEl.innerHTML = ''; positionLinkDel(); return; }
     const paths = [];
     state.links.forEach((l) => {
       const a = portCenter(l.from, 'out');
@@ -3078,6 +3644,30 @@
     });
     if (linkTemp) paths.push(`<path class="temp" d="${linkPath(linkTemp.a, linkTemp.b)}" />`);
     linksEl.innerHTML = paths.join('');
+    positionLinkDel();
+  }
+
+  // 连线中点的「删除」按钮（屏幕坐标浮层，大小不跟缩放走）。
+  // 位置**不能**用两端坐标取平均：反向连线（目标在源左边）会「吊」下来一截，
+  // 等高时贝塞尔还会退化，平均点落在曲线外面，按钮看着像飘在空白上。
+  // 按真实路径取「一半长度处」的那一点，任何形状都对得上。
+  function positionLinkDel() {
+    // 也**不能**在脚本顶部 const：index.html 里 app.js 的 <script> 排在 #linkDel 前面，
+    // 顶部取会拿到 null（对齐浮条 #alignBar 也是同一个原因才懒查）。
+    const btn = $('#linkDel');
+    if (!btn) return;
+    const id = state.linkSel;
+    const path = id && !state.linksHidden
+      ? linksEl.querySelector(`.link-line[data-link="${CSS.escape(id)}"]`)
+      : null;
+    if (!path) { btn.classList.add('hidden'); return; }
+    const pt = path.getPointAtLength(path.getTotalLength() / 2);   // SVG 用户坐标（= 世界坐标）
+    const m = path.getScreenCTM();
+    if (!m) { btn.classList.add('hidden'); return; }
+    // getScreenCTM 已经把 #world 的 translate/scale 算进去了，出来就是视口坐标
+    btn.style.left = `${Math.round(m.a * pt.x + m.c * pt.y + m.e)}px`;
+    btn.style.top = `${Math.round(m.b * pt.x + m.d * pt.y + m.f)}px`;
+    btn.classList.remove('hidden');
   }
 
   // 端口元素索引："nodeId:portKey" → 元素。连线重绘一次要查 2×连线数 个端口，
@@ -3175,6 +3765,8 @@
       bar.classList.toggle('hidden', !multi);
       if (multi) positionAlignBar();      // 显示出来才有尺寸，定位必须在 toggle 之后
     }
+    // 图片工具条：单选一张有图的节点时浮在它上方（裁剪 / 高清）
+    updateImgTools();
   }
 
   function selectOnly(id) {
@@ -3715,6 +4307,8 @@
     el.replaceWith(fresh);
     reindexNodePorts(id);
     renderLinks();
+    // 节点被重建后尺寸/图可能变了（生成结果回来、换图），工具条要重新贴一次
+    updateImgTools();
   }
 
   function removeNode(id) {
@@ -3846,6 +4440,18 @@
   }
 
   /* ---------------- 运行 ---------------- */
+  // 把一个 dataURL 传进 ComfyUI 的 input/，只回文件名。
+  // 参考图走这条：它不像图片节点那样常驻在画布上，没必要为此造一个节点。
+  async function uploadImageData(dataURL, filename) {
+    const blob = await (await fetch(dataURL)).blob();
+    const fd = new FormData();
+    fd.append('image', blob, filename);
+    fd.append('overwrite', 'true');
+    const res = await api('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(res.error || '上传失败');
+    return res.image;
+  }
+
   async function runWorkflow(n) {
     if (n.timer) { clearInterval(n.timer); n.timer = null; }
     n.status = 'running'; n.statusText = '构建任务…'; n.artifacts = [];
@@ -3894,8 +4500,12 @@
     }
     n.pid = res.prompt_id;
     n.status = 'queued'; n.statusText = `排队中 · ${res.prompt_id.slice(0, 8)}`;
+    // 工作流节点直接运行也进同一条队列：用户不必分别看「图片节点在跑」和「工作流节点在跑」
+    n.job = newJob(n, 'wf', { wf: n.title });
+    n.job.pid = res.prompt_id;
+    renderQueue();
     rerenderNode(n.id);
-    setProgress(n, null);
+    resetProgress(n);            // 新一轮开始，上一次的数字不能留
     pollJob(n);
   }
 
@@ -3909,12 +4519,17 @@
 
   function pollJob(n) {
     const started = Date.now();
+    n.pollOff = false;                 // 上一次可能被取消过，重新运行要复位
     n.timer = setInterval(async () => {
       if (n.status === 'done' || n.status === 'error') { clearInterval(n.timer); n.timer = null; return; }
       const res = await api(`/api/job?pid=${encodeURIComponent(n.pid)}`);
+      // 取消之后这次请求才回来：别把 idle/已取消 刷回 running
+      if (n.pollOff) { clearInterval(n.timer); n.timer = null; return; }
       if (!res.ok) {
         n.status = 'error'; n.statusText = res.error || '查询失败';
-        clearInterval(n.timer); n.timer = null; rerenderNode(n.id); return;
+        clearInterval(n.timer); n.timer = null; rerenderNode(n.id);
+        finishJob(n.job, 'error', n.statusText);
+        return;
       }
       const secs = Math.round((Date.now() - started) / 1000);
       if (res.status === 'queued' || res.status === 'running') {
@@ -3922,6 +4537,7 @@
         n.status = res.status;
         n.statusText = `${res.status === 'queued' ? '排队中' : '生成中'} · ${secs}s`;
         setProgress(n, res.progress ?? null);
+        patchJob(n.job, { phase: res.status, progress: res.progress ?? null, secs });
         paintWfStatus(n);          // 轻量更新，避免打断用户输入
         return;
       }
@@ -3937,6 +4553,7 @@
         clearInterval(n.timer); n.timer = null;
         n.status = 'error';
         n.statusText = '任务记录已丢失（ComfyUI 可能已重启），请重新运行';
+        finishJob(n.job, 'error', '记录丢失');
         rerenderNode(n.id);
         return;
       }
@@ -3955,11 +4572,14 @@
       finishProgress(n);
       if (res.error) {
         n.status = 'error'; n.statusText = `执行出错：${res.error}`;
+        finishJob(n.job, 'error', String(res.error).slice(0, 30));
       } else if ((res.artifacts || []).length) {
         n.status = 'done'; n.artifacts = res.artifacts;
         n.statusText = `完成 · ${secs}s · ${res.artifacts.length} 个产物`;
+        finishJob(n.job, 'done', `${res.artifacts.length} 个产物`);
       } else {
         n.status = 'done'; n.statusText = `完成 · ${secs}s（无产物，请确认工作流含保存节点）`;
+        finishJob(n.job, 'done', '无产物');
       }
       syncOutputs(n);
       rerenderNode(n.id);
@@ -3968,11 +4588,307 @@
   }
 
   async function cancelJob(n) {
+    if (n && n.job && JOB_ALIVE.has(n.job.phase)) { await cancelQueuedJob(n.job); return; }
     await postJson('/api/cancel', { pid: n.pid, interrupt: true });
     n.status = 'idle'; n.statusText = '已请求中断';
     if (n.timer) { clearInterval(n.timer); n.timer = null; }
     clearProgress(n);
     rerenderNode(n.id);
+  }
+
+  /* ---------------- 生成队列 ---------------- */
+  // 画布上每个节点各跑各的 prompt，ComfyUI 那边却只有一条 FIFO 队列——用户看不见它。
+  // 8 个图片节点一起出图时，只能一个个点开面板看进度，也不知道「还排着几条」。
+  // 这里把所有任务收成一份**运行态**清单（不进存档、不进撤销栈）：排队/生成中/完成/失败，
+  // 顶栏一个入口，能逐条取消、能点回节点。
+  const JOB_CAP = 24;                                  // 已结束的最多留这么多条
+  const JOB_ALIVE = new Set(['queued', 'running']);
+
+  function wfLabel(wf) {
+    return String(wf || '').replace(/^preset:/, '').replace(/\.api\.json$/i, '');
+  }
+
+  // 图片节点标题基本都叫「图片」，光看标题分不清是哪一个——用提示词前缀当条目标题；
+  // 工作流节点本来就有名字，直接用。
+  function shortTitle(text, max = 18) {
+    const s = String(text || '').replace(/\s+/g, ' ').trim();
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  }
+
+  function jobTitleOf(n, text) {
+    const given = shortTitle(text);
+    if (given) return given;
+    if (!n) return '任务';
+    const p = shortTitle((n.gen && n.gen.prompt) || '');
+    if (n.type === 'image' && p) return p;
+    return n.title || n.type || '任务';
+  }
+
+  function pruneJobs() {
+    const keep = new Set(state.jobs.filter((j) => JOB_ALIVE.has(j.phase)));
+    let room = JOB_CAP;
+    state.jobs.forEach((j) => {
+      if (keep.has(j)) return;
+      if (room-- > 0) keep.add(j);
+    });
+    state.jobs = state.jobs.filter((j) => keep.has(j));
+  }
+
+  function newJob(n, kind, extra = {}) {
+    const job = {
+      id: `j${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      nodeId: n ? n.id : null,
+      title: jobTitleOf(n, extra.title),
+      kind,                                  // image（生成器） / wf（工作流节点运行）
+      wf: wfLabel(extra.wf),
+      dims: extra.dims || '',
+      phase: 'queued', pid: null, progress: null,
+      startedAt: Date.now(), endedAt: null, secs: 0, note: '',
+    };
+    state.jobs.unshift(job);
+    pruneJobs();
+    renderQueue();
+    return job;
+  }
+
+  function patchJob(job, patch) {
+    if (!job) return;
+    // 终态不再接受心跳：取消的那一刻可能正好有一次轮询在飞，回来会把「已取消」刷成「生成中」
+    if (!JOB_ALIVE.has(job.phase) && patch.phase && JOB_ALIVE.has(patch.phase)) return;
+    Object.assign(job, patch);
+    renderQueue();
+  }
+
+  function finishJob(job, phase, note = '') {
+    if (!job) return;
+    job.phase = phase;
+    job.note = note;
+    job.endedAt = Date.now();
+    job.secs = Math.max(job.secs || 0, Math.round((job.endedAt - job.startedAt) / 1000));
+    renderQueue();
+  }
+
+  // 下面两个是纯函数（不对 DOM 做任何事）：e2e 按名字抠出来直接测。
+  // 多任务场景在浏览器里造不出来（要真提交给 ComfyUI），只能测这一层。
+  function jobPhaseText(job) {
+    if (!job) return '';
+    if (job.phase === 'queued') return '排队中';
+    if (job.phase === 'running') return `生成中${pctText(job.progress)}`;
+    if (job.phase === 'done') return '完成';
+    if (job.phase === 'error') return '失败';
+    if (job.phase === 'canceled') return '已取消';
+    return job.phase || '';
+  }
+
+  function jobMetaText(job) {
+    if (!job) return '';
+    const bits = [jobPhaseText(job)];
+    if (job.dims) bits.push(job.dims);
+    if (job.secs) bits.push(`${job.secs}s`);
+    if (job.note) bits.push(job.note);
+    if (job.wf) bits.push(job.wf);
+    return bits.join(' · ');
+  }
+
+  function queueSummary(jobs) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    const count = (p) => list.filter((j) => j.phase === p).length;
+    const live = count('queued') + count('running');
+    if (!list.length) return { live: 0, text: '还没有任务' };
+    const parts = [];
+    if (live) parts.push(`${live} 个进行中`);
+    if (count('done')) parts.push(`${count('done')} 个完成`);
+    if (count('error')) parts.push(`${count('error')} 个失败`);
+    if (count('canceled')) parts.push(`${count('canceled')} 个取消`);
+    return { live, text: parts.join(' · ') };
+  }
+
+  function renderQueue() {
+    const btn = document.getElementById('queueBtn');
+    const badge = document.getElementById('queueCount');
+    const sumEl = document.getElementById('queueSummary');
+    const listEl = document.getElementById('queueList');
+    const panel = document.getElementById('queuePanel');
+    const sum = queueSummary(state.jobs);
+    if (badge) {
+      badge.textContent = String(sum.live);
+      badge.classList.toggle('hidden', !sum.live);
+    }
+    if (btn) btn.classList.toggle('on', sum.live > 0);
+    if (sumEl) sumEl.textContent = sum.text;
+    // 面板关着就只更新角标：每 1.5 秒一次的任务 tick 不该去重建一个看不见的列表
+    if (!listEl || !panel || panel.classList.contains('hidden')) return;
+    listEl.innerHTML = '';
+    if (!state.jobs.length) {
+      const empty = document.createElement('div');
+      empty.className = 'q-empty';
+      empty.textContent = '还没有任务。图片节点选中后点「生成」，工作流节点点「运行」，都会出现在这里。';
+      listEl.appendChild(empty);
+      return;
+    }
+    state.jobs.forEach((job) => listEl.appendChild(buildJobRow(job)));
+  }
+
+  function buildJobRow(job) {
+    const row = document.createElement('div');
+    row.className = 'q-item';
+    row.dataset.phase = job.phase;
+    row.dataset.job = job.id;
+    row.title = jobMetaText(job);
+
+    const dot = document.createElement('span');
+    dot.className = 'q-dot';
+    const main = document.createElement('div');
+    main.className = 'q-main';
+    const title = document.createElement('div');
+    title.className = 'q-title';
+    title.textContent = job.title;
+    const meta = document.createElement('div');
+    meta.className = 'q-meta';
+    meta.textContent = jobMetaText(job);
+    main.appendChild(title);
+    main.appendChild(meta);
+    if (job.phase === 'running' && job.progress != null) {
+      const bar = document.createElement('div');
+      bar.className = 'q-bar';
+      const fill = document.createElement('i');
+      fill.style.width = `${clamp(job.progress, 0, 100)}%`;
+      bar.appendChild(fill);
+      main.appendChild(bar);
+    }
+    row.appendChild(dot);
+    row.appendChild(main);
+
+    if (JOB_ALIVE.has(job.phase)) {
+      const act = document.createElement('button');
+      act.type = 'button';
+      act.className = 'q-act';
+      act.textContent = '取消';
+      act.onclick = (ev) => { ev.stopPropagation(); cancelQueuedJob(job).catch(() => {}); };
+      row.appendChild(act);
+    }
+    row.onclick = () => focusJobNode(job.nodeId);
+    return row;
+  }
+
+  function positionQueuePanel() {
+    const panel = document.getElementById('queuePanel');
+    const btn = document.getElementById('queueBtn');
+    if (!panel || !btn) return;
+    const r = btn.getBoundingClientRect();
+    const w = panel.offsetWidth || 384;
+    const h = panel.offsetHeight || 0;
+    const edge = 10;
+    const left = Math.min(Math.max(edge, r.right - w), window.innerWidth - w - edge);
+    let top = r.bottom + 8;
+    if (h && top + h > window.innerHeight - edge) top = Math.max(edge, r.top - h - 8);
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+  }
+
+  function openQueue() {
+    const panel = document.getElementById('queuePanel');
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    renderQueue();             // 先填内容才量得到高度
+    positionQueuePanel();
+    document.getElementById('queueBtn').classList.add('on');
+  }
+
+  function closeQueue() {
+    const panel = document.getElementById('queuePanel');
+    if (panel) panel.classList.add('hidden');
+  }
+
+  function toggleQueue() {
+    const panel = document.getElementById('queuePanel');
+    if (!panel) return;
+    if (panel.classList.contains('hidden')) openQueue(); else closeQueue();
+  }
+
+  // 点面板外面收起（和 popmenu 一样挂在捕获阶段：画布上很多地方在冒泡早期就 stopPropagation）
+  document.addEventListener('pointerdown', (ev) => {
+    const panel = document.getElementById('queuePanel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (ev.target.closest && ev.target.closest('#queuePanel, #queueBtn')) return;
+    closeQueue();
+  }, true);
+
+  // 取消一个任务时，前端这侧必须一起停：轮询实例 + 节点上的 busy 标记。
+  // 只发 cancel 请求的话，图片节点的「生成」按钮会一直灰着，看着像卡死；
+  // 反过来只停前端不停后端，图过一会儿还是会掉到画布上。
+  function stopNodePolling(job) {
+    if (!job) return;
+    // 先停这一次的轮询实例。句柄挂在任务上——挂在 gen 上会被面板重建拷贝走，
+    // 取消时拿到的是一份旧的（停的是上一轮，本轮照跑）。
+    if (job.poll) { job.poll.stop(); job.poll = null; }
+    const n = getNode(job.nodeId);
+    if (!n) return;
+    try {
+      if (n.timer) { clearInterval(n.timer); n.timer = null; }
+      if (n.gen) {
+        n.gen.busy = false;
+        n.gen.status = '已取消';
+        clearProgress(n);
+        refreshGenPanel(n);
+      }
+      if (n.type === 'wf') {
+        n.pollOff = true;                 // 让在飞的那次轮询回来时自己收手
+        n.status = 'idle';
+        n.statusText = '已取消';
+        clearProgress(n);
+        rerenderNode(n.id);
+      }
+    } catch { /* 节点可能已经被删了，界面这一侧能停就停，别把取消请求也带走 */ }
+  }
+
+  async function cancelQueuedJob(job) {
+    if (!job || !JOB_ALIVE.has(job.phase)) return;
+    stopNodePolling(job);
+    job.phase = 'canceled';
+    job.note = '已取消';
+    job.endedAt = Date.now();
+    job.secs = Math.max(job.secs || 0, Math.round((job.endedAt - job.startedAt) / 1000));
+    renderQueue();
+    if (!job.pid) return;
+    try {
+      const res = await postJson('/api/queue/cancel', { prompt_id: job.pid });
+      if (!res.ok) job.note = `取消请求失败：${res.error || ''}`;
+      else if (!res.removed) job.note = res.reason || '任务已结束';
+      else job.note = res.interrupted ? '已中断' : '已从队列移除';
+    } catch (err) {
+      job.note = `取消请求失败：${err.message}`;
+    }
+    renderQueue();
+  }
+
+  async function cancelAllJobs() {
+    const live = state.jobs.filter((j) => JOB_ALIVE.has(j.phase));
+    if (!live.length) { flash('没有在跑的任务'); return; }
+    await Promise.all(live.map((j) => cancelQueuedJob(j)));
+    flash(`已取消 ${live.length} 个任务`);
+  }
+
+  function clearFinishedJobs() {
+    const before = state.jobs.length;
+    state.jobs = state.jobs.filter((j) => JOB_ALIVE.has(j.phase));
+    renderQueue();
+    flash(before === state.jobs.length ? '没有可清空的记录' : `已清空 ${before - state.jobs.length} 条记录`);
+  }
+
+  // 点队列条目 → 选中那个节点并把它挪到视口中央（节点可能已经滚出屏幕了）
+  function focusJobNode(id) {
+    const n = id ? getNode(id) : null;
+    if (!n) { flash('这条任务的节点已经不在画布上了'); return; }
+    selectOnly(n.id);
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    const r = stage.getBoundingClientRect();
+    const w = nodeWidth(n);
+    const h = (el && el.offsetHeight) || n.h || 200;
+    state.view.x = r.width / 2 - (n.x + w / 2) * state.view.k;
+    state.view.y = r.height / 2 - (n.y + h / 2) * state.view.k;
+    applyView();
+    closeQueue();
   }
 
   /* ---------------- 产物 ---------------- */
@@ -4062,11 +4978,41 @@
           }]
         : [];
     }
+    return dedupeRuns(g.runs);
+  }
+
+  // 历史里出现两条「同一批图」= 同一次生成被记了两遍，角标就会凭空多一次。
+  // 已经写坏的老存档在这里顺手修掉：按「产物文件名」判重，留信息更全的那条
+  // （非 legacy、带时间与尺寸的优先）。产物文件名每次生成都是新的，同名即同一批。
+  function dedupeRuns(runs) {
+    if (!Array.isArray(runs) || runs.length < 2) return runs || [];
+    const seen = new Map();
+    const out = [];
+    for (const r of runs) {
+      const key = (r.items || []).map((x) => x.filename || x.url || '').join('|');
+      if (!key) { out.push(r); continue; }        // 没产物的记录（失败/占位）不参与判重
+      const hit = seen.get(key);
+      if (hit === undefined) { seen.set(key, out.length); out.push(r); continue; }
+      const a = out[hit];
+      const better = a.legacy && !r.legacy ? r : a;   // 真记录顶掉合成的「更早」
+      out[hit] = better;
+    }
+    if (out.length !== runs.length) { runs.length = 0; runs.push(...out); }
+    return runs;
+  }
+
+  // 只保证数组存在，**不做**「从 gallery 合成一条更早」的迁移——那是显示时才做的事。
+  // 追加历史时若也走迁移，就会拿刚写进 gen.gallery 的这批图再造一条「更早」，
+  // 和本次那条一模一样：一次生成显示「2 次」，历史里两条同一张图。
+  function ensureRuns(n) {
+    const g = n && n.gen;
+    if (!g) return [];
+    if (!Array.isArray(g.runs)) g.runs = [];
     return g.runs;
   }
 
   function pushRun(n, run) {
-    const runs = runsOf(n);
+    const runs = ensureRuns(n);
     runs.unshift(run);
     if (runs.length > RUN_CAP) runs.length = RUN_CAP;
     return run;
@@ -4111,6 +5057,7 @@
         seed: run.seed == null ? null : run.seed,
         gallery: gal, idx: 0,
         extras: ((n.gen && n.gen.extras) || []).slice(),
+        style: run.style ? { ...run.style } : null,   // 派生出来的节点接着用同一套风格
         runs: [{ ...run, items: gal }],
       },
     });
@@ -4187,6 +5134,7 @@
         ['张数', `${(run.items || []).length} 张`],
         ['种子', run.seed == null ? '随机' : String(run.seed)],
         ['工作流', (run.wf || '').replace(/^preset:/, '') || '—'],
+        ['风格', (run.style && run.style.cn) || ''],
         ['时间', runTime(run.at)],
       ],
       // 两个动作都留着：「换回节点」= 把这一批图换成节点当前的图；「派生」= 复制参数到新节点
@@ -4253,17 +5201,40 @@
       };
     });
   }
+  // 这个节点「真正会用」的提示词。连了文本节点的时候，实际送进工作流的是文本节点里的字
+  // （面板里写的不生效，那句 placeholder 早就提示过了），可详情以前只读 gen.prompt ——
+  // 于是「用提示词节点出的图」在大图详情里永远是「（没有关联的提示词）」。
+  // 注意别反过来把值写回 gen.prompt：那样拆掉连线后，面板里会凭空多出一段没写过的词。
+  function promptOf(n) {
+    const g = (n && n.gen) || {};
+    const textIn = state.links
+      .filter((l) => l.to === n.id && l.toKey === 'in')
+      .map((l) => getNode(l.from))
+      .find((x) => x && x.type === 'text' && String(x.value || '').trim());
+    if (textIn) return { text: String(textIn.value || '').trim(), from: `文本节点「${textIn.title || '提示词'}」` };
+    const own = String(g.prompt || '').trim();
+    if (own) return { text: own, from: '' };
+    // 面板空、连线也没了（文本节点被删掉或断开）：退回最近一次生成用的那段。
+    // 图确实是那段词出出来的，比摆一句「没有关联的提示词」有用。
+    const last = String(((g.runs || [])[0] || {}).prompt || '').trim();
+    return { text: last, from: last ? '上一次生成' : '' };
+  }
+
   // 三处「放大」共用同一张详情抽屉：能拿到什么就给什么，拿不到的行留空（paint 时会过滤掉）
   function nodeImageInfo(n) {
     const g = (n && n.gen) || {};
     const runs = g.runs || [];
+    const p = promptOf(n);
     return {
-      prompt: g.prompt || '',
+      prompt: p.text,
       rows: [
         ['来源', g.wf ? '生成' : (n && (n.filename || n.uploaded) ? '上传' : '画布')],
         ['工作流', (g.wf || '').replace(/^preset:/, '')],
+        ['风格', (g.style && g.style.cn) || ''],
         ['种子', g.seed == null ? '' : String(g.seed)],
         ['生成次数', runs.length ? `${runs.length} 次` : ''],
+        // 紧贴在「提示词」上面一行：读的人一眼知道这段话是从隔壁节点来的，不是面板里写的
+        ['提示词来自', p.from],
       ],
     };
   }
@@ -4276,9 +5247,12 @@
     let prompt = '';
     const n = item.node ? getNode(item.node) : null;     // 画布来源的资产带 node id，能顺出它的提示词
     if (n && n.gen) {
-      prompt = n.gen.prompt || '';
+      const p = promptOf(n);
+      prompt = p.text;
       if (n.gen.wf) rows.push(['工作流', n.gen.wf.replace(/^preset:/, '')]);
+      if (n.gen.style && n.gen.style.cn) rows.push(['风格', n.gen.style.cn]);
       if (n.gen.seed != null) rows.push(['种子', String(n.gen.seed)]);
+      if (p.from) rows.push(['提示词来自', p.from]);
     }
     return { prompt, rows };
   }
@@ -4331,7 +5305,7 @@
     const blob = new Blob([JSON.stringify(serialize(), null, 1)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${(state.name || 'comfy-canvas').replace(/[\\/:*?"<>|]/g, '_')}-${Date.now()}.json`;
+    a.download = `${(state.name || 'infisheet').replace(/[\\/:*?"<>|]/g, '_')}-${Date.now()}.json`;
     a.click();
   }
 
@@ -4365,17 +5339,23 @@
         graph: n.graph, slots: n.slots, outputs: n.outputs, values: n.values,
         nodeCount: n.nodeCount, unknownTypes: n.unknownTypes,
         artifacts: n.artifacts, status: 'idle', statusText: n.statusText,
+        // 纯图片节点：只放一张图，不挂下面的生成面板。丢了它刷新后图片下面
+        // 会突然长出一整块提示词 / 工作流 / 生成，节点高度也跟着变，画布布局就乱了
+        plain: n.plain || undefined,
         // 生成器的提示词 / 工作流 / 画幅 / 张数 / 组图要跟着画布存下来，
         // 否则刷新后图片节点只剩一张图，参数和多图切换全丢（运行态 busy/status 不存）
         gen: n.gen ? {
           prompt: n.gen.prompt, wf: n.gen.wf, aspect: n.gen.aspect, size: n.gen.size,
           custom: n.gen.custom || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
-          batch: n.gen.batch, wide: !!n.gen.wide, gallery: n.gen.gallery, idx: n.gen.idx || 0,
+          batch: n.gen.batch, gallery: n.gen.gallery, idx: n.gen.idx || 0,
           // 生成历史：每次一条（时间/提示词/种子/尺寸/产物）。上限见 RUN_CAP，别让存档无限长
           runs: n.gen.runs || [],
           // 种子：seedMode=random 时每次生成换一个，fixed 时钉住（复现某一张靠它）
           seedMode: n.gen.seedMode || 'random', seed: n.gen.seed == null ? null : n.gen.seed,
           extras: n.gen.extras || [],   // @ 引用来的图（只存节点 id，图本身还是走 /api/view）
+          // 风格只存指针 {cat,i,cn}，不存那句四百字的英文模板：模板在 static/styles/ 里，
+          // 存副本的话改了风格库，老画布还按旧句子出图，对不上号
+          style: n.gen.style || null,
         } : null,
       })),
     };
@@ -4383,6 +5363,7 @@
 
   function load(data) {
     if (!data || !Array.isArray(data.nodes)) return false;
+    closeBigEditor();       // 换画布/撤销时别让放大编辑区挂在一个已经不存在的节点上
     assetItems = null;      // 换了画布，「画布上的图」这一半就变了，下次打开资产面板重算
     const beforeLinks = (data.links || []).length;
     state.nodes = data.nodes.map((n) => ({ ...n, status: 'idle', timer: null }));
@@ -4410,6 +5391,12 @@
     state.linksHidden = !!data.linksHidden;
     state.minimapOn = !!data.minimapOn;
     state.seq = data.seq || state.nodes.length + 1;
+    // 版本号跟着存档走：MCP 那边每写一次都 +1，这里落后就代表画布被别人改过。
+    // 撤销栈里的快照没有 rev（它是画布内容的快照，不是服务端那一头的版本），
+    // 撤销时保留当前 rev —— 否则一次 Ctrl+Z 会把 baseRev 打回 0，之后所有保存都被判「过期」。
+    if (data.rev !== undefined) state.rev = Number(data.rev) || 0;
+    else if (!undoStack.applying) state.rev = 0;
+    dirty = false;
     applyView(); renderAll();
     syncChrome();
     if (beforeLinks > state.links.length) flash(`已按新结构清理 ${beforeLinks - state.links.length} 条旧连线`);
@@ -4417,6 +5404,11 @@
   }
 
   let lastSavedSnap = '';
+  // 「本地有还没写进服务端的改动」。和 lastSavedSnap 不同，这个标记不会被 savedAt 搅乱：
+  // 外部同步只在它为 false 时自动进行，避免把用户正在打的字冲掉。
+  let dirty = false;
+  let staleWarnAt = 0;
+  const revPoll = { on: false };
 
   function setSaveState(text) {
     const el = document.getElementById('saveState');
@@ -4439,10 +5431,28 @@
       const url = state.projectId ? '/api/projects/' + encodeURIComponent(state.projectId) : '/api/canvas';
       const res = await api(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ canvas: JSON.parse(snap) }),
+        // baseRev：我是从哪一版改的。服务端对不上就拒绝（画布可能刚被 MCP 改过），
+        // 不带上这个字段的话，一次保存就会把 AI 刚才那一串操作静默抹掉。
+        body: JSON.stringify({ canvas: JSON.parse(snap), baseRev: state.projectId ? state.rev : undefined }),
       });
       if (!res.ok) throw new Error(res.error || '保存失败');
-      if (res.stale) { setSaveState('有新版本，未覆盖'); return; }
+      if (res.stale) {
+        if (res.lastWriter === 'mcp') {
+          // 对方是 MCP：它代表用户主动让 AI 做的操作，这里直接跟上，别把画布卡死在旧版本。
+          // 本地那份会先进撤销栈（见 pullExternal），按 Ctrl+Z 就能拿回来。
+          await pullExternal();
+          return;
+        }
+        // 另一个标签页/旧会话：只提示，不抢——它可能正在等人继续操作
+        if (Date.now() - staleWarnAt > 60000) {
+          staleWarnAt = Date.now();
+          flash('画布在别处被改过：这次改动没保存');
+        }
+        setSaveState('有新版本，未覆盖');
+        return;
+      }
+      if (res.rev) state.rev = res.rev;
+      dirty = false;
       lastSavedSnap = snap;
       const d = new Date();
       const hh = String(d.getHours()).padStart(2, '0');
@@ -4453,8 +5463,44 @@
     }
   }
 
+  // 把服务端最新那版拉下来替换内存里的画布。
+  // 不做节点级合并：两边的意图搅在一起，谁也说不清结果归谁。
+  // 但**本地那份先压进撤销栈**——「同步」不该等于「把用户刚打的字吃掉」，
+  // 按一下 Ctrl+Z 就能回到自己那一版（撤销快照不带 rev，回来之后照样能存）。
+  async function pullExternal() {
+    if (!state.projectId) return false;
+    const res = await api('/api/projects/' + encodeURIComponent(state.projectId)).catch(() => null);
+    if (!res || !res.ok || !res.canvas) return false;
+    const hadLocal = dirty;
+    commit();
+    load(res.canvas);
+    lastSavedSnap = '';
+    setSaveState('已同步外部改动');
+    flash(hadLocal
+      ? '画布已被 MCP 更新：你的改动在撤销栈里（Ctrl+Z 可退回）'
+      : '画布已被 MCP 更新，已同步');
+    return true;
+  }
+
+  // 每 4 秒对一次版本号：MCP 在后台建节点、出图，浏览器里能跟着长出来。
+  // 不做「标签页看不见就不轮询」：headless / 后台窗口根本不触发，同步会整条哑掉。
+  // 有未保存改动时也照样跟上——但不能悄悄丢，所以 pullExternal 会先把本地压进撤销栈。
+  async function pollProjectRev() {
+    if (state.serverDown) return;                 // 服务已经被关掉：别再往一个空端口发请求
+    if (!state.hydrated || !state.projectId || revPoll.on) return;
+    revPoll.on = true;
+    try {
+      const meta = await api(`/api/projects/${encodeURIComponent(state.projectId)}?meta=1`).catch(() => null);
+      if (!meta || !meta.ok || !meta.rev || meta.rev === state.rev) return;
+      await pullExternal();
+    } finally {
+      revPoll.on = false;
+    }
+  }
+
   function queueSave() {
     if (!state.hydrated) return;
+    dirty = true;
     setSaveState('未保存…');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -4517,7 +5563,7 @@
     addBtn.onclick = () => addPresetMenu(addBtn);
     const tipEl = document.createElement('span');
     tipEl.className = 'tip';
-    tipEl.textContent = '预设存到 comfy-canvas/presets/，重开也还在';
+    tipEl.textContent = '预设存到 infisheet/presets/，重开也还在';
     bar.append(addBtn, tipEl);
     pane.appendChild(bar);
     const box = document.createElement('div');
@@ -4604,8 +5650,8 @@
     const res = await api('/api/presets/' + encodeURIComponent(file), { method: 'DELETE' });
     if (!res.ok) { flash(res.error || '删除失败'); return; }
     try {
-      if (localStorage.getItem('comfy-canvas-default-wf') === 'preset:' + file) {
-        localStorage.removeItem('comfy-canvas-default-wf');
+      if (localStorage.getItem('infisheet-default-wf') === 'preset:' + file) {
+        localStorage.removeItem('infisheet-default-wf');
       }
     } catch { /* noop */ }
     await refreshWorkflows();
@@ -4820,6 +5866,15 @@
   bindActions($('#dockWrap'));   // orb 已拆到 #bar 外面，改绑外层容器
   bindActions($('#topBar'));
 
+  // 生成队列：入口在顶栏状态条里，面板是 body 直接子节点（见 index.html 的注释）
+  const queueBtnEl = document.getElementById('queueBtn');
+  if (queueBtnEl) queueBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); toggleQueue(); });
+  const queueAllEl = document.getElementById('queueCancelAll');
+  if (queueAllEl) queueAllEl.addEventListener('click', () => cancelAllJobs());
+  const queueClearEl = document.getElementById('queueClear');
+  if (queueClearEl) queueClearEl.addEventListener('click', () => clearFinishedJobs());
+  renderQueue();
+
   stage.addEventListener('pointerdown', (ev) => {
     if (ev.target.closest('.group-head')) return;
     const onNode = ev.target.closest('.node, .port');
@@ -4859,6 +5914,15 @@
     ev.preventDefault();
     state.linkSel = state.linkSel === hit.dataset.link ? null : hit.dataset.link;
     renderLinks();
+  });
+
+  // 连线中点那颗删除键。它挂在 <body> 上（不在 #stage 里）——stage 的 pointerdown 会
+  // 「点空白就清掉 linkSel」，按钮要是在 stage 里面，按下的一瞬间按钮就先被隐藏了，
+  // click 根本走不到。也用事件委托：app.js 的 <script> 排在 #linkDel 前面，直接绑会拿到 null。
+  document.addEventListener('click', (ev) => {
+    if (!ev.target.closest || !ev.target.closest('#linkDel')) return;
+    ev.stopPropagation();
+    if (state.linkSel) removeLinkById(state.linkSel);
   });
 
   // 框选：拖出矩形，松手时选中与其相交的节点
@@ -4909,33 +5973,78 @@
   function openAddMenu(clientX, clientY, openAbove) {
     if (!addMenu) return;
     const p = screenToWorld(clientX, clientY);
-    addMenu.innerHTML = '';
-    const items = [
-      ['提示词', () => addTextNode(p.x - 140, p.y - 60)],
-      ['图片', () => addImageNode(p.x - 125, p.y - 60)],
-      ['工作流…', () => openModal()],
-      ['导入工作流…', () => { openModal(); switchModalTab('paste'); }],
-      ['图片输出', () => addOutNode(p.x - 150, p.y - 60)],
+    // 分两组：能直接落到画布上的节点 / 需要先选工作流的入口。
+    // 每项前面一枚图标（和节点标题上的图标同一套 IconPark），扫一眼就知道点哪个。
+    const groups = [
+      ['新建节点', [
+        ['text', '提示词', () => addTextNode(p.x - 140, p.y - 60)],
+        ['image', '图片', () => addImageNode(p.x - 125, p.y - 60)],
+        // 「加载图片…」和「图片」是两件事：前者选完就带着图，后者是空白节点等拖文件进来。
+        ['upload', '加载图片…', () => pickImageFiles(p.x - 125, p.y - 60)],
+        ['out', '图片输出', () => addOutNode(p.x - 150, p.y - 60)],
+      ]],
+      ['工作流', [
+        ['wf', '打开工作流…', () => openModal()],
+        ['book', '从 JSON 导入…', () => { openModal(); switchModalTab('paste'); }],
+      ]],
     ];
-    items.forEach(([label, fn]) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.onclick = () => { closeAddMenu(); fn(); };
-      addMenu.appendChild(b);
+    addMenu.innerHTML = '';
+    groups.forEach(([title, list], gi) => {
+      if (gi) {
+        const sep = document.createElement('div');
+        sep.className = 'am-sep';
+        addMenu.appendChild(sep);
+      }
+      const h = document.createElement('div');
+      h.className = 'am-title';
+      h.textContent = title;
+      addMenu.appendChild(h);
+      list.forEach(([ic, label, fn]) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'am-item';
+        // 图标单独一层：文字和图标各自有尺寸，换字体/换图标都不会把行高带歪。
+        // textContent 仍然只有文案（e2e 按文案找按钮）。
+        b.innerHTML = `<span class="am-ico" aria-hidden="true">${icon(ic)}</span>`
+          + `<span class="am-label">${esc(label)}</span>`;
+        b.onclick = () => { closeAddMenu(); fn(); };
+        addMenu.appendChild(b);
+      });
     });
+    // 键盘：↓↑ 在项之间走，Enter 直接建，Esc 关。菜单本身可聚焦（tabindex=-1 不抢 Tab 键），
+    // 但**不**自动高亮第一项——鼠标用户不该看到一条凭空出现的选中态。
+    if (!addMenu.dataset.kb) {
+      addMenu.dataset.kb = '1';
+      addMenu.tabIndex = -1;
+      addMenu.addEventListener('keydown', (ev) => {
+        const btns = [...addMenu.querySelectorAll('.am-item')];
+        if (!btns.length) return;
+        const at = btns.indexOf(document.activeElement);
+        if (ev.key === 'Escape') { ev.preventDefault(); closeAddMenu(); return; }
+        if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          const d = ev.key === 'ArrowDown' ? 1 : -1;
+          const next = at < 0 ? (d > 0 ? 0 : btns.length - 1) : (at + d + btns.length) % btns.length;
+          btns[next].focus();
+        }
+      });
+    }
     const r = stage.getBoundingClientRect();
     addMenu.classList.remove('hidden');        // 先显示才能量到真实尺寸
     const mw = addMenu.offsetWidth;
     const mh = addMenu.offsetHeight;
     const margin = 8;
-    let left = clientX - r.left;
-    let top = clientY - r.top;
-    if (left + mw > r.width - margin) left = r.width - mw - margin;
+    const gap = 6;                             // 离光标留一点缝：否则第一项正好压在手底下
+    const mx = clientX - r.left, my = clientY - r.top;
+    let left = mx + gap;
+    if (left + mw > r.width - margin) left = mx - mw - gap;    // 右边放不下就翻到左侧
     if (left < margin) left = margin;
-    if (openAbove || top + mh > r.height - margin) top = top - mh - 8;   // 放不下（或从工具条点开）就翻到上面
+    let top = my + gap;
+    if (openAbove || top + mh > r.height - margin) top = my - mh - gap;   // 下面放不下（或从工具条点开）就翻到上面
     if (top < margin) top = margin;
     addMenu.style.left = left + 'px';
     addMenu.style.top = top + 'px';
+    addMenu.focus({ preventScroll: true });
   }
 
   stage.addEventListener('dblclick', (ev) => {
@@ -4957,14 +6066,43 @@
     });
   }
 
-  async function addImageFromFile(file, x, y) {
-    const n = addImageNode(x, y, { title: '图片' }, true);
+  async function addImageFromFile(file, x, y, opts = {}) {
+    const n = addImageNode(x, y, { title: '图片', ...opts }, true);
     n.filename = file.name;
     n.dataURL = await readDataURL(file);
     rerenderNode(n.id);
     try { await ensureUploaded(n); } catch (err) { flash(err.message); }
     commit();
     return n;
+  }
+
+  // 「加载图片…」：从磁盘挑（支持多选）直接变成图片节点，选完就带着图。
+  // 和「图片」（空白节点，等拖文件进来）分开，是因为多数人双击画布就是想放一张图。
+  // 复用同一个 input：每次都新建的话，选过的文件会一直挂在内存里；清 value 是为了
+  // 能把同一张图再选一次（不清空不触发 change）。
+  function pickImageFiles(x, y) {
+    let inp = document.getElementById('imgPicker');
+    if (!inp) {
+      inp = document.createElement('input');
+      inp.type = 'file';
+      inp.id = 'imgPicker';
+      inp.accept = 'image/*';
+      inp.multiple = true;
+      // 留在文档里但要能点开系统选择框：挪出视口 + 透明（display:none 的 input 在部分环境点不开）
+      inp.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+      document.body.appendChild(inp);
+    }
+    inp.value = '';
+    inp.onchange = async () => {
+      const files = [...(inp.files || [])].filter((f) => f.type.startsWith('image/'));
+      if (!files.length) { flash('只能加载图片文件（PNG / JPG / WEBP）'); return; }
+      for (let i = 0; i < files.length; i++) {
+        // plain: 加载进来的就是一张图，节点下面不拖生成面板（要生成点标题上的「生成」药丸）
+        await addImageFromFile(files[i], x + i * 30, y + i * 30, { plain: true });
+      }
+      flash(files.length > 1 ? `已加载 ${files.length} 张图片` : `已加载「${files[0].name}」`);
+    };
+    inp.click();
   }
 
   stage.addEventListener('dragover', (ev) => { ev.preventDefault(); });
@@ -4981,7 +6119,10 @@
       i += 1;
     }
     for (const f of images) {
-      await addImageFromFile(f, p.x + i * 30, p.y + i * 30);
+      // 和「加载图片…」同一个口径：拖进来的图就是一张图，节点下面不拖生成面板
+      // （想要生成点标题上的「生成」药丸）。两条入口给的节点必须长得一样，否则
+      // 「我拖进来的怎么没有面板 / 选菜单的怎么有」这种事迟早会被问一次。
+      await addImageFromFile(f, p.x + i * 30, p.y + i * 30, { plain: true });
       i += 1;
     }
     if (images.length) flash('已加入 ' + images.length + ' 张图片');
@@ -5153,9 +6294,302 @@
     } catch (e) { flash(`文件解析失败：${e.message}`); }
   };
 
+  /* ---------------- MCP 接入灯 ---------------- */
+  // 服务端每收到一次 MCP 的 initialize 就记一笔（mcp_server._CONN），health 顺手带回来。
+  // 这里只做一件事：把「有没有 AI 接进来」翻译成一盏灯 + 一句人话。
+  // 灯亮 = 有客户端完成了握手，此刻它能直接建节点 / 改参数 / 出图；进程重启会归零，
+  // 客户端会自己重连，灯自然会再亮——比留一个可能是假的状态更诚实。
+  function popMcpChip(chip) {
+    chip.classList.remove('pop');
+    void chip.offsetWidth;      // 强制重排，动画才肯重播
+    chip.classList.add('pop');
+  }
+
+  function updateMcpChip(res) {
+    const seg = document.getElementById('mcpSeg');
+    if (!seg) return;
+    // 老服务端没有 /mcp：这条指示没意义，藏掉比分不清「离线」还是「不支持」强
+    if (!Array.isArray(res.features) || !res.features.includes('mcp')) {
+      seg.classList.add('hidden');
+      return;
+    }
+    const chip = document.getElementById('mcpChip');
+    const dot = document.getElementById('mcpDot');
+    const text = document.getElementById('mcpText');
+    if (!chip || !dot || !text) return;
+    seg.classList.remove('hidden');
+    // 老服务端有 feature、没有状态字段：不隐藏（用户会以为没做），而是如实说「重启才准」
+    const m = res.mcp && typeof res.mcp === 'object' ? res.mcp : null;
+    if (!m) {
+      dot.className = 'dot';
+      chip.classList.remove('on');
+      chip.classList.add('pending');
+      text.textContent = 'MCP 待接入';
+      chip.title = '服务端还是 MCP 之前的版本，读不到接入状态\n重启 python server.py 后这里显示真实状态';
+      state.mcpSeen = false;
+      return;
+    }
+    // alive 是服务端租约算出来的「此刻还在不在」：老服务端没有这个字段，
+    // 没有就按「已连接」处理——不能因为读不到新字段就把一盏好好的灯灭掉。
+    const alive = m.alive !== false;
+    if (m.connected && alive) {
+      const app = (m.client || '').trim();
+      // 「MCP 客户端」是服务端在没有握手时的泛称，不是名字——别把它当应用名显示
+      const named = !!app && app !== 'MCP 客户端' && app !== '未命名客户端';
+      const who = named ? `${app}${m.clientVersion ? ' ' + m.clientVersion : ''}` : '未知应用';
+      const when = m.at ? new Date(m.at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      const sid = m.session ? m.session.slice(0, 8) : '';
+      dot.className = 'dot ok';
+      chip.classList.remove('pending');
+      chip.classList.add('on');
+      // 名字放在灯里：用户要的就是「哪个应用接的」，不该只藏在 tooltip 里
+      text.textContent = named ? `MCP 已连接 · ${app}` : 'MCP 已连接';
+      chip.title = [
+        named ? `${who} 正通过 MCP 接入这块画布` : '某个 MCP 客户端正通过 MCP 接入这块画布',
+        `${when ? `连上于 ${when} · ` : ''}已调用 ${m.calls || 0} 次工具`
+          + `${m.protocol ? ` · 协议 ${m.protocol}` : ''}${sid ? ` · 会话 ${sid}` : ''}`,
+        // 没有协议号 = 这个进程没收到过握手（服务重启后客户端接着老会用）
+        ...(m.protocol ? [] : [named
+          ? '本进程没收到握手：名字由 stdio 桥转述（服务重启后续接的会话）'
+          : '本进程没收到握手：多半是服务重启后的续接会话，客户端名未知']),
+        // 名字是「拉起桥的那个应用」：说清楚，免得用户以为客户端自报名就是这个
+        ...(m.clientSource === 'host'
+          ? ['这个名字取自拉起 MCP 桥的应用——客户端自报的是服务器别名，没有采用']
+          : []),
+        `端点：${location.origin}/mcp`,
+        'AI 现在可以直接建节点、改参数、跑生成，画布会自己同步过来',
+        '点一下看怎么接入（MCP 安装）',
+      ].join('\n');
+      // 只在「刚连上」时提示一次：刷新页面看到一盏早就亮着的灯，不该再弹一遍
+      if (!state.mcpSeen) {
+        if (m.age == null || m.age < 120) {
+          popMcpChip(chip);
+          flash(named
+            ? `MCP 已连接：${who} 现在可以直接操作这块画布`
+            : 'MCP 已连接：AI 现在可以直接操作这块画布');
+        }
+        state.mcpSeen = true;
+      }
+    } else if (m.connected) {
+      // 连过、但现在没心跳了：stdio 桥没了（客户端关窗 / 崩溃 / 被强杀）。
+      // 这不是「待接入」——那会让人以为从来没连上过，而实际是刚掉线。
+      const app = (m.client || '').trim();
+      const named = !!app && app !== 'MCP 客户端' && app !== '未命名客户端';
+      const when = m.at ? new Date(m.at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      dot.className = 'dot';
+      chip.classList.remove('on');
+      chip.classList.add('pending');
+      text.textContent = named ? `MCP 已断开 · ${app}` : 'MCP 已断开';
+      chip.title = [
+        `${named ? app : '上次那个客户端'} 已经不在线了：桥的心跳停了 ${Math.round(m.stale || 0)}s，超过租约 ${Math.round(m.lease || 0)}s`,
+        `${when ? `上次连上于 ${when} · ` : ''}已调用 ${m.calls || 0} 次工具`,
+        '服务端还在，客户端重新接上会自己变绿，不用刷新页面',
+        `端点：${location.origin}/mcp`,
+        '点一下看怎么接入（MCP 安装）',
+      ].join('\n');
+      // 断线后再连上要能重新弹一次「已连接」，所以这里把「见过」清掉
+      state.mcpSeen = false;
+    } else {
+      dot.className = 'dot';
+      chip.classList.remove('on');
+      chip.classList.add('pending');
+      text.textContent = 'MCP 待接入';
+      chip.title = [
+        '这块画布已开放 MCP 端点，还没有 AI 客户端接进来',
+        `端点：${location.origin}/mcp`,
+        '在 AI 客户端的连接器里添加并信任后，这里会自动点亮',
+        '点一下看怎么接入（MCP 安装）',
+      ].join('\n');
+      state.mcpSeen = false;
+    }
+  }
+
+  /* ---------------- MCP 接入面板（安装入口） ---------------- */
+  // 顶栏那盏灯不只是状态：MCP 的门槛全在第一步——用户得知道有这个端点、要写一行 stdio 命令、
+  // 路径还不能写错。所以点灯就打开「怎么接」的说明，配置直接给成可复制的 JSON，必要时替他写进文件。
+  let mcpSetupData = null;
+  let mcpSetupClient = 'workbuddy';
+
+  async function copyText(text) {
+    // 127.0.0.1 在部分内核里不算 secure context，clipboard API 会直接抛；
+    // 兜底用老办法（临时 textarea + execCommand），否则「复制」按钮点了没反应最伤人。
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* 落到兜底 */ }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  function mcpSetupNote(text, kind = '') {
+    const el = document.getElementById('mcpSetupNote');
+    if (!el) return;
+    el.textContent = text;
+    el.className = `mcp-note${kind ? ' ' + kind : ''}`;
+  }
+
+  function paintMcpSetupStatus(m) {
+    const box = document.getElementById('mcpSetupStatus');
+    const dot = document.getElementById('mcpSetupDot');
+    const txt = document.getElementById('mcpSetupState');
+    if (!box || !dot || !txt) return;
+    const info = m && typeof m === 'object' ? m : null;
+    if (info && info.connected && info.alive !== false) {
+      const app = (info.client || '').trim();
+      const named = !!app && app !== 'MCP 客户端' && app !== '未命名客户端';
+      box.classList.add('on');
+      dot.className = 'dot ok';
+      txt.innerHTML = `已接入${named ? ' · <b>' + esc(app) + '</b>' : ''}　已调用 ${info.calls || 0} 次工具`;
+      return;
+    }
+    box.classList.remove('on');
+    if (info && info.connected) {
+      dot.className = 'dot';
+      txt.textContent = `刚才那个客户端已经断开（心跳停了 ${Math.round(info.stale || 0)}s），重新接上会自动变绿`;
+      return;
+    }
+    dot.className = 'dot';
+    txt.textContent = '还没有客户端接进来。按下面的配置接一个，接上之后这里会自动变绿。';
+  }
+
+  function renderMcpSetupTabs() {
+    const host = document.getElementById('mcpSetupTabs');
+    if (!host || !mcpSetupData) return;
+    host.innerHTML = '';
+    (mcpSetupData.clients || []).forEach((c) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mcp-tab';
+      b.dataset.client = c.id;
+      b.textContent = c.label;
+      b.onclick = () => selectMcpSetupClient(c.id);
+      host.appendChild(b);
+    });
+  }
+
+  function selectMcpSetupClient(id) {
+    if (!mcpSetupData) return;
+    const list = mcpSetupData.clients || [];
+    const c = list.find((x) => x.id === id) || list[0];
+    if (!c) return;
+    mcpSetupClient = c.id;
+    document.querySelectorAll('#mcpSetupTabs .mcp-tab').forEach((b) => {
+      b.classList.toggle('on', b.dataset.client === c.id);
+    });
+    const pathEl = document.getElementById('mcpSetupPath');
+    if (pathEl) {
+      pathEl.textContent = c.path;
+      pathEl.title = c.path;
+    }
+    const flag = document.getElementById('mcpSetupExists');
+    if (flag) {
+      flag.textContent = c.exists ? '已存在 · 会合并并先备份' : '还没有 · 会新建';
+      flag.className = `mcp-flag${c.exists ? ' ok' : ''}`;
+    }
+    const json = document.getElementById('mcpSetupJson');
+    if (json) json.textContent = JSON.stringify(c.config, null, 2);
+    mcpSetupNote('');
+  }
+
+  async function openMcpSetup() {
+    const el = document.getElementById('mcpSetup');
+    if (!el) return;
+    el.classList.remove('hidden');
+    mcpSetupNote('正在读取配置…');
+    try {
+      const [setup, health] = await Promise.all([api('/api/mcp/setup'), api('/api/health')]);
+      if (!setup || setup.ok === false) throw new Error((setup && setup.error) || '服务端没有 /api/mcp/setup');
+      mcpSetupData = setup;
+      const ep = document.getElementById('mcpSetupEndpoint');
+      if (ep) { ep.textContent = setup.endpoint; ep.title = setup.endpoint; }
+      paintMcpSetupStatus(health && health.mcp);
+      renderMcpSetupTabs();
+      selectMcpSetupClient(mcpSetupClient);
+    } catch (e) {
+      mcpSetupNote(`读不到接入信息：${e.message}（服务端是旧版本？重启 python server.py 再试）`, 'err');
+    }
+  }
+
+  function closeMcpSetup() {
+    const el = document.getElementById('mcpSetup');
+    if (el) el.classList.add('hidden');
+  }
+
+  function initServerDown() {
+    const btn = document.getElementById('serverDownReload');
+    // 服务关掉后刷新也没用（后端没了），但用户重启服务后按一下就能回来
+    if (btn) btn.onclick = () => location.reload();
+  }
+
+  function initMcpSetup() {
+    const chip = document.getElementById('mcpChip');
+    if (chip) {
+      chip.onclick = () => openMcpSetup();
+      chip.onkeydown = (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openMcpSetup(); }
+      };
+    }
+    const close = document.getElementById('mcpSetupClose');
+    if (close) close.onclick = closeMcpSetup;
+    const box = document.getElementById('mcpSetup');
+    if (box) box.onclick = (ev) => { if (ev.target === box) closeMcpSetup(); };
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && box && !box.classList.contains('hidden')) closeMcpSetup();
+    });
+
+    const epBtn = document.querySelector('#mcpSetup [data-copy="endpoint"]');
+    if (epBtn) {
+      epBtn.onclick = async () => {
+        const text = (document.getElementById('mcpSetupEndpoint') || {}).textContent || '';
+        const ok = await copyText(text);
+        mcpSetupNote(ok ? '端点已复制' : '复制失败，手动选一下吧', ok ? 'ok' : 'err');
+      };
+    }
+    const copyBtn = document.getElementById('mcpSetupCopy');
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        const text = (document.getElementById('mcpSetupJson') || {}).textContent || '';
+        mcpSetupNote((await copyText(text)) ? '配置已复制，粘到文件里就能用' : '复制失败，手动选一下吧', 'ok');
+      };
+    }
+    const writeBtn = document.getElementById('mcpSetupWrite');
+    if (writeBtn) {
+      writeBtn.onclick = async () => {
+        const id = mcpSetupClient;
+        const label = (document.querySelector(`#mcpSetupTabs .mcp-tab[data-client="${id}"]`) || {}).textContent || id;
+        writeBtn.disabled = true;
+        mcpSetupNote('正在写入…');
+        try {
+          const r = await postJson('/api/mcp/install', { client: id });
+          if (!r || r.ok === false) throw new Error((r && r.error) || '写入失败');
+          const tail = r.backup ? `（原文件已备份到 ${r.backup.split(/[\\/]/).pop()}）` : '（新建）';
+          mcpSetupNote(`已写入 ${label}：${r.path} ${tail}`, 'ok');
+          flash(r.backup ? `已合并进 ${label} 的配置，原文件已备份` : `已写入 ${label} 的配置`);
+        } catch (e) {
+          mcpSetupNote(`没写进去：${e.message}`, 'err');
+        } finally {
+          writeBtn.disabled = false;
+        }
+      };
+    }
+  }
+
   /* ---------------- 健康检查 ---------------- */
   async function health() {
+    if (state.serverDown) return;
     const res = await api('/api/health');
+    // 记一下 ComfyUI 在不在：有些"顺手校验"只在线时才做得成，
+    // 离线去问只会白挨一个 502，还在控制台里留一条红字。
+    state.comfyOnline = !!res.comfy;
     // 旧服务端没有新接口：提示重启，否则「新增预设」会静默 404
     if (!Array.isArray(res.features) || !res.features.includes('presets')) {
       if (!health._warned) {
@@ -5182,6 +6616,7 @@
       if (hdot) hdot.className = 'dot bad';
       if (htext) htext.textContent = label;
     }
+    updateMcpChip(res);
   }
 
   /* ---------------- 小地图与视图工具 ---------------- */
@@ -5198,6 +6633,14 @@
 
   // 拖动 / 改大小期间，连线、分组、小地图都按帧合并，避免每个 pointermove 都做一遍全量测量
   let layoutPending = false;
+  // 屏幕坐标的浮条（图片工具条 / 连线删除键）贴的是节点在**屏幕**上的位置。
+  // 平移缩放走 applyView()，那里已经重贴过；但拖节点只改 transform、不经过 applyView ——
+  // 所以以前拖着节点走，工具条会钉在原地，松手才「瞬移」过去。这里跟布局同一个节拍补上。
+  function followScreenBars() {
+    positionImgTools();
+    positionLinkDel();
+  }
+
   function scheduleLayout() {
     if (layoutPending) return;
     layoutPending = true;
@@ -5206,6 +6649,7 @@
       renderLinks();
       renderGroups();
       renderMinimap();
+      followScreenBars();
     });
   }
 
@@ -5406,7 +6850,10 @@
       const t = ev.target;
       if (!t || !t.closest) return;
       if (t.closest('.popmenu')) return;                  // 点菜单自己：什么都不做
-      if (anchor && anchor.contains(t)) return;           // 点锚点：交给按钮自己开关
+      // 锚点不一定是元素：连线拖到空白处弹出的「接一个节点」用的是 {x, y} 坐标对象，
+      // 它没有 contains，直接调用会抛 TypeError —— 监听器当场中断，菜单永远关不掉
+      // （用户报的「拖完不选，点空白也不消失」就是这个）。
+      if (anchor && typeof anchor.contains === 'function' && anchor.contains(t)) return;
       closePopMenu();
       if (t.closest('#stage') && !t.closest('.node, .port')) ev.stopPropagation();
     };
@@ -5468,7 +6915,7 @@
       inp.value = state.name || '未命名画布';
       inp.oninput = () => {
         state.name = inp.value;
-        document.title = `${inp.value || 'Comfy 无限画布'}`;
+        document.title = `${inp.value || 'InfiSheet · 无限画布'}`;
         queueSave();
       };
       inp.onblur = () => {
@@ -5512,7 +6959,7 @@
     const selBtn = document.querySelector('#bar [data-act="select-mode"]');
     if (panBtn) panBtn.classList.toggle('active', state.panMode);
     if (selBtn) selBtn.classList.toggle('active', !state.panMode);
-    document.title = state.name || 'Comfy 无限画布';
+    document.title = state.name || 'InfiSheet · 无限画布';
   }
 
   function initHelpSheet() {
@@ -5692,7 +7139,7 @@
     });
     if (!res.ok || !res.id) { flash(res.error || '新建项目失败'); return null; }
     state.projectId = res.id;
-    try { localStorage.setItem('comfy-canvas-project', res.id); } catch { /* noop */ }
+    try { localStorage.setItem('infisheet-project', res.id); } catch { /* noop */ }
     return res;
   }
 
@@ -5720,7 +7167,7 @@
     const r = await api('/api/projects/' + encodeURIComponent(id));
     if (!r.ok || !r.canvas) { flash(r.error || '打开项目失败'); return; }
     state.projectId = id;
-    try { localStorage.setItem('comfy-canvas-project', id); } catch { /* noop */ }
+    try { localStorage.setItem('infisheet-project', id); } catch { /* noop */ }
     load(r.canvas);
     state.hydrated = true;
     applyView(); renderAll(); renderLinks();
@@ -5736,15 +7183,353 @@
       state.projectId = null;
       clearTimeout(saveTimer);
       lastSavedSnap = JSON.stringify(serialize());   // 别让排队中的自动保存把删掉的项目又写回去
-      try { localStorage.removeItem('comfy-canvas-project'); } catch { /* noop */ }
+      try { localStorage.removeItem('infisheet-project'); } catch { /* noop */ }
     }
     initHome();
   }
+  /* ---------------- 图片工具条：裁剪 / 高清 ---------------- */
+  // 图片节点选中时，在节点标题上方浮出一排后续操作。位置按**屏幕坐标**算（和 #alignBar、
+  // #linkDel 同一个路数）：放进 #world 会跟着画布缩放，200% 时工具条比图还大、25% 时点不着。
+  const IMG_TOOLS = [
+    ['crop', '裁剪', 'select', '拖一个框，裁出一张新的图片节点'],
+    ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
+  ];
+  const EDIT_LABEL = { upscale: '高清' };
+  // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
+  // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
+  const EDIT_TPL = {
+    upscale: '以这张图为参考，输出分辨率更高、细节更精细的版本：补充皮肤、发丝、材质与织物的纹理，'
+      + '构图、人物、光线与色调保持完全一致。',
+  };
+
+  let imgToolsEl = null;
+
+  // 只有「单选 + 有图」的图片节点才有后续操作可做
+  function imgToolNode() {
+    if (state.selected.size !== 1) return null;
+    const n = getNode([...state.selected][0]);
+    return n && n.type === 'image' && n.dataURL ? n : null;
+  }
+
+  function ensureImgTools() {
+    if (imgToolsEl && imgToolsEl.isConnected) return imgToolsEl;
+    const bar = document.createElement('div');
+    bar.id = 'imgTools';
+    bar.className = 'hidden';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', '图片工具');
+    // 点工具条不能把节点选丢了，也不能顺手把画布拖走
+    bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    IMG_TOOLS.forEach(([kind, label, ico, tip]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'it-btn';
+      b.dataset.tool = kind;
+      b.title = tip;
+      b.innerHTML = `${icon(ico)}<span>${label}</span>`;
+      b.onclick = (ev) => { ev.stopPropagation(); runImgTool(kind); };
+      bar.appendChild(b);
+    });
+    document.body.appendChild(bar);
+    imgToolsEl = bar;
+    return bar;
+  }
+
+  function positionImgTools() {
+    const bar = imgToolsEl;
+    const n = imgToolNode();
+    // 收着的时候不用算：每帧跟布局（拖节点、拖画布）都会走到这里，别白量一遍 DOM
+    if (!bar || !n || bar.classList.contains('hidden')) return;
+    // 宽度不能拿 nodeWidth(n) 算：那是个「没量过就给 380」的估值，而图片节点实际宽度
+    // 跟着图片比例走（竖图只有两百多），估出来会偏到一边去。直接量 DOM。
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    if (!el) return;
+    const nb = el.getBoundingClientRect();
+    const w = bar.offsetWidth || 300;
+    const h = bar.offsetHeight || 34;
+    const left = clamp(nb.left + nb.width / 2 - w / 2, 10, window.innerWidth - w - 10);
+    // 贴在标题上方；节点顶到屏幕外时别让工具条跟着飞出视口
+    const y = Math.max(8, nb.top - h - 8);
+    bar.style.left = `${Math.round(left)}px`;
+    bar.style.top = `${Math.round(y)}px`;
+  }
+
+  function updateImgTools() {
+    const n = imgToolNode();
+    const bar = ensureImgTools();
+    const show = !!n && !cropSession && !bigEditor;
+    bar.classList.toggle('hidden', !show);
+    if (show) positionImgTools();
+  }
+
+  function runImgTool(kind) {
+    const n = imgToolNode();
+    if (!n) return;
+    if (kind === 'crop') { openCrop(n); return; }
+    createEditNode(n, kind);
+  }
+
+  // 图像编辑类工具的落地方式：**新建**一个节点，而不是改用户手上这张。
+  // 新节点带着这张图（自己就是参考图，生成时会自动上传）、切到能吃图的工作流、
+  // 提示词预填模板，用户改掉【】里的内容再点生成即可。原图不会被碰。
+  //
+  // 挑工作流只看能力（服务端扫图给出的 takes_image / takes_mask），不看名字：
+  // 按名字匹配时选中过 Moss_图像编辑 —— 那是个纯文生图流程，参考图根本没进图，
+  // 高清出来的是一张全新的画。
+  function editWorkflowId() {
+    const opts = presetOptions();
+    const hit = opts.find((o) => o.image);
+    return (hit && hit.id) || defaultWorkflowId();
+  }
+
+  function createEditNode(src, kind) {
+    const prompt = EDIT_TPL[kind] || '';
+    const gen = { wf: editWorkflowId(), prompt };
+    const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
+      dataURL: src.dataURL,
+      uploaded: src.uploaded || null,
+      subfolder: src.subfolder || '',
+      filename: src.filename || null,
+      title: `${EDIT_LABEL[kind] || '编辑'} · ${src.title}`,
+      gen,
+    });
+    selectOnly(n.id);
+    const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
+    if (ta) {
+      ta.focus();
+      const r = document.createRange();
+      r.selectNodeContents(ta);
+      r.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    flash(`${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`);
+    return n;
+  }
+
+  /* ---------------- 裁剪浮层 ---------------- */
+  // 八个锚点的几何：四角钉住对角，四边中点只动一条边（另一个方向一动不动）；
+  // 锁了比例时，动宽就以宽为准反算高 —— 角按对边固定，边按中线对称。
+  // 抽成纯函数是因为「拖拽」本身要真实指针，测起来又慢又容易被亚像素吃了。
+  function dragCropSel(start, anchor, px, py, ratio, W, H) {
+    const MIN = 24;
+    const hasW = anchor.includes('w'), hasE = anchor.includes('e');
+    const hasN = anchor.includes('n'), hasS = anchor.includes('s');
+    const isCorner = (hasW || hasE) && (hasN || hasS);
+    const ax = hasW ? start.x + start.w : start.x;   // 钉住不动的竖边
+    const ay = hasN ? start.y + start.h : start.y;   // 钉住不动的横边
+    let x = start.x, y = start.y, w = start.w, h = start.h;
+    if (hasW) { w = clamp(ax - px, MIN, Math.max(MIN, ax)); x = ax - w; }
+    else if (hasE) { w = clamp(px - ax, MIN, Math.max(MIN, W - ax)); x = ax; }
+    if (hasN) { h = clamp(ay - py, MIN, Math.max(MIN, ay)); y = ay - h; }
+    else if (hasS) { h = clamp(py - ay, MIN, Math.max(MIN, H - ay)); y = ay; }
+    if (ratio) {
+      if (hasW || hasE) {
+        const h2 = w / ratio;
+        y = isCorner ? (py < ay ? ay - h2 : ay) : start.y + start.h / 2 - h2 / 2;
+        h = h2;
+      } else {
+        const w2 = h * ratio;
+        w = w2;
+        x = start.x + start.w / 2 - w2 / 2;
+      }
+    }
+    // 收进画面：夹完再按比例修一次，别让「拖出图外」把比例拉歪
+    w = clamp(w, MIN, W); h = clamp(h, MIN, H);
+    if (ratio) { if (w / h > ratio) w = h * ratio; else h = w / ratio; }
+    x = clamp(x, 0, Math.max(0, W - w));
+    y = clamp(y, 0, Math.max(0, H - h));
+    return { x, y, w, h };
+  }
+
+  // 只做「按框裁一块」，不做旋转/透视。选区存的是**显示像素**，落盘前按
+  // naturalWidth / clientWidth 换回原图像素——否则 4K 原图会被裁成 800px。
+  let cropSession = null;
+  const CROP_RATIOS = [['自由', 0], ['1:1', 1], ['4:5', 0.8], ['3:4', 0.75], ['16:9', 16 / 9], ['9:16', 9 / 16]];
+
+  function openCrop(n) {
+    closeCrop();
+    const mask = document.createElement('div');
+    mask.id = 'cropMask';
+    mask.innerHTML = `
+      <div class="crop-box" role="dialog" aria-label="裁剪">
+        <div class="crop-head">
+          <strong>裁剪</strong>
+          <div class="crop-ratios">${CROP_RATIOS.map(([label, r], i) => (
+            `<button type="button" class="crop-ratio${i === 0 ? ' on' : ''}" data-ratio="${r}">${label}</button>`
+          )).join('')}</div>
+        </div>
+        <div class="crop-stage">
+          <img alt="" draggable="false" />
+          <div class="crop-dim hidden"><i></i><i></i><i></i><i></i></div>
+          <div class="crop-sel hidden"><i class="ch nw"></i><i class="ch n"></i><i class="ch ne"></i><i class="ch e"></i><i class="ch se"></i><i class="ch s"></i><i class="ch sw"></i><i class="ch w"></i></div>
+        </div>
+        <div class="crop-foot">
+          <span class="crop-size">载入中…</span>
+          <span class="crop-gap"></span>
+          <button type="button" class="crop-btn" data-act="cancel">取消</button>
+          <button type="button" class="crop-btn primary" data-act="apply">裁出来</button>
+        </div>
+      </div>`;
+    document.body.appendChild(mask);
+    const box = mask.querySelector('.crop-box');
+    const img = mask.querySelector('img');
+    const stageEl = mask.querySelector('.crop-stage');
+    const dimEl = mask.querySelector('.crop-dim');
+    const selEl = mask.querySelector('.crop-sel');
+    const sizeEl = mask.querySelector('.crop-size');
+    cropSession = { node: n, mask, sel: null, ratio: 0, drag: null, abort: new AbortController() };
+
+    const draw = () => {
+      const s = cropSession && cropSession.sel;
+      if (!s) return;
+      selEl.style.left = `${s.x}px`;
+      selEl.style.top = `${s.y}px`;
+      selEl.style.width = `${s.w}px`;
+      selEl.style.height = `${s.h}px`;
+      // 选区外压暗：四块暗条拼出「洞」，而不是给选区加 9999px 的 box-shadow。
+      // 那个阴影是 positioned 元素，绘制顺序晚于静态内容，会连标题、比例按钮、取消 / 裁出来
+      // 一起压暗约一半——按钮明明能点，看着却像禁用的。四块条只是图片上的一层，天然被图片裁住。
+      // （试过 clip-path polygon 挖洞：CSS 的 polygon 是单条闭合路径，内外环会连出一条斜边，
+      //   图上会多出一条亮楔子。四块矩形没这个问题。）
+      //
+      // 宽度/高度必须靠 right:0 / bottom:0 锚定，不能自己算。
+      // 图片按 max-height 缩放后是 933.3 × 524.9 这种小数尺寸，而 img.clientWidth/clientHeight
+      // 取整（933 / 525）：算出来的暗条比图片短不到 1px，右边缘和下边缘各留一条亮线。
+      const [top, bottom, left, right] = dimEl.children;
+      top.style.cssText = `left:0; right:0; top:0; height:${s.y}px`;
+      bottom.style.cssText = `left:0; right:0; bottom:0; top:${s.y + s.h}px`;
+      left.style.cssText = `left:0; top:${s.y}px; width:${s.x}px; height:${s.h}px`;
+      right.style.cssText = `right:0; top:${s.y}px; left:${s.x + s.w}px; height:${s.h}px`;
+      const scale = img.naturalWidth / (img.clientWidth || 1);
+      sizeEl.textContent = `裁出 ${Math.round(s.w * scale)} × ${Math.round(s.h * scale)}`;
+    };
+
+    const clampSel = () => {
+      const s = cropSession.sel;
+      const W = img.clientWidth, H = img.clientHeight;
+      s.w = clamp(s.w, 24, W); s.h = clamp(s.h, 24, H);
+      // 锁了比例就不能让宽高各自被夹：夹完再按比例收一次，否则拉出图外会变成另一个比例
+      if (cropSession.ratio) {
+        if (s.w / s.h > cropSession.ratio) s.w = s.h * cropSession.ratio;
+        else s.h = s.w / cropSession.ratio;
+      }
+      s.x = clamp(s.x, 0, W - s.w); s.y = clamp(s.y, 0, H - s.h);
+    };
+
+    // 换比例：按新比例在图片里摆一个尽量大的居中框
+    const applyRatio = (ratio) => {
+      cropSession.ratio = ratio;
+      const W = img.clientWidth, H = img.clientHeight;
+      let w = W * 0.8, h = H * 0.8;
+      if (ratio) {
+        if (w / h > ratio) w = h * ratio; else h = w / ratio;
+        if (w > W) { w = W; h = w / ratio; }
+        if (h > H) { h = H; w = h * ratio; }
+      }
+      cropSession.sel = { x: (W - w) / 2, y: (H - h) / 2, w, h };
+      draw();
+    };
+
+    img.onload = () => {
+      if (!cropSession) return;
+      selEl.classList.remove('hidden');
+      dimEl.classList.remove('hidden');
+      applyRatio(0);
+    };
+    img.src = n.dataURL;
+
+    mask.onpointerdown = (ev) => { if (ev.target === mask) closeCrop(); };
+    mask.querySelector('[data-act="cancel"]').onclick = () => closeCrop();
+    mask.querySelector('[data-act="apply"]').onclick = () => applyCrop();
+    mask.querySelectorAll('.crop-ratio').forEach((b) => {
+      b.onclick = () => {
+        mask.querySelectorAll('.crop-ratio').forEach((x) => x.classList.toggle('on', x === b));
+        applyRatio(Number(b.dataset.ratio) || 0);
+      };
+    });
+
+    // 拖动 / 拉角
+    selEl.addEventListener('pointerdown', (ev) => {
+      if (!cropSession || !cropSession.sel) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      // 八个锚点：四角（nw/ne/sw/se）+ 四边中点（n/e/s/w）。空字符串＝拖整块。
+      const anchor = ev.target.classList.contains('ch') ? ev.target.className.replace('ch', '').trim() : '';
+      const r = stageEl.getBoundingClientRect();
+      cropSession.drag = {
+        anchor,
+        px: ev.clientX - r.left,
+        py: ev.clientY - r.top,
+        start: { ...cropSession.sel },
+      };
+    });
+    // 拖动挂在 window 上而不是选区自己身上：指针一快就跑到选区外面，
+    // 只监听选区就会「拖两下就断」。用 AbortController 一次性摘干净。
+    window.addEventListener('pointermove', (ev) => {
+      const d = cropSession && cropSession.drag;
+      if (!d) return;
+      const r = stageEl.getBoundingClientRect();
+      const px = ev.clientX - r.left, py = ev.clientY - r.top;
+      const s0 = d.start;
+      const k = d.anchor;
+      if (!k) {
+        cropSession.sel = { ...s0, x: s0.x + (px - d.px), y: s0.y + (py - d.py) };
+        clampSel(); draw(); return;
+      }
+      cropSession.sel = dragCropSel(s0, k, px, py, cropSession.ratio, img.clientWidth, img.clientHeight);
+      draw();
+    }, { signal: cropSession.abort.signal });
+    const endDrag = () => { if (cropSession) cropSession.drag = null; };
+    window.addEventListener('pointerup', endDrag, { signal: cropSession.abort.signal });
+    window.addEventListener('pointercancel', endDrag, { signal: cropSession.abort.signal });
+
+    img.addEventListener('load', () => setTimeout(draw, 0));
+    // 遮罩吃掉滚轮：别让背后的画布一边裁剪一边缩放
+    mask.addEventListener('wheel', (ev) => ev.preventDefault(), { passive: false });
+  }
+
+  function closeCrop() {
+    if (!cropSession) return;
+    if (cropSession.abort) cropSession.abort.abort();
+    cropSession.mask.remove();
+    cropSession = null;
+    updateImgTools();
+  }
+
+  function applyCrop() {
+    const s = cropSession && cropSession.sel;
+    if (!s) return;
+    const { node: src, mask } = cropSession;
+    const img = mask.querySelector('img');
+    // 图没解码出来（没加载完、坏图、没有固有尺寸的 SVG）时 naturalWidth 是 0：
+    // 拿它做比例会算出 0×0 的空图，直接说清楚比画一张破图好。
+    if (!img.naturalWidth || !img.naturalHeight || !img.clientWidth) {
+      flash('这张图还没加载完，稍等一下再裁');
+      return;
+    }
+    const scale = img.naturalWidth / img.clientWidth;
+    const sx = Math.round(s.x * scale), sy = Math.round(s.y * scale);
+    const sw = Math.max(1, Math.round(s.w * scale)), sh = Math.max(1, Math.round(s.h * scale));
+    const cv = document.createElement('canvas');
+    cv.width = sw; cv.height = sh;
+    cv.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const url = cv.toDataURL('image/png');
+    closeCrop();
+    const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
+      dataURL: url,
+      title: `裁剪 ${sw} × ${sh}`,
+    });
+    selectOnly(n.id);
+    flash(`已裁出 ${sw} × ${sh}，可接着连进工作流`);
+  }
+
   /* ---------------- 启动 ---------------- */
   (async function boot() {
     await refreshWorkflows();
     let restored = false;
-    const savedPid = (() => { try { return localStorage.getItem('comfy-canvas-project'); } catch { return null; } })();
+    const savedPid = (() => { try { return localStorage.getItem('infisheet-project'); } catch { return null; } })();
     if (savedPid) {
       try {
         const r = await api('/api/projects/' + encodeURIComponent(savedPid));
@@ -5771,7 +7556,7 @@
       const server = await api('/api/canvas');
       if (server.canvas) restored = load(server.canvas);
     }
-    if (state.projectId) { try { localStorage.setItem('comfy-canvas-project', state.projectId); } catch { /* noop */ } }
+    if (state.projectId) { try { localStorage.setItem('infisheet-project', state.projectId); } catch { /* noop */ } }
     applyView(); renderAll();
     applyGlobalViewPrefs();
     renderLinks();
@@ -5798,6 +7583,8 @@
     initViewTools();
     initProjectBar();
     initHelpSheet();
+    initMcpSetup();
+    initServerDown();
     syncChrome();
 
     // 路由：#canvas 直接进编辑器，否则停在首页
@@ -5806,13 +7593,16 @@
     else showHome();
 
     health(); setInterval(health, 10000);
+    setInterval(pollProjectRev, 4000);
     window.addEventListener('beforeunload', () => {
       if (!state.hydrated || !state.nodes.length) return;   // 没初始化完 / 空画布不覆盖存档
       try { localStorage.setItem(STORE_KEY, JSON.stringify(serialize())); } catch { /* noop */ }
       const url = state.projectId ? '/api/projects/' + encodeURIComponent(state.projectId) : '/api/canvas';
       fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ canvas: serialize() }), keepalive: true,
+        // keepalive 这一发同样要带 baseRev：否则「关标签页」就是一次绕过版本检查的强制覆盖
+        body: JSON.stringify({ canvas: serialize(), baseRev: state.projectId ? state.rev : undefined }),
+        keepalive: true,
       }).catch(() => {});
     });
   })();

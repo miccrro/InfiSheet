@@ -57,6 +57,7 @@ const MAP = {
   close: 'CloseSmall',
   zoom: 'FullScreenTwo',
   magic: 'MagicWand',
+  palette: 'ColorFilter',   // 风格库：色环，比调色板更像「画风」
   video: 'Video',
   music: 'Music',
   script: 'Notes',
