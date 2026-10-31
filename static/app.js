@@ -7486,7 +7486,6 @@
       b.type = 'button';
       b.className = 'it-btn';
       b.dataset.tool = kind;
-      b.dataset.label = label;      // 悬停气泡用（文字本身在 span 里，只是不占宽度）
       b.title = tip;
       b.setAttribute('aria-label', `${label}：${tip}`);
       b.innerHTML = `${icon(ico)}<span>${label}</span>`;
@@ -7512,15 +7511,55 @@
     const h = bar.offsetHeight || 34;
     const left = clamp(nb.left + nb.width / 2 - w / 2, 10, window.innerWidth - w - 10);
     // 贴在标题上方；节点顶到屏幕外时别让工具条跟着飞出视口
-    const y = Math.max(8, nb.top - h - 8);
+    let y = Math.max(8, nb.top - h - 8);
+    let place = 'above';
+    // 整条带文字之后有 ~575px 宽，横向会盖到旁边节点的标题上——那不只是难看：
+    // 盖住的那块点下去命中的是工具条（实测点标题点出了「旋转」菜单），用户会以为
+    // 「这个节点点不中」。压到别人就把整条往上抬；抬一次可能又撞上更高处的一条，
+    // 所以循环到不再重叠（最多 3 次，正常情况一次就结束）。
+    const topBar = document.getElementById('topBar');
+    const floor = (topBar ? topBar.offsetHeight : 44) + 6;
+    for (let i = 0; i < 3; i++) {
+      const hit = otherTitleTops(n.id, left, left + w, y, y + h);
+      if (hit == null) break;
+      const next = Math.max(floor, Math.min(y, hit - h - 6));
+      if (next === y) break;      // 已经顶到上限，再抬不动了
+      y = next;
+    }
+    // 抬到顶栏底下还是压着人（节点本来就贴着屏幕上方）→ 改为压在自己这张图的上沿。
+    // 翻到节点下方试过：图片节点下面紧跟着生成面板，那条会盖住「上传 / 素材库 / 清空 / 风格」，
+    // 还是「点了没反应」。压在自己图上则谁也挡不着——这张图本来就是选中的那张，
+    // 点它只会重新选中它，不丢任何操作。
+    if (otherTitleTops(n.id, left, left + w, y, y + h) != null) {
+      const title = el.querySelector('.node-title');
+      const tb = title ? title.getBoundingClientRect().bottom : nb.top + 28;
+      y = Math.min(tb + 6, window.innerHeight - h - 8);
+      place = 'over';
+    }
+    bar.dataset.place = place;            // 测试和排查用：这次是贴在上面还是压在自己图上
     bar.style.left = `${Math.round(left)}px`;
     bar.style.top = `${Math.round(y)}px`;
+  }
+
+  // 工具条横向范围内，其它节点标题的最高一条顶边；没有重叠返回 null。
+  // 只量标题，不量整个节点：盖住图片本身无所谓（工具条本来就浮在画布上），盖住标题才会挡点击。
+  function otherTitleTops(selfId, l, r, t, b) {
+    let best = null;
+    nodesEl.querySelectorAll('.node').forEach((el) => {
+      if (el.dataset.id === selfId) return;
+      const title = el.querySelector('.node-title');
+      if (!title) return;
+      const q = title.getBoundingClientRect();
+      if (q.right < l || q.left > r || q.bottom < t || q.top > b) return;
+      if (best == null || q.top < best) best = q.top;
+    });
+    return best;
   }
 
   function updateImgTools() {
     const n = imgToolNode();
     const bar = ensureImgTools();
-    const show = !!n && !cropSession && !bigEditor && !imgPanel;
+    const show = !!n && !cropSession && !outpaintSession && !bigEditor && !imgPanel;
     bar.classList.toggle('hidden', !show);
     if (show) {
       // 只有「这台机器上压根没有吃遮罩的工作流」才禁用；工作流不对会在点的时候自动切。
@@ -7826,70 +7865,127 @@
     return { ox, oy, bands: bands.filter((b) => b[2] > 0 && b[3] > 0) };
   }
 
+  // 扩图浮层：和裁剪共用 .crop-box / .crop-head / .crop-foot 这套外壳，只有中间的舞台不一样。
+  // 裁剪是在原图上拉框，扩图是先把新画布画出来（原图摆中间、四条新边标蓝），所见即所得。
+  let outpaintSession = null;
+
+  function closeOutpaint() {
+    if (!outpaintSession) return;
+    try { outpaintSession.ac.abort(); } catch { /* 已经 abort 过 */ }
+    outpaintSession.mask.remove();
+    outpaintSession = null;
+    updateImgTools();
+  }
+
   function openOutpaintPanel(n) {
-    const body = `
-      <div class="ip-row"><span>目标比例</span>
-        <div class="ip-ratios">${OUT_RATIOS.map(([label], i) => `<button type="button" data-ratio="${i}"${i === 0 ? ' class="on"' : ''}>${label}</button>`).join('')}</div>
-      </div>
-      <label class="ip-row"><span>四周各扩</span>
-        <input type="range" min="0" max="100" step="5" value="20" data-pad>
-        <b data-padv>20%</b></label>
-      <p class="ip-tip" data-size>—</p>
-      <p class="ip-tip">扩出来的四条边会标成遮罩，点生成后由模型补画；中间的原图不会被重画。</p>`;
+    closeOutpaint();
+    const mask = document.createElement('div');
+    mask.id = 'outpaintMask';
+    mask.innerHTML = `
+      <div class="crop-box" role="dialog" aria-label="扩图">
+        <div class="crop-head">
+          <strong>扩图</strong>
+          <div class="crop-ratios">${OUT_RATIOS.map(([label], i) => (
+            `<button type="button" class="crop-ratio${i === 0 ? ' on' : ''}" data-ratio="${i}">${label}</button>`
+          )).join('')}</div>
+        </div>
+        <div class="crop-stage out-stage">
+          <img alt="" draggable="false" />
+          <div class="out-bands"><i></i><i></i><i></i><i></i></div>
+          <div class="out-orig"></div>
+        </div>
+        <div class="crop-foot">
+          <label class="out-pad">四周各扩
+            <input type="range" min="0" max="100" step="5" value="20" data-pad>
+            <b data-padv>20%</b></label>
+          <span class="crop-size">载入中…</span>
+          <span class="crop-gap"></span>
+          <button type="button" class="crop-btn" data-act="cancel">取消</button>
+          <button type="button" class="crop-btn primary" data-act="apply">扩出来</button>
+        </div>
+      </div>`;
+    document.body.appendChild(mask);
+    const imgEl = mask.querySelector('img');
+    const stageEl = mask.querySelector('.out-stage');
+    const bandsEl = mask.querySelector('.out-bands');
+    const origEl = mask.querySelector('.out-orig');
+    const sizeEl = mask.querySelector('.crop-size');
+    const padRow = mask.querySelector('.out-pad');
+    const padEl = mask.querySelector('[data-pad]');
+    const padNum = mask.querySelector('[data-padv]');
     let ratio = 0;
     let pad = 20;
-    openImgPanel('扩图', body, {
-      applyText: '生成扩图节点',
-      onInput(root) {
-        const sizeEl = root.querySelector('[data-size]');
-        const padEl = root.querySelector('[data-pad]');
-        const padNum = root.querySelector('[data-padv]');
-        const refresh = () => {
-          // 尺寸提示要用真实像素：从节点图里读，读不到就写「按原图比例」
-          const img = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
-          const W = img && img.naturalWidth, H = img && img.naturalHeight;
-          if (!W || !H) { sizeEl.textContent = '按原图比例扩'; return; }
-          const [nw, nh] = outpaintSize(W, H, ratio, pad);
-          sizeEl.textContent = `${W} × ${H}  →  ${nw} × ${nh}`;
-          // 选了比例时「四周各扩」不参与计算，明确灰掉，别让人以为拖了没反应
-          padEl.disabled = !!ratio;
-          padEl.parentElement.classList.toggle('is-off', !!ratio);
-        };
-        root.querySelectorAll('[data-ratio]').forEach((b) => {
-          b.onclick = () => {
-            ratio = OUT_RATIOS[Number(b.dataset.ratio)][1];
-            root.querySelectorAll('[data-ratio]').forEach((x) => x.classList.toggle('on', x === b));
-            refresh();
-          };
-        });
-        padEl.oninput = () => { pad = Number(padEl.value); padNum.textContent = `${pad}%`; refresh(); };
-        refresh();
-      },
-      onApply: async () => {
-        const wf = (presetOptions().find((o) => o.alphaMask) || {}).id;
-        if (!wf) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），扩图跑不了'); return; }
-        let img;
-        try { img = await loadImageEl(n.dataURL); } catch { flash('图片加载失败，没法扩图'); return; }
-        const [nw, nh] = outpaintSize(img.naturalWidth, img.naturalHeight, ratio, pad);
-        if (nw <= img.naturalWidth && nh <= img.naturalHeight) { flash('扩出来的尺寸和原图一样，换个比例或多扩一点'); return; }
-        const { ox, oy, bands } = outpaintBands(img.naturalWidth, img.naturalHeight, nw, nh);
-        const cv = canvasOf(nw, nh);
-        cv.getContext('2d').drawImage(img, ox, oy);
-        closeImgPanel();
-        const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
-          dataURL: cv.toDataURL('image/png'),
-          title: `扩图 ${nw} × ${nh}`,
-          gen: {
-            wf, wfAuto: true,
-            prompt: '把画面补全到新的画幅：扩出来的边缘按周围的构图、光线和材质自然延展，'
-              + '主体位置、风格与色调保持不变，接缝处不要出现明显边界或重复元素。',
-          },
-        });
-        putMaskDoc(nn, { w: nw, h: nh, strokes: bands.map((r) => ({ tool: 'rect', rect: r })) });
-        selectOnly(nn.id);
-        flash(`已扩到 ${nw} × ${nh}，点生成让模型补画外内容`);
-      },
+    outpaintSession = { node: n, mask, ac: new AbortController() };
+
+    const draw = () => {
+      const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+      if (!W || !H) return;
+      const [nw, nh] = outpaintSize(W, H, ratio, pad);
+      // 缩放按「新画布整体塞进视口」算，原图用同一个 k 摆在中间——
+      // 两处各自算会得到两个比例，看着就是「原图比它的边框大一圈」。
+      const k = Math.min((window.innerWidth * 0.74) / nw, (window.innerHeight * 0.56) / nh, 1);
+      const dw = nw * k, dh = nh * k, bw = W * k, bh = H * k;
+      const ox = (dw - bw) / 2, oy = (dh - bh) / 2;
+      stageEl.style.width = `${dw}px`;
+      stageEl.style.height = `${dh}px`;
+      imgEl.style.cssText = `left:${ox}px; top:${oy}px; width:${bw}px; height:${bh}px`;
+      origEl.style.cssText = `left:${ox}px; top:${oy}px; width:${bw}px; height:${bh}px`;
+      // 四条带子：上下夹在中间（宽度＝原图），左右通高（高度＝整块画布），拼起来正好是新边
+      const [top, bottom, left, right] = bandsEl.children;
+      top.style.cssText = `left:${ox}px; top:0; width:${bw}px; height:${oy}px`;
+      bottom.style.cssText = `left:${ox}px; top:${oy + bh}px; width:${bw}px; height:${dh - oy - bh}px`;
+      left.style.cssText = `left:0; top:0; width:${ox}px; height:${dh}px`;
+      right.style.cssText = `left:${ox + bw}px; top:0; width:${dw - ox - bw}px; height:${dh}px`;
+      sizeEl.textContent = `${W} × ${H}  →  ${nw} × ${nh}`;
+      // 选了比例时「四周各扩」不参与计算，明确灰掉，别让人以为拖了没反应
+      padEl.disabled = !!ratio;
+      padRow.classList.toggle('is-off', !!ratio);
+    };
+
+    imgEl.onload = draw;
+    imgEl.src = n.dataURL;
+
+    mask.onpointerdown = (ev) => { if (ev.target === mask) closeOutpaint(); };
+    mask.querySelector('[data-act="cancel"]').onclick = () => closeOutpaint();
+    mask.querySelectorAll('[data-ratio]').forEach((b) => {
+      b.onclick = () => {
+        ratio = OUT_RATIOS[Number(b.dataset.ratio)][1];
+        mask.querySelectorAll('[data-ratio]').forEach((x) => x.classList.toggle('on', x === b));
+        draw();
+      };
     });
+    padEl.oninput = () => { pad = Number(padEl.value); padNum.textContent = `${pad}%`; draw(); };
+
+    mask.querySelector('[data-act="apply"]').onclick = () => {
+      const wf = (presetOptions().find((o) => o.alphaMask) || {}).id;
+      if (!wf) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），扩图跑不了'); return; }
+      const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+      if (!W || !H) { flash('图片还没加载完，等一下再试'); return; }
+      const [nw, nh] = outpaintSize(W, H, ratio, pad);
+      if (nw <= W && nh <= H) { flash('扩出来的尺寸和原图一样，换个比例或多扩一点'); return; }
+      const { ox, oy, bands } = outpaintBands(W, H, nw, nh);
+      const cv = canvasOf(nw, nh);
+      cv.getContext('2d').drawImage(imgEl, ox, oy);
+      closeOutpaint();
+      const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
+        dataURL: cv.toDataURL('image/png'),
+        title: `扩图 ${nw} × ${nh}`,
+        gen: {
+          wf, wfAuto: true,
+          prompt: '把画面补全到新的画幅：扩出来的边缘按周围的构图、光线和材质自然延展，'
+            + '主体位置、风格与色调保持不变，接缝处不要出现明显边界或重复元素。',
+        },
+      });
+      putMaskDoc(nn, { w: nw, h: nh, strokes: bands.map((r) => ({ tool: 'rect', rect: r })) });
+      selectOnly(nn.id);
+      flash(`已扩到 ${nw} × ${nh}，点生成让模型补画外内容`);
+    };
+
+    // 吃掉滚轮：别让背后的画布一边扩图一边缩放
+    mask.addEventListener('wheel', (ev) => ev.preventDefault(), { passive: false });
+    window.addEventListener('resize', () => { if (outpaintSession) draw(); },
+      { signal: outpaintSession.ac.signal });
+    updateImgTools();
   }
 
   /* ---------------- 遮罩编辑器 ---------------- */

@@ -2610,7 +2610,11 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   border: 0.5px solid #3a3a3a; border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  /* 整条浮在画布上，难免压到别的节点。只有按钮吃点击，其余位置让事件穿透过去——
+     压住标题时至少还能点中标题，不至于「点了没反应」。 */
+  pointer-events: none;
 }
+#imgTools .it-btn { pointer-events: auto; }
 #imgTools.hidden { display: none; }
 #imgTools .it-btn {
   position: relative;
@@ -2623,25 +2627,18 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 #imgTools .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 #imgTools .it-btn:active { background: rgba(255, 255, 255, 0.2); }
 #imgTools .it-btn .oi { width: 15px; height: 15px; }
-/* 九颗按钮全带文字会有 593px 宽，浮在画布上会盖住旁边节点的标题（点上去像「点了没反应」）。
-   所以文字收进悬停气泡：字还在 DOM 里（读屏和测试都拿得到），只是不占宽度。 */
-#imgTools .it-btn span { display: none; }
-#imgTools .it-btn::after {
-  content: attr(data-label);
-  position: absolute; left: 50%; top: 100%;
-  transform: translate(-50%, 5px);
-  padding: 3px 7px; border-radius: 6px; white-space: nowrap;
-  background: rgba(20, 20, 20, 0.96); border: 1px solid #3a3a3a; color: #e6e6e6;
-  font-size: 11px; opacity: 0; pointer-events: none; transition: opacity 0.12s;
-}
-#imgTools .it-btn:hover::after { opacity: 1; }
+/* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，九个图标里有五个是「涂抹 / 编辑」类，
+   猜不出来。整条因此宽到 ~590px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
+   整条往上抬，不靠缩窄来回避。 */
+#imgTools .it-btn span { display: inline; }
 /* 本地变换 / 涂抹类 / 整图编辑 三段之间的分隔线 */
 #imgTools .it-sep {
   width: 1px; height: 16px; margin: 0 3px;
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* ---------- 图片处理弹层（调色 / 扩图） ---------- */
+/* ---------- 调色弹层 ---------- */
+/* 只剩调色在用：扩图已经搬去和裁剪共用 .crop-* 那套外壳（见「图片浮层外壳」） */
 #imgPanel {
   position: fixed; inset: 0; z-index: 130;
   display: grid; place-items: center;
@@ -2660,22 +2657,16 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   min-width: 38px; text-align: right; color: var(--text);
   font-weight: 600; font-variant-numeric: tabular-nums;
 }
-#imgPanel .ip-row.is-off { opacity: 0.4; }
-#imgPanel .ip-row.is-off input { cursor: not-allowed; }
-#imgPanel .ip-ratios { display: flex; flex-wrap: wrap; gap: 4px; }
-#imgPanel .ip-ratios button,
+#imgPanel .ip-presets { display: flex; flex-wrap: wrap; gap: 4px; }
 #imgPanel .ip-presets button {
   height: 24px; padding: 0 9px; border-radius: 7px; cursor: pointer;
   background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line);
   color: var(--dim); font: inherit; font-size: 11.5px; line-height: 1;
 }
-#imgPanel .ip-ratios button:hover,
 #imgPanel .ip-presets button:hover { color: var(--text); border-color: #4a4a4d; }
-#imgPanel .ip-ratios button.on,
 #imgPanel .ip-presets button.on {
   background: rgba(122, 162, 255, 0.18); border-color: var(--accent); color: var(--accent);
 }
-#imgPanel .ip-presets { display: flex; flex-wrap: wrap; gap: 4px; }
 #imgPanel .ip-tip { margin: 0; font-size: 11.5px; color: var(--faint); line-height: 1.6; }
 #imgPanel .ip-foot {
   display: flex; justify-content: flex-end; gap: 8px;
@@ -2691,8 +2682,11 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 
 
-/* ---------- 裁剪浮层 ---------- */
-#cropMask {
+/* ---------- 图片浮层外壳（裁剪 / 扩图共用） ---------- */
+/* 这一套 .crop-* 是「图片 + 浮层」的通用外壳：标题 + 比例按钮 + 舞台 + 底栏。
+   裁剪是在原图上拉框，扩图是在新画布上把原图摆中间、四条新边标出来。
+   两边共用同一份样式，改一处两边一起变——「统一」靠的是共用，不是照着抄一遍。 */
+#cropMask, #outpaintMask {
   position: fixed; inset: 0; z-index: 120;
   display: grid; place-items: center;
   background: rgba(8, 9, 12, 0.74);
@@ -2774,6 +2768,42 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .crop-btn.primary { background: #6ea8fe; border-color: #6ea8fe; color: #08111f; font-weight: 600; }
 .crop-btn.primary:hover { background: #8bbcfd; border-color: #8bbcfd; color: #08111f; }
 .crop-btn.primary:active { background: #5b98ef; }
+
+/* ---------- 扩图：同一个外壳，换中间的舞台 ---------- */
+/* 舞台就是**新画布**：原图按同样的缩放摆在正中间，四条新边用蓝色标出来。
+   底色是棋盘格——扩出来的像素此刻还不存在，真实产物里它们也是透明的，
+   棋盘格比纯色更诚实（纯黑会让人以为已经填上了）。 */
+.out-stage {
+  position: relative; overflow: hidden; border-radius: 10px;
+  background-color: #101114;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+/* 尺寸由 draw() 按「新画布整体塞进视口」算好写死，原图按同一比例绝对定位，
+   所以不能再吃 .crop-stage img 的 max-width / max-height（那会把图缩到和舞台对不上） */
+.out-stage img {
+  position: absolute; display: block;
+  max-width: none; max-height: none; border-radius: 0;
+}
+.out-bands { position: absolute; inset: 0; pointer-events: none; }
+.out-bands i { position: absolute; background: rgba(110, 168, 254, 0.18); }
+/* 原图边界：一圈虚线，说清「这条线以内是原来的像素，外面是模型要补的」 */
+.out-orig {
+  position: absolute; pointer-events: none; box-sizing: border-box;
+  border: 1px dashed rgba(110, 168, 254, 0.85);
+}
+.out-pad {
+  display: flex; align-items: center; gap: 8px; margin-right: 8px;
+  font-size: 11.5px; color: #8f8f8f; white-space: nowrap;
+}
+.out-pad input[type="range"] { width: 96px; accent-color: #6ea8fe; }
+.out-pad b { min-width: 32px; text-align: right; color: #e2e2e2; font-variant-numeric: tabular-nums; }
+/* 选了目标比例时「四周各扩」不参与计算，灰掉说明它为什么拖了没反应 */
+.out-pad.is-off { opacity: 0.4; }
+.out-pad.is-off input { cursor: not-allowed; }
 
 /* 纯图片节点标题上的「生成」药丸：这里不挂生成面板，点它才展开。
    灰底（表示「没开」）而不是蓝底，免得和左边的尺寸标签抢眼 */

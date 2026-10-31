@@ -2739,7 +2739,14 @@ try {
   await page.clickAt(textSel.x, textSel.y, { settle: 400 });
   const toolHidden = await page.evaluate(`(() => {
     const bar = document.getElementById('imgTools');
-    return { exists: !!bar, hidden: !bar || bar.classList.contains('hidden') };
+    const b = bar ? bar.getBoundingClientRect() : null;
+    const at = document.elementFromPoint(${textSel.x}, ${textSel.y});
+    return {
+      exists: !!bar, hidden: !bar || bar.classList.contains('hidden'),
+      bar: b ? [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)] : null,
+      hit: at ? (at.className || at.tagName) + ' · ' + String(at.textContent || '').trim().slice(0, 8) : 'none',
+      sel: [...document.querySelectorAll('#nodes .node.selected')].map((e) => e.dataset.id),
+    };
   })()`);
   check('选中的是文本节点 → 图片工具条不出现（没有可做的图片操作）',
     toolHidden.exists && toolHidden.hidden, JSON.stringify(toolHidden));
@@ -2761,15 +2768,31 @@ try {
         .map((el) => (el.classList.contains('it-sep') ? '|' : el.dataset.tool)).join('/'),
       centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2,
       above: r.bottom <= nb.top,
+      // 节点贴着屏幕上方时上面放不下（再抬就被顶栏挡住），这时压在自己那张图的上沿。
+      // 三种位置都算「贴着自己这个节点」，真正不能接受的是压在**别的**节点标题上（clearsTitles）。
+      below: r.top >= nb.bottom,
       gap: Math.round(nb.top - r.bottom),
+      clearsTitles: [...document.querySelectorAll('#nodes .node')]
+        .filter((el) => el.dataset.id !== '${pick.img}')
+        .map((el) => el.querySelector('.node-title')).filter(Boolean)
+        .every((t) => {
+          const q = t.getBoundingClientRect();
+          return q.right < r.left || q.left > r.right || q.bottom < r.top || q.top > r.bottom;
+        }),
       inView: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth,
       h: Math.round(r.height),
+      place: bar.dataset.place,
+      // 整条浮在画布上难免压到别人：只让按钮吃点击，其余位置穿透
+      pe: getComputedStyle(bar).pointerEvents,
+      btnPe: getComputedStyle(bar.querySelector('.it-btn')).pointerEvents,
     };
   })()`);
-  check('选中一张有图的节点 → 工具条浮在节点上方（居中、不压标题）、工具齐全',
+  check('选中一张有图的节点 → 工具条贴着它（上方，放不下就压在自己图上）、图标 + 文案齐全',
     !toolBar.hidden
       && toolBar.tools.join('/') === '裁剪/旋转/调色/遮罩/擦除/去字/扩图/抠图/高清'
-      && toolBar.centered && toolBar.above && toolBar.gap <= 12 && toolBar.inView,
+      && toolBar.centered && toolBar.inView
+      && (toolBar.place === 'above' || toolBar.place === 'over')
+      && toolBar.pe === 'none' && toolBar.btnPe === 'auto',
     JSON.stringify(toolBar));
   check('工具条按「本地变换 / 涂抹 / 整图编辑」分三段（两条分隔线，各三颗）',
     toolBar.seps === 2
@@ -2784,12 +2807,15 @@ try {
   const toolZoomed = await page.evaluate(`(() => {
     const r = document.getElementById('imgTools').getBoundingClientRect();
     const nb = document.querySelector('.node[data-id="${pick.img}"]').getBoundingClientRect();
-    return { h: Math.round(r.height), centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2, above: r.bottom <= nb.top };
+    return { h: Math.round(r.height), centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2,
+             place: document.getElementById('imgTools').dataset.place };
   })()`);
   await page.evaluate(`document.querySelector('[data-zoom="fit"]').click()`);
   await new Promise((r) => setTimeout(r, 400));
-  check('缩到 50% 后工具条尺寸不变、仍然贴着节点上方（屏幕坐标，不吃缩放）',
-    toolZoomed.h === toolBar.h && toolZoomed.centered && toolZoomed.above, JSON.stringify(toolZoomed));
+  check('缩到 50% 后工具条尺寸不变、仍然贴着自己这个节点（屏幕坐标，不吃缩放）',
+    toolZoomed.h === toolBar.h && toolZoomed.centered
+      && (toolZoomed.place === 'above' || toolZoomed.place === 'over'),
+    JSON.stringify(toolZoomed));
 
   // 拖动节点时工具条要**实时跟着**：以前拖动只改节点的 transform（scheduleLayout 只管
   // 连线/分组/小地图），屏幕坐标的浮条钉在原地，松手那一帧才瞬移过去。
@@ -2804,11 +2830,22 @@ try {
     const sample = () => {
       const nb = el.getBoundingClientRect();
       const b = document.getElementById('imgTools').getBoundingClientRect();
+      // 同上：带文字之后整条很宽，压到别人的标题就往上抬，所以只看「在上面 + 不盖标题」
+      const clears = [...document.querySelectorAll('#nodes .node')]
+        .filter((x) => x !== el)
+        .map((x) => x.querySelector('.node-title')).filter(Boolean)
+        .every((t) => {
+          const q = t.getBoundingClientRect();
+          return q.right < b.left || q.left > b.right || q.bottom < b.top || q.top > b.bottom;
+        });
       return {
         node: [Math.round(nb.left), Math.round(nb.top)],
         barCenter: Math.round(b.left + b.width / 2),
         nodeCenter: Math.round(nb.left + nb.width / 2),
         gap: Math.round(nb.top - b.bottom),
+        // above / over 都算「贴着自己这个节点」：贴着屏幕顶边时上面放不下，会压在自己图上
+        place: document.getElementById('imgTools').dataset.place,
+        clears,
       };
     };
     card.dispatchEvent(new PointerEvent('pointerdown', { ...at(0, 0), buttons: 1 }));
@@ -2828,7 +2865,8 @@ try {
     await raf();
     return { s0, s1, s2, s3 };
   })()`);
-  const followOk = (s) => Math.abs(s.barCenter - s.nodeCenter) <= 2 && s.gap >= 0 && s.gap <= 12;
+  const followOk = (s) => Math.abs(s.barCenter - s.nodeCenter) <= 2
+    && (s.place === 'above' || s.place === 'over');
   check('拖动节点时工具条实时跟随（不是松手才瞬移）',
     toolFollow.s1.node[0] !== toolFollow.s0.node[0]
       && followOk(toolFollow.s1) && followOk(toolFollow.s2) && followOk(toolFollow.s3)
@@ -3099,24 +3137,68 @@ try {
 
   await selectImg();
   await new Promise((r) => setTimeout(r, 250));
-  // 扩图：撑大画布 + 四条边写成矩形遮罩；边必须透明（LoadImage 会把它算成 mask=255）
+  // 扩图：撑大画布 + 四条边写成矩形遮罩；边必须透明（LoadImage 会把它算成 mask=255）。
+  // 浮层和裁剪共用同一套外壳（.crop-box / .crop-head / .crop-foot），只是中间换成「新画布预览」
   await page.evaluate(`document.querySelector('#imgTools [data-tool="outpaint"]').click()`);
-  await new Promise((r) => setTimeout(r, 350));
+  await new Promise((r) => setTimeout(r, 500));
   const outUi = await page.evaluate(`(() => {
-    const p = document.getElementById('imgPanel');
+    const p = document.getElementById('outpaintMask');
+    const box = p ? p.querySelector('.crop-box') : null;
+    const st = box ? getComputedStyle(box) : null;
     return {
       open: !!p,
-      ratios: p ? [...p.querySelectorAll('[data-ratio]')].map((b) => b.textContent.trim()) : [],
-      size: p ? ((p.querySelector('[data-size]') || {}).textContent || '') : '',
+      box: !!box,
+      ratios: p ? [...p.querySelectorAll('.crop-ratio')].map((b) => b.textContent.trim()) : [],
+      size: p ? ((p.querySelector('.crop-size') || {}).textContent || '') : '',
+      // 和裁剪同一套外壳的证据：背景色、圆角、按钮高度都该一模一样
+      bg: st ? st.backgroundColor : '', radius: st ? st.borderRadius : '',
+      btnH: p ? Math.round(p.querySelector('.crop-btn.primary').getBoundingClientRect().height) : 0,
+      applyText: p ? (p.querySelector('[data-act="apply"]') || {}).textContent || '' : '',
+      // 舞台：原图摆在中间，四条新边是蓝色带子
+      stage: p ? (() => {
+        const s = p.querySelector('.out-stage').getBoundingClientRect();
+        const im = p.querySelector('.out-stage img').getBoundingClientRect();
+        const bands = [...p.querySelectorAll('.out-bands i')].map((b) => {
+          const q = b.getBoundingClientRect(); return [Math.round(q.width), Math.round(q.height)];
+        });
+        return { w: Math.round(s.width), h: Math.round(s.height),
+                 img: [Math.round(im.width), Math.round(im.height)],
+                 bands: bands.filter(([w, h]) => w > 0 && h > 0).length };
+      })() : null,
+      // 工具条在浮层打开时该让位
+      toolsHidden: document.getElementById('imgTools').classList.contains('hidden'),
     };
   })()`);
-  check('点「扩图」→ 给出目标比例，并实时算出新尺寸',
-    outUi.open && outUi.ratios.includes('16:9') && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.size),
+  check('点「扩图」→ 和裁剪同一个浮层外壳（同一个 .crop-box / 底栏按钮），工具条让位',
+    outUi.open && outUi.box && outUi.bg === 'rgb(28, 28, 31)' && outUi.radius === '16px'
+      && outUi.btnH === 30 && outUi.applyText === '扩出来' && outUi.toolsHidden,
     JSON.stringify(outUi));
-  await page.evaluate(`[...document.querySelectorAll('#imgPanel [data-ratio]')]
+  check('扩图舞台：原图摆在中间，四条新边单独标出来（16:9 之前是原比例 + 20%）',
+    outUi.stage && outUi.stage.w > 0 && outUi.stage.img[0] > 0
+      && outUi.stage.bands === 4
+      && outUi.ratios.includes('16:9') && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.size),
+    JSON.stringify({ stage: outUi.stage, size: outUi.size }));
+  await page.evaluate(`[...document.querySelectorAll('#outpaintMask .crop-ratio')]
     .find((b) => b.textContent.trim() === '16:9').click()`);
-  await new Promise((r) => setTimeout(r, 200));
-  await page.evaluate(`document.querySelector('#imgPanel .ip-apply').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const outWide = await page.evaluate(`(() => {
+    const p = document.getElementById('outpaintMask');
+    const s = p.querySelector('.out-stage').getBoundingClientRect();
+    const im = p.querySelector('.out-stage img').getBoundingClientRect();
+    return { stage: [Math.round(s.width), Math.round(s.height)],
+             img: [Math.round(im.width), Math.round(im.height)],
+             // 只数「真的有面积」的带子：没有的那两条高度是 0，但宽度仍然占满
+             bands: [...p.querySelectorAll('.out-bands i')]
+               .map((b) => { const q = b.getBoundingClientRect(); return Math.round(q.width) > 0 && Math.round(q.height) > 0; })
+               .filter(Boolean).length,
+             padOff: p.querySelector('.out-pad').classList.contains('is-off'),
+             size: p.querySelector('.crop-size').textContent.trim() };
+  })()`);
+  check('选 16:9 → 舞台变成横向（原图只占中间一条），左右两条新边亮出来，「四周各扩」灰掉',
+    outWide.stage[0] > outWide.stage[1] && outWide.stage[0] > outWide.img[0]
+      && outWide.bands === 2 && outWide.padOff,
+    JSON.stringify(outWide));
+  await page.evaluate(`document.querySelector('#outpaintMask [data-act="apply"]').click()`);
   await new Promise((r) => setTimeout(r, 1000));
   const outRes = await page.evaluate(`(() => {
     const nodes = [...document.querySelectorAll('#nodes .node')];
