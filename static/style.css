@@ -2773,6 +2773,13 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 /* 舞台就是**新画布**：原图按同样的缩放摆在正中间，四条新边用蓝色标出来。
    底色是棋盘格——扩出来的像素此刻还不存在，真实产物里它们也是透明的，
    棋盘格比纯色更诚实（纯黑会让人以为已经填上了）。 */
+.out-wrap {
+  position: relative; width: fit-content; margin-inline: auto; line-height: 0;
+}
+/* 可拖的边框：八个锚点直接复用小裁剪浮层那套 .crop-sel .ch（尺寸、光标、形状都一致）。
+   锚点挂在边框外 6px，而 .out-stage 必须 overflow:hidden 才保得住圆角，
+   所以边框单独放在舞台外面一层，由 .out-wrap 当定位父级。 */
+.out-sel { inset: 0; cursor: default; touch-action: none; }
 .out-stage {
   position: relative; overflow: hidden; border-radius: 10px;
   background-color: #101114;

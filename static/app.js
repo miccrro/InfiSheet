@@ -7848,21 +7848,50 @@
     return Math.max(8, Math.round(x / 8) * 8);
   }
 
-  function outpaintSize(w, h, ratio, padPct) {
+  // 画布尺寸的唯一真源是**四边各扩多少**（pad，原图像素，非负）。
+  // 比例档和「四周各扩」滑杆只是往 pad 里写值的两个快捷方式——拖锚点写的也是它，
+  // 三条路走同一份数据，才不会出现「拖完再点比例，两边各算各的」。
+  function outpaintPad(w, h, ratio, padPct) {
     if (ratio) {
-      return w / h > ratio ? [snap8(w), snap8(w / ratio)] : [snap8(h * ratio), snap8(h)];
+      // 目标比例：宽的往高里补、高的往宽里补，补出来的量平均分到两侧
+      if (w / h > ratio) { const t = (w / ratio - h) / 2; return { l: 0, t, r: 0, b: t }; }
+      const l = (ratio * h - w) / 2;
+      return { l, t: 0, r: l, b: 0 };
     }
     const p = padPct / 100;
-    return [snap8(w * (1 + 2 * p)), snap8(h * (1 + 2 * p))];
+    return { l: w * p, t: h * p, r: w * p, b: h * p };
   }
 
-  function outpaintBands(w, h, nw, nh) {
-    const ox = Math.round((nw - w) / 2);
-    const oy = Math.round((nh - h) / 2);
+  // pad → 新画布（nw × nh）+ 原图在画布里的左上角（ox / oy）。
+  // snap8 的零头平分回两侧，所以「拖了多少」和「最后落多少」最多差 4px，
+  // 不会出现「右边多出来一条谁也没画过的缝」。
+  // ox/oy 取整：遮罩笔画要写进存档、还要按面积算覆盖率，留一串 204.00000000000006
+  // 只会让「带子面积 + 原图面积 = 画布面积」这种校验永远对不上。
+  function outpaintFrame(w, h, pad) {
+    const l = Math.max(0, pad.l || 0), r = Math.max(0, pad.r || 0);
+    const t = Math.max(0, pad.t || 0), b = Math.max(0, pad.b || 0);
+    // 画布不可能比原图还小：snap8 是四舍五入，98 这种尺寸会被舍到 96
+    const nw = Math.max(w, snap8(w + l + r)), nh = Math.max(h, snap8(h + t + b));
+    const ox = Math.max(0, Math.min(nw - w, Math.round(l + (nw - (w + l + r)) / 2)));
+    const oy = Math.max(0, Math.min(nh - h, Math.round(t + (nh - (h + t + b)) / 2)));
+    return { nw, nh, ox, oy };
+  }
+
+  // 兼容「给比例 / 百分比」的老口径：返回 [nw, nh]
+  function outpaintSize(w, h, ratio, padPct) {
+    const f = outpaintFrame(w, h, outpaintPad(w, h, ratio, padPct));
+    return [f.nw, f.nh];
+  }
+
+  // 四条新边（矩形笔画，原图像素）。四条边各自独立判断——四边各扩可以不一样，
+  // 不能写成「oy>0 就上下各来一条」，那样只扩了下边时会漏掉一条带子。
+  function outpaintBands(w, h, nw, nh, ox, oy) {
     const bands = [];
-    if (ox > 0) bands.push([0, 0, ox, nh], [ox + w, 0, nw - ox - w, nh]);
-    if (oy > 0) bands.push([ox, 0, w, oy], [ox, oy + h, w, nh - oy - h]);
-    return { ox, oy, bands: bands.filter((b) => b[2] > 0 && b[3] > 0) };
+    if (ox > 0) bands.push([0, 0, ox, nh]);
+    if (nw - ox - w > 0) bands.push([ox + w, 0, nw - ox - w, nh]);
+    if (oy > 0) bands.push([ox, 0, w, oy]);
+    if (nh - oy - h > 0) bands.push([ox, oy + h, w, nh - oy - h]);
+    return bands.filter((b) => b[2] > 0 && b[3] > 0);
   }
 
   // 扩图浮层：和裁剪共用 .crop-box / .crop-head / .crop-foot 这套外壳，只有中间的舞台不一样。
@@ -7889,10 +7918,13 @@
             `<button type="button" class="crop-ratio${i === 0 ? ' on' : ''}" data-ratio="${i}">${label}</button>`
           )).join('')}</div>
         </div>
-        <div class="crop-stage out-stage">
-          <img alt="" draggable="false" />
-          <div class="out-bands"><i></i><i></i><i></i><i></i></div>
-          <div class="out-orig"></div>
+        <div class="out-wrap">
+          <div class="crop-stage out-stage">
+            <img alt="" draggable="false" />
+            <div class="out-bands"><i></i><i></i><i></i><i></i></div>
+            <div class="out-orig"></div>
+          </div>
+          <div class="crop-sel out-sel"><i class="ch nw"></i><i class="ch n"></i><i class="ch ne"></i><i class="ch e"></i><i class="ch se"></i><i class="ch s"></i><i class="ch sw"></i><i class="ch w"></i></div>
         </div>
         <div class="crop-foot">
           <label class="out-pad">四周各扩
@@ -7909,40 +7941,48 @@
     const stageEl = mask.querySelector('.out-stage');
     const bandsEl = mask.querySelector('.out-bands');
     const origEl = mask.querySelector('.out-orig');
+    const selEl = mask.querySelector('.out-sel');
     const sizeEl = mask.querySelector('.crop-size');
     const padRow = mask.querySelector('.out-pad');
     const padEl = mask.querySelector('[data-pad]');
     const padNum = mask.querySelector('[data-padv]');
+    const sess = { node: n, mask, ac: new AbortController(), k: 1, drag: null };
+    outpaintSession = sess;
     let ratio = 0;
-    let pad = 20;
-    outpaintSession = { node: n, mask, ac: new AbortController() };
+    let padPct = 20;
+    // pad 是四边各扩多少（原图像素）：拖锚点改的就是它，比例档 / 滑杆只是往里写值。
+    // 初值要等图片解码完拿到真实尺寸才能算（用 1×1 占位算出来是 0.2px，等于没扩）。
+    let pad = null;
 
     const draw = () => {
       const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
-      if (!W || !H) return;
-      const [nw, nh] = outpaintSize(W, H, ratio, pad);
-      // 缩放按「新画布整体塞进视口」算，原图用同一个 k 摆在中间——
+      if (!W || !H || !pad) return;
+      const f = outpaintFrame(W, H, pad);
+      // 缩放按「新画布整体塞进视口」算，原图和四条带子都用同一个 k——
       // 两处各自算会得到两个比例，看着就是「原图比它的边框大一圈」。
-      const k = Math.min((window.innerWidth * 0.74) / nw, (window.innerHeight * 0.56) / nh, 1);
-      const dw = nw * k, dh = nh * k, bw = W * k, bh = H * k;
-      const ox = (dw - bw) / 2, oy = (dh - bh) / 2;
+      const k = Math.min((window.innerWidth * 0.74) / f.nw, (window.innerHeight * 0.56) / f.nh, 1);
+      sess.k = k;
+      const dw = f.nw * k, dh = f.nh * k, bw = W * k, bh = H * k;
+      const ox = f.ox * k, oy = f.oy * k;
       stageEl.style.width = `${dw}px`;
       stageEl.style.height = `${dh}px`;
       imgEl.style.cssText = `left:${ox}px; top:${oy}px; width:${bw}px; height:${bh}px`;
       origEl.style.cssText = `left:${ox}px; top:${oy}px; width:${bw}px; height:${bh}px`;
-      // 四条带子：上下夹在中间（宽度＝原图），左右通高（高度＝整块画布），拼起来正好是新边
+      // 四条带子：上下夹在中间（宽度＝原图），左右通高（高度＝整块画布），拼起来正好是新边。
+      // 原图不在正中间时这个算法照样成立——ox/oy 已经是不对称的。
       const [top, bottom, left, right] = bandsEl.children;
       top.style.cssText = `left:${ox}px; top:0; width:${bw}px; height:${oy}px`;
       bottom.style.cssText = `left:${ox}px; top:${oy + bh}px; width:${bw}px; height:${dh - oy - bh}px`;
       left.style.cssText = `left:0; top:0; width:${ox}px; height:${dh}px`;
       right.style.cssText = `left:${ox + bw}px; top:0; width:${dw - ox - bw}px; height:${dh}px`;
-      sizeEl.textContent = `${W} × ${H}  →  ${nw} × ${nh}`;
-      // 选了比例时「四周各扩」不参与计算，明确灰掉，别让人以为拖了没反应
-      padEl.disabled = !!ratio;
-      padRow.classList.toggle('is-off', !!ratio);
+      sizeEl.textContent = `${W} × ${H}  →  ${f.nw} × ${f.nh}`;
     };
 
-    imgEl.onload = draw;
+    imgEl.onload = () => {
+      const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+      if (!pad && W && H) pad = outpaintPad(W, H, 0, padPct);
+      draw();
+    };
     imgEl.src = n.dataURL;
 
     mask.onpointerdown = (ev) => { if (ev.target === mask) closeOutpaint(); };
@@ -7951,40 +7991,100 @@
       b.onclick = () => {
         ratio = OUT_RATIOS[Number(b.dataset.ratio)][1];
         mask.querySelectorAll('[data-ratio]').forEach((x) => x.classList.toggle('on', x === b));
+        const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+        if (!W || !H) return;
+        pad = outpaintPad(W, H, ratio, padPct);
+        padNum.textContent = `${padPct}%`;
+        // 选了比例时「四周各扩」不参与计算，明确灰掉，别让人以为拖了没反应
+        padEl.disabled = !!ratio;
+        padRow.classList.toggle('is-off', !!ratio);
         draw();
       };
     });
-    padEl.oninput = () => { pad = Number(padEl.value); padNum.textContent = `${pad}%`; draw(); };
+    padEl.oninput = () => {
+      padPct = Number(padEl.value);
+      padNum.textContent = `${padPct}%`;
+      const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+      if (!W || !H) return;
+      pad = outpaintPad(W, H, 0, padPct);
+      draw();
+    };
+
+    // 八个锚点：四角（nw/ne/sw/se）+ 四边中点（n/e/s/w），和裁剪同一套 .ch。
+    // 拖动只改对应那一两边的 pad，所以画布可以四边各扩得不一样。
+    const MAX_SIDE = 4096;   // ComfyUI 那边再大也吃不下
+    const onAnchorDown = (ev) => {
+      const a = ev.target.classList.contains('ch') ? ev.target.className.replace('ch', '').trim() : '';
+      if (!a) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      sess.drag = { a, x: ev.clientX, y: ev.clientY };
+    };
+    selEl.addEventListener('pointerdown', onAnchorDown, { signal: sess.ac.signal });
+    window.addEventListener('pointermove', (ev) => {
+      const d = sess.drag;
+      if (!d) return;
+      // 用「上一帧到这一帧」的增量换算：画布变大时 k 会跟着变小，
+      // 拿起点差值算的话边缘会越拖越跟不上指针。
+      const k = sess.k || 1;
+      const dx = (ev.clientX - d.x) / k;
+      const dy = (ev.clientY - d.y) / k;
+      d.x = ev.clientX; d.y = ev.clientY;
+      let { l, t, r, b } = pad;
+      if (d.a.includes('w')) l = Math.max(0, l - dx);
+      if (d.a.includes('e')) r = Math.max(0, r + dx);
+      if (d.a.includes('n')) t = Math.max(0, t - dy);
+      if (d.a.includes('s')) b = Math.max(0, b + dy);
+      const W = imgEl.naturalWidth || 1, H = imgEl.naturalHeight || 1;
+      // 只削正在拖的那一边，别让另一边莫名其妙缩回去
+      if (l + r > MAX_SIDE - W) {
+        if (d.a.includes('w')) l = Math.max(0, MAX_SIDE - W - r); else if (d.a.includes('e')) r = Math.max(0, MAX_SIDE - W - l);
+      }
+      if (t + b > MAX_SIDE - H) {
+        if (d.a.includes('n')) t = Math.max(0, MAX_SIDE - H - b); else if (d.a.includes('s')) b = Math.max(0, MAX_SIDE - H - t);
+      }
+      pad = { l, t, r, b };
+      // 手拖之后比例档就不成立了：取消高亮，并把「四周各扩」恢复成可用的
+      ratio = 0;
+      mask.querySelectorAll('[data-ratio]').forEach((x) => x.classList.remove('on'));
+      padEl.disabled = false;
+      padRow.classList.remove('is-off');
+      padNum.textContent = '自定义';
+      draw();
+    }, { signal: sess.ac.signal });
+    const endDrag = () => { sess.drag = null; };
+    window.addEventListener('pointerup', endDrag, { signal: sess.ac.signal });
+    window.addEventListener('pointercancel', endDrag, { signal: sess.ac.signal });
 
     mask.querySelector('[data-act="apply"]').onclick = () => {
       const wf = (presetOptions().find((o) => o.alphaMask) || {}).id;
       if (!wf) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），扩图跑不了'); return; }
       const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
       if (!W || !H) { flash('图片还没加载完，等一下再试'); return; }
-      const [nw, nh] = outpaintSize(W, H, ratio, pad);
-      if (nw <= W && nh <= H) { flash('扩出来的尺寸和原图一样，换个比例或多扩一点'); return; }
-      const { ox, oy, bands } = outpaintBands(W, H, nw, nh);
-      const cv = canvasOf(nw, nh);
-      cv.getContext('2d').drawImage(imgEl, ox, oy);
+      const f = outpaintFrame(W, H, pad);
+      if (f.nw <= W && f.nh <= H) { flash('扩出来的尺寸和原图一样，拉一下边框或多扩一点'); return; }
+      const bands = outpaintBands(W, H, f.nw, f.nh, f.ox, f.oy);
+      const cv = canvasOf(f.nw, f.nh);
+      cv.getContext('2d').drawImage(imgEl, f.ox, f.oy);
       closeOutpaint();
       const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
         dataURL: cv.toDataURL('image/png'),
-        title: `扩图 ${nw} × ${nh}`,
+        title: `扩图 ${f.nw} × ${f.nh}`,
         gen: {
           wf, wfAuto: true,
           prompt: '把画面补全到新的画幅：扩出来的边缘按周围的构图、光线和材质自然延展，'
             + '主体位置、风格与色调保持不变，接缝处不要出现明显边界或重复元素。',
         },
       });
-      putMaskDoc(nn, { w: nw, h: nh, strokes: bands.map((r) => ({ tool: 'rect', rect: r })) });
+      putMaskDoc(nn, { w: f.nw, h: f.nh, strokes: bands.map((r) => ({ tool: 'rect', rect: r })) });
       selectOnly(nn.id);
-      flash(`已扩到 ${nw} × ${nh}，点生成让模型补画外内容`);
+      flash(`已扩到 ${f.nw} × ${f.nh}，点生成让模型补画外内容`);
     };
 
     // 吃掉滚轮：别让背后的画布一边扩图一边缩放
     mask.addEventListener('wheel', (ev) => ev.preventDefault(), { passive: false });
     window.addEventListener('resize', () => { if (outpaintSession) draw(); },
-      { signal: outpaintSession.ac.signal });
+      { signal: sess.ac.signal });
     updateImgTools();
   }
 

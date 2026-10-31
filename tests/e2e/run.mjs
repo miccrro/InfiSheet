@@ -121,12 +121,13 @@ try {
     && applyStylePrompt('主体', { prompt: '' }) === '主体'
     && applyStylePrompt('主体', null) === '主体');
 
-  // 扩图的尺寸算法是纯函数：目标比例 → 新画布（宽高必须是 8 的倍数，ComfyUI 的 latent 要）。
+  // 扩图的尺寸算法是纯函数：四边各扩多少 → 新画布（宽高必须是 8 的倍数，ComfyUI 的 latent 要）。
   // 浏览器里那张测试图只有 16×16，8 像素一格等于 50% 的台阶，比例根本量不准，
   // 所以「比例准不准」在 Node 里用真实尺寸验，浏览器只验「画布真的变宽了」。
-  const { outpaintSize, outpaintBands } = new Function(
-    `${pickFn(appSrc, 'snap8')}\n${pickFn(appSrc, 'outpaintSize')}\n${pickFn(appSrc, 'outpaintBands')}\n`
-    + 'return { outpaintSize, outpaintBands };')();
+  const { outpaintSize, outpaintBands, outpaintPad, outpaintFrame } = new Function(
+    `${pickFn(appSrc, 'snap8')}\n${pickFn(appSrc, 'outpaintPad')}\n${pickFn(appSrc, 'outpaintFrame')}\n`
+    + `${pickFn(appSrc, 'outpaintSize')}\n${pickFn(appSrc, 'outpaintBands')}\n`
+    + 'return { outpaintSize, outpaintBands, outpaintPad, outpaintFrame };')();
   const os16 = outpaintSize(1024, 768, 16 / 9, 20);
   const osP = outpaintSize(1024, 768, 9 / 16, 20);
   const osPad = outpaintSize(1024, 768, 0, 20);
@@ -138,12 +139,20 @@ try {
     JSON.stringify({ os16, osP, osPad }));
   // 四条边：中间那块必须正好等于原图，四条带子拼起来不重叠。
   // 用「原比例 + 四周各扩 20%」这一路——宽高都长，四条边才都出现。
-  const ob = outpaintBands(1024, 768, osPad[0], osPad[1]);
+  const fPad = outpaintFrame(1024, 768, outpaintPad(1024, 768, 0, 20));
+  const ob = outpaintBands(1024, 768, fPad.nw, fPad.nh, fPad.ox, fPad.oy);
   const areaOf = (bs) => bs.reduce((s, b) => s + b[2] * b[3], 0);
   check('扩图遮罩：四条边围住原图，带子面积 + 原图面积 = 新画布面积',
-    ob.bands.length === 4 && ob.ox >= 0 && ob.oy >= 0
-      && areaOf(ob.bands) + 1024 * 768 === osPad[0] * osPad[1],
-    JSON.stringify({ ox: ob.ox, oy: ob.oy, bands: ob.bands, area: areaOf(ob.bands) }));
+    ob.length === 4 && fPad.ox > 0 && fPad.oy > 0
+      && areaOf(ob) + 1024 * 768 === fPad.nw * fPad.nh,
+    JSON.stringify({ ox: fPad.ox, oy: fPad.oy, bands: ob, area: areaOf(ob) }));
+  // 四边各扩可以不一样（拖锚点就是这么来的）：原图偏左，右边只留一条窄边
+  const fAsym = outpaintFrame(1024, 768, { l: 200, t: 0, r: 40, b: 120 });
+  const ab = outpaintBands(1024, 768, fAsym.nw, fAsym.nh, fAsym.ox, fAsym.oy);
+  check('扩图遮罩：四边扩得不一样时，原图不在正中间，遮罩仍然只盖住新长出来的部分',
+    fAsym.ox === 200 && fAsym.oy === 0 && ab.length === 3
+      && areaOf(ab) + 1024 * 768 === fAsym.nw * fAsym.nh,
+    JSON.stringify({ frame: fAsym, bands: ab, area: areaOf(ab) }));
 
   // 运行记录的「详情」是纯逻辑：从 /history 的 API 图里挖提示词和采样参数。
   // 这段在 Node 里直接验——CI 没有 ComfyUI，浏览器里造不出历史记录。
@@ -3165,6 +3174,9 @@ try {
                  img: [Math.round(im.width), Math.round(im.height)],
                  bands: bands.filter(([w, h]) => w > 0 && h > 0).length };
       })() : null,
+      // 八个锚点：和裁剪同一套 .crop-sel .ch
+      anchors: p ? [...p.querySelectorAll('.out-sel .ch')]
+        .map((c) => c.className.replace('ch', '').trim()).sort() : [],
       // 工具条在浮层打开时该让位
       toolsHidden: document.getElementById('imgTools').classList.contains('hidden'),
     };
@@ -3178,6 +3190,8 @@ try {
       && outUi.stage.bands === 4
       && outUi.ratios.includes('16:9') && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.size),
     JSON.stringify({ stage: outUi.stage, size: outUi.size }));
+  check('扩图的画布边框也有八个锚点（四角 + 四边中点），和裁剪一样能自定义尺寸',
+    outUi.anchors.join('/') === 'e/n/ne/nw/s/se/sw/w', outUi.anchors.join('/'));
   await page.evaluate(`[...document.querySelectorAll('#outpaintMask .crop-ratio')]
     .find((b) => b.textContent.trim() === '16:9').click()`);
   await new Promise((r) => setTimeout(r, 300));
@@ -3198,6 +3212,37 @@ try {
     outWide.stage[0] > outWide.stage[1] && outWide.stage[0] > outWide.img[0]
       && outWide.bands === 2 && outWide.padOff,
     JSON.stringify(outWide));
+
+  // 拖左边那个锚点：画布只在左侧变宽，右边那条边纹丝不动（这就是「自定义尺寸」的意义，
+  // 也是它和比例档的区别——比例档只能两边对称地长）
+  const westAt = await page.center('#outpaintMask .out-sel .ch.w');
+  const before = await page.evaluate(`(() => {
+    const p = document.getElementById('outpaintMask');
+    const s = p.querySelector('.out-stage').getBoundingClientRect();
+    const im = p.querySelector('.out-stage img').getBoundingClientRect();
+    return { l: Math.round(im.left - s.left), r: Math.round(s.right - im.right),
+             size: p.querySelector('.crop-size').textContent.trim() };
+  })()`);
+  await page.drag({ x: westAt.x, y: westAt.y }, { x: westAt.x - 40, y: westAt.y }, { steps: 8, settle: 300 });
+  const after = await page.evaluate(`(() => {
+    const p = document.getElementById('outpaintMask');
+    const s = p.querySelector('.out-stage').getBoundingClientRect();
+    const im = p.querySelector('.out-stage img').getBoundingClientRect();
+    return { l: Math.round(im.left - s.left), r: Math.round(s.right - im.right),
+             size: p.querySelector('.crop-size').textContent.trim(),
+             ratioOn: [...p.querySelectorAll('.crop-ratio.on')].map((b) => b.textContent.trim()),
+             padOff: p.querySelector('.out-pad').classList.contains('is-off'),
+             padText: p.querySelector('[data-padv]').textContent.trim() };
+  })()`);
+  check('拖左边锚点 → 只有左边变宽（右边不动），比例档取消高亮，「四周各扩」恢复可用',
+    after.l > before.l + 20 && Math.abs(after.r - before.r) <= 2
+      && after.size !== before.size && after.ratioOn.length === 0
+      && !after.padOff && after.padText === '自定义',
+    JSON.stringify({ before, after }));
+  // 拖完再点回 16:9：尺寸回到对称，后面的「扩出来」才有确定的预期
+  await page.evaluate(`[...document.querySelectorAll('#outpaintMask .crop-ratio')]
+    .find((b) => b.textContent.trim() === '16:9').click()`);
+  await new Promise((r) => setTimeout(r, 300));
   await page.evaluate(`document.querySelector('#outpaintMask [data-act="apply"]').click()`);
   await new Promise((r) => setTimeout(r, 1000));
   const outRes = await page.evaluate(`(() => {
