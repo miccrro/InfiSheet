@@ -332,6 +332,11 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
 - 编辑器是**全屏浮层**，canvas 内部尺寸 = 原图像素，显示尺寸由 JS 按 contain 算一次写进
   `.me-frame`，落笔只有一处换算 `scale = doc.w / rect.width`——上一版挂在节点缩略图上，
   对位链条是 `--ar → aspect-ratio → object-fit: contain → inset:0`，任一环断就错位。
+- **涂过的区域直接叠在节点图上**（`.thumb .mask-ov`，一张和原图同像素尺寸的 canvas）。
+  框的比例就是图片比例、图片又铺满框，所以 canvas 直接 `100%×100%` 就对齐，不需要第二套换算。
+  图片尺寸和遮罩对不上（这张图被换过内容）时不画预览——拉伸的预览比没有更误导。
+- **颜色 / 透明度是显示偏好**，存 `localStorage`（`infisheet-mask-style`），不进存档也不进
+  alpha：烘进图里的只有「涂过 / 没涂过」。换台机器看同一块遮罩不必长得一样。
 
 ### CSS 的三层结构（也是已知债）
 

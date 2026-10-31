@@ -3026,6 +3026,26 @@ try {
   const maskPill = await page.evaluate(`document.querySelector('.node[data-id="${pick.img}"] .n-mask')?.textContent || ''`);
   check('应用后节点标题出现「遮罩 N%」药丸', /遮罩 \d+%/.test(maskPill), maskPill);
 
+  // 光有药丸不够：用户要能直接看出「哪一块会被重绘」。
+  // 预览层和图片同框（框=图片比例、图片铺满框），所以 canvas 100%×100% 必须像素级对齐。
+  const ovSample = () => page.evaluate(`(() => {
+    const ov = document.querySelector('.node[data-id="${pick.img}"] .thumb .mask-ov');
+    if (!ov) return null;
+    const im = document.querySelector('.node[data-id="${pick.img}"] .thumb img');
+    const d = ov.getContext('2d').getImageData(Math.round(ov.width / 2), Math.round(ov.height / 2), 1, 1).data;
+    const r = ov.getBoundingClientRect();
+    const ir = im ? im.getBoundingClientRect() : null;
+    return { px: [d[0], d[1], d[2], d[3]], cv: [ov.width, ov.height],
+             box: [Math.round(r.width), Math.round(r.height)],
+             img: ir ? [Math.round(ir.width), Math.round(ir.height)] : null };
+  })()`);
+  const ov0 = await ovSample();
+  check('应用后节点图上直接看得到遮罩预览（不用点开编辑器）',
+    !!ov0 && ov0.px[3] > 0, JSON.stringify(ov0));
+  check('预览层和图片同尺寸（错位就是从这一步开始歪的）',
+    !!ov0 && !!ov0.img && ov0.box[0] === ov0.img[0] && ov0.box[1] === ov0.img[1],
+    ov0 ? `box=${ov0.box} img=${ov0.img}` : 'none');
+
   await page.click(`.node[data-id="${pick.img}"] .n-mask`, { settle: 550 });
   const maskBack = await page.waitFor(`(() => {
     const cv = document.querySelector('#maskEditor .me-cv');
@@ -3037,9 +3057,47 @@ try {
   })()`, 8000);
   check('点药丸重开：笔画原样还原', !!maskBack && maskBack.px > 0, JSON.stringify(maskBack));
 
+  // 颜色 / 透明度只影响「看得见」，不进 alpha——但必须真的能改，且立刻生效。
+  const edPixel = () => page.evaluate(`(() => {
+    const cv = document.querySelector('#maskEditor .me-cv');
+    if (!cv) return null;
+    const d = cv.getContext('2d').getImageData(Math.round(cv.width / 2), Math.round(cv.height / 2), 1, 1).data;
+    return [d[0], d[1], d[2], d[3]];
+  })()`);
+  const paintUi = await page.evaluate(`(() => {
+    const root = document.querySelector('#maskEditor');
+    return { sw: root.querySelectorAll('.me-sw').length,
+             custom: !!root.querySelector('.me-custom input[type="color"]'),
+             alpha: !!root.querySelector('.me-alpha') };
+  })()`);
+  check('编辑器有画笔颜色（色块 + 取色器）和透明度',
+    paintUi.sw >= 4 && paintUi.custom && paintUi.alpha, JSON.stringify(paintUi));
+
+  const pxBefore = await edPixel();
+  await page.click('#maskEditor .me-sw[data-color="#ff5c8a"]', { settle: 250 });
+  const pxAfter = await edPixel();
+  check('换颜色：预览笔画当场换色（只是显示，不写进 alpha）',
+    !!pxAfter && pxAfter[0] > 200 && pxAfter[1] < 140 && pxAfter[2] > 90 && pxAfter[3] > 0,
+    `${JSON.stringify(pxBefore)} → ${JSON.stringify(pxAfter)}`);
+
+  await page.evaluate(`(() => {
+    const el = document.querySelector('#maskEditor .me-alpha');
+    el.value = 100;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const pxOpaque = await edPixel();
+  check('透明度可调：拉到 100% 时预览完全不透明', !!pxOpaque && pxOpaque[3] === 255, JSON.stringify(pxOpaque));
+
   await page.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 300));
   check('Esc 关闭编辑器', (await page.evaluate(`!document.querySelector('#maskEditor')`)) === true);
+
+  // 颜色是全局偏好：关掉编辑器之后，节点上的预览也该是新颜色（不能等重开才变）
+  const ov1 = await ovSample();
+  check('节点上的遮罩预览跟着换成新颜色',
+    !!ov1 && ov1.px[0] > 200 && ov1.px[1] < 140 && ov1.px[3] > 0, JSON.stringify(ov1));
 
   await new Promise((r) => setTimeout(r, 1400));   // 存档有防抖
   // 不按 projId 读：前面的用例可能切过画布，直接扫一遍数据目录找带遮罩的那个节点

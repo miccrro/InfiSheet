@@ -467,6 +467,20 @@
           openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0, nodeImageInfo(n));
         };
         thumb.appendChild(zoom);
+        // 遮罩预览：涂过哪块直接画在图上，不点开编辑器也看得见。
+        // 框的比例就是图片比例、图片又铺满框，所以 canvas 直接 100%×100% 就对齐，
+        // 不需要再算 offset（上一版挂在节点缩略图上错位，就是因为中间多了几层换算）。
+        const md = maskDocOf(n);
+        let maskOv = null;
+        if (md && md.strokes && md.strokes.length) {
+          maskOv = document.createElement('canvas');
+          maskOv.className = 'mask-ov';
+          maskOv.width = md.w;
+          maskOv.height = md.h;
+          maskOv.title = `遮罩 ${md.cover == null ? maskCover(md) : md.cover}% · 点标题上的药丸继续涂`;
+          paintStrokes(maskOv.getContext('2d'), md, false);
+          thumb.appendChild(maskOv);
+        }
         thumb.ondblclick = (ev) => {
           ev.stopPropagation();
           openLightbox(n.dataURL, (n.gen && n.gen.gallery) || null, (n.gen && n.gen.idx) || 0, nodeImageInfo(n));
@@ -484,6 +498,10 @@
           if (im.naturalWidth && im.naturalHeight) {
             thumb.style.setProperty('--ar', (im.naturalWidth / im.naturalHeight).toFixed(4));
           }
+          // 遮罩和图片尺寸对不上（这张图被换过内容）就不画预览：拉伸的预览比没有更误导，
+          // 编辑器打开时会把对不上的笔画丢掉，重涂一次就恢复正常。
+          if (maskOv && im.naturalWidth &&
+              (maskOv.width !== im.naturalWidth || maskOv.height !== im.naturalHeight)) maskOv.remove();
           scheduleLayout();
         };
         if (im.complete && im.naturalWidth) requestAnimationFrame(fit);
@@ -7542,9 +7560,33 @@
   //
   // 归属：遮罩属于「某一张图」，不属于节点。键由图片身份算出，切 gallery / 切 run 自动跟着走。
   // 旧实现挂在 n.gen.mask 上，切到第二张图时遮罩还是第一张的——这是它最硬的逻辑错误。
-  const MASK_PREVIEW = 'rgba(58, 160, 255, 0.55)';
+  const MASK_PREVIEW_COLOR = '#3aa0ff';
   const MASK_SOLID = '#000';
   const MASK_SIZE = { min: 8, max: 200, def: 48 };
+
+  // 画笔颜色 / 透明度只影响「看得见」，不进 alpha：烘进图里的只有「涂过 / 没涂过」。
+  // 所以它是本地偏好（localStorage），不写进画布存档——换台机器看同一块遮罩不必长得一样。
+  const MASK_STYLE_KEY = 'infisheet-mask-style';
+  const MASK_COLORS = ['#3aa0ff', '#ff5c8a', '#ffd23f', '#5ce1a0', '#b07bff'];
+
+  function maskStyle() {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(MASK_STYLE_KEY) || 'null'); } catch { /* 隐私模式 */ }
+    const color = v && /^#[0-9a-f]{6}$/i.test(String(v.color || '')) ? v.color : MASK_PREVIEW_COLOR;
+    const opacity = v && Number.isFinite(Number(v.opacity)) ? clamp(Number(v.opacity), 0.1, 1) : 0.55;
+    return { color, opacity };
+  }
+  function setMaskStyle(patch) {
+    const next = { ...maskStyle(), ...patch };
+    try { localStorage.setItem(MASK_STYLE_KEY, JSON.stringify(next)); } catch { /* 超配额忽略 */ }
+    return next;
+  }
+  // #rrggbb + 透明度 → canvas 能用的 rgba()
+  function maskPaint(style) {
+    const s = style || maskStyle();
+    const n = parseInt(s.color.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${s.opacity})`;
+  }
 
   // 图片身份的算法只有一个要求：**同一张图在上传前后必须算出同一个键**。
   // 之前用 dataURL 兜底，上传把 dataURL 从 base64 换成 /api/view 之后键就变了，
@@ -7693,12 +7735,25 @@
     rerenderNode(n.id);
   }
 
-  // solid=false：蓝色半透明预览（画在浮层上给人看）
+  // 颜色 / 透明度是全局偏好：改完之后画布上所有遮罩预览都得跟着换。
+  // 不整块 rerenderNode——那会把节点的选中态、面板里的光标一起掀掉。
+  function repaintMaskOverlays() {
+    state.nodes.forEach((n) => {
+      if (n.type !== 'image') return;
+      const cv = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb .mask-ov`);
+      const md = cv && maskDocOf(n);
+      if (!md) return;
+      paintStrokes(cv.getContext('2d'), md, false);
+    });
+  }
+
+  // solid=false：半透明预览（画在浮层和节点缩略图上给人看，颜色/透明度跟着本地偏好走）
   // solid=true ：全黑不透明（烘 alpha 与统计覆盖率用——destination-out 只看 alpha）
-  function paintStrokes(ctx, doc, solid) {
+  function paintStrokes(ctx, doc, solid, style) {
     ctx.clearRect(0, 0, doc.w, doc.h);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const ink = solid ? MASK_SOLID : maskPaint(style);
     for (const s of doc.strokes || []) {
       // 矩形遮罩：MCP 的 set_mask 用它（AI 涂不了笔，但能圈一块区域）。
       // 和笔画共用同一份数据，所以浏览器打开时能看到 AI 圈的那块，也能接着改。
@@ -7706,13 +7761,13 @@
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
         ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = solid ? MASK_SOLID : MASK_PREVIEW;
+        ctx.fillStyle = ink;
         ctx.fillRect(r[0], r[1], r[2], r[3]);
         continue;
       }
       // 橡皮走 destination-out，颜色无关、只看 alpha，所以必须用不透明色：
       // 拿 55% 的蓝去擦只能擦掉 55%，越擦越花
-      ctx.strokeStyle = s.tool === 'eraser' || solid ? MASK_SOLID : MASK_PREVIEW;
+      ctx.strokeStyle = s.tool === 'eraser' || solid ? MASK_SOLID : ink;
       ctx.fillStyle = ctx.strokeStyle;
       ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
       ctx.lineWidth = s.size;
@@ -7816,6 +7871,8 @@
 
     const root = document.createElement('div');
     root.id = 'maskEditor';
+    const style = maskStyle();
+    const alphaPct = Math.round(style.opacity * 100);
     root.innerHTML = `
       <div class="me-bar">
         <span class="me-title">${esc(n.title)} · 遮罩</span>
@@ -7827,6 +7884,17 @@
         </div>
         <label class="me-size">粗细 <input type="range" min="${MASK_SIZE.min}" max="${MASK_SIZE.max}"
           step="1" value="${MASK_SIZE.def}"><b>${MASK_SIZE.def}</b></label>
+        <div class="me-paint">
+          <span class="me-lbl">颜色</span>
+          <div class="me-colors">
+            ${MASK_COLORS.map((c) => `<button type="button" class="me-sw${c.toLowerCase() === style.color.toLowerCase() ? ' on' : ''}"
+              data-color="${c}" style="--sw:${c}" title="${c}"></button>`).join('')}
+            <label class="me-custom" title="自定义颜色"><input type="color" value="${style.color}"></label>
+          </div>
+          <span class="me-lbl">透明度</span>
+          <input type="range" class="me-alpha" min="10" max="100" step="5" value="${alphaPct}">
+          <b class="me-alpha-v">${alphaPct}%</b>
+        </div>
         <span class="me-spacer"></span>
         <span class="me-cover">遮罩 0%</span>
         <button type="button" class="me-btn" data-act="cancel">取消</button>
@@ -7930,6 +7998,32 @@
       sizeNum.textContent = sess.size;
     };
     sizeEl.oninput = () => setSize(Number(sizeEl.value));
+
+    // 颜色 / 透明度：只改「看起来」，不动笔画数据（烘进 alpha 的只有涂过与否）。
+    // 改完立刻重画本层，并同步画布上所有节点的遮罩预览——否则关掉编辑器才发现颜色没变。
+    const swatches = [...root.querySelectorAll('.me-sw')];
+    const colorEl = root.querySelector('.me-custom input');
+    const alphaEl = root.querySelector('.me-alpha');
+    const alphaNum = root.querySelector('.me-alpha-v');
+    const paintSwatches = (color) => {
+      const low = String(color).toLowerCase();
+      swatches.forEach((b) => b.classList.toggle('on', b.dataset.color.toLowerCase() === low));
+      colorEl.value = color;
+    };
+    const applyStyle = (patch) => {
+      const next = setMaskStyle(patch);
+      if (patch.color) paintSwatches(next.color);
+      if (patch.opacity != null) {
+        const pct = Math.round(next.opacity * 100);
+        alphaEl.value = pct;
+        alphaNum.textContent = `${pct}%`;
+      }
+      redraw();
+      repaintMaskOverlays();
+    };
+    swatches.forEach((b) => { b.onclick = () => applyStyle({ color: b.dataset.color }); });
+    colorEl.oninput = () => applyStyle({ color: colorEl.value });
+    alphaEl.oninput = () => applyStyle({ opacity: Number(alphaEl.value) / 100 });
 
     root.querySelector('[data-act="undo"]').onclick = () => {
       doc.strokes.pop();

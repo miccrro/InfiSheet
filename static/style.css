@@ -2892,7 +2892,7 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 
 #maskEditor .me-bar {
   flex: 0 0 auto;
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
   padding: 10px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
@@ -2919,6 +2919,36 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 #maskEditor .me-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 #maskEditor .me-size input { width: 110px; accent-color: var(--accent); }
 #maskEditor .me-size b { min-width: 30px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 颜色 / 透明度：和「粗细」并排，窄屏时整条 bar 折行而不是把按钮挤没 */
+#maskEditor .me-paint {
+  display: flex; align-items: center; gap: 8px;
+  padding-left: 10px; border-left: 1px solid var(--line);
+}
+#maskEditor .me-lbl { font-size: 12px; color: var(--muted); }
+#maskEditor .me-colors { display: flex; align-items: center; gap: 5px; }
+#maskEditor .me-sw {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  border: 2px solid transparent; background: var(--sw); cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s, border-color 0.12s;
+}
+#maskEditor .me-sw:hover { transform: scale(1.12); }
+#maskEditor .me-sw.on { border-color: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
+#maskEditor .me-custom {
+  display: inline-flex; width: 18px; height: 18px; border-radius: 50%;
+  overflow: hidden; cursor: pointer;
+  background: conic-gradient(#ff5c8a, #ffd23f, #5ce1a0, #3aa0ff, #b07bff, #ff5c8a);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+#maskEditor .me-custom input {
+  width: 200%; height: 200%; margin: -50%; padding: 0; border: none;
+  opacity: 0; cursor: pointer;
+}
+#maskEditor .me-alpha { width: 90px; accent-color: var(--accent); }
+#maskEditor .me-alpha-v {
+  min-width: 34px; font-size: 12px; color: var(--text);
+  font-weight: 600; font-variant-numeric: tabular-nums;
+}
 #maskEditor .me-cover {
   font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
   min-width: 74px; text-align: right;
@@ -2955,8 +2985,13 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 #maskEditor .me-frame:hover .me-hint { opacity: 1; }
 
-/* 节点标题上的遮罩药丸 */
-.node-title .n-mask {
+/* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
+   z-index 压在「查看大图」按钮下面，免得挡住它。 */
+.node.image .thumb .mask-ov {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  z-index: 1; pointer-events: none;
+}
+/* 节点标题上的遮罩药丸 */.node-title .n-mask {
   display: inline-flex; align-items: center; gap: 4px;
   height: 19px; padding: 0 7px; margin-left: 6px;
   border: 1px solid var(--accent); border-radius: 999px;
