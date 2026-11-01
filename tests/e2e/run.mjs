@@ -3208,8 +3208,9 @@ try {
 
   // 拖右边那个锚点：画布只在右侧变宽，左边那条边纹丝不动（这就是「自定义尺寸」的意义，
   // 也是它和比例档的区别——比例档只能两边对称地长）。
-  // 往右拖而不是往左：16px 的小图一格（16 像素）要占 13 个屏幕像素，往左 40px 还不够一格，
-  // 画布宽度压根不会变，看着像「拖了没反应」——那是取整，不是 bug。
+  // 用合成 PointerEvent 而不是真鼠标：夹具只有 16×16，原图铺满缩略图时一个屏幕像素
+  // 只值 1/26 个原图像素，真鼠标往右 200px 才走半格（画布宽度压根不变，看着像「拖了没反应」）；
+  // 合成事件可以拖 600px，不受视口边界限制。
   const eastAt = await page.center('.node.selected .op-sel .ch.e');
   const before = await page.evaluate(`(() => {
     const el = document.querySelector('.node.selected');
@@ -3221,7 +3222,18 @@ try {
              size: el.querySelector('.op-size').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '' };
   })()`);
-  await page.drag({ x: eastAt.x, y: eastAt.y }, { x: eastAt.x + 200, y: eastAt.y }, { steps: 12, settle: 300 });
+  await page.evaluate(`(() => {
+    const el = document.querySelector('.node.selected .op-sel .ch.e');
+    const r = el.getBoundingClientRect();
+    const base = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 };
+    const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...base, clientX: x0, clientY: y0 }));
+    for (let i = 1; i <= 20; i++) {
+      window.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: x0 + i * 30, clientY: y0 }));
+    }
+    window.dispatchEvent(new PointerEvent('pointerup', { ...base, clientX: x0 + 600, clientY: y0 }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
   const after = await page.evaluate(`(() => {
     const el = document.querySelector('.node.selected');
     const st = el.querySelector('.op-stage').getBoundingClientRect();

@@ -2482,7 +2482,9 @@
 
     const syncOpts = () => {
       const d = calcDims(g.aspect, g.size, g.custom);
-      const [w, h] = ratioGlyph(g.aspect, 12, 12);
+      // 自定义尺寸（扩图拖出来的就是这个）时，方块要按**实际宽高**画：
+      // 还挂 g.aspect 的话会出现「写着 1344×1200、旁边却是个 1:1 的方疙瘩」。
+      const [w, h] = ratioGlyph(g.size === 'custom' ? `${d.width}:${d.height}` : g.aspect, 12, 12);
       optGlyph.style.width = `${w}px`;
       optGlyph.style.height = `${h}px`;
       // 自定义时直接报像素：这时候「1K/2K/4K」已经说明不了什么了
@@ -5555,7 +5557,12 @@
       minimapOn: state.minimapOn,
       groups: state.groups,
       links: state.links,
-      nodes: state.nodes.map((n) => ({
+      nodes: state.nodes.map((n) => {
+        // 扩图是**临时编辑态**：拖动时 gen.size/custom 被改写成「扩完之后」的尺寸，
+        // 可图还是原图。这两项直接存进去，刷新后就变成「尺寸档写着 1344×1200、图是 688×736」，
+        // 下次生成按错的尺寸跑 —— 正是这个功能最早要修的那个 bug。存开框前的值。
+        const ob = n.gen && n.gen.outpaint && n.gen.opBackup ? n.gen.opBackup : null;
+        return {
         id: n.id, type: n.type, title: n.title, x: n.x, y: n.y, w: n.w, h: n.h,
         value: n.value, dataURL: n.dataURL, uploaded: n.uploaded, filename: n.filename,
         graph: n.graph, slots: n.slots, outputs: n.outputs, values: n.values,
@@ -5567,11 +5574,12 @@
         // 生成器的提示词 / 工作流 / 画幅 / 张数 / 组图要跟着画布存下来，
         // 否则刷新后图片节点只剩一张图，参数和多图切换全丢（运行态 busy/status 不存）
         gen: n.gen ? {
-          prompt: n.gen.prompt, wf: n.gen.wf, aspect: n.gen.aspect, size: n.gen.size,
+          prompt: n.gen.prompt, wf: n.gen.wf,
+          aspect: ob ? ob.aspect : n.gen.aspect, size: ob ? ob.size : n.gen.size,
           // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
           // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
           wfAuto: n.gen.wfAuto !== false,
-          custom: n.gen.custom || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
+          custom: (ob ? ob.custom : n.gen.custom) || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
           batch: n.gen.batch, gallery: n.gen.gallery, idx: n.gen.idx || 0,
           // 生成历史：每次一条（时间/提示词/种子/尺寸/产物）。上限见 RUN_CAP，别让存档无限长
           runs: n.gen.runs || [],
@@ -5585,7 +5593,8 @@
         // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
         // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
         masks: n.masks && Object.keys(n.masks).length ? n.masks : undefined,
-      })),
+        };
+      }),
     };
   }
 
@@ -7933,10 +7942,11 @@
   function outpaintFrame(w, h, pad) {
     const l = Math.max(0, pad.l || 0), r = Math.max(0, pad.r || 0);
     const t = Math.max(0, pad.t || 0), b = Math.max(0, pad.b || 0);
-    // 画布不可能比原图还小（snapSide 是四舍五入，98 这种尺寸会被舍到 96）；
-    // 只要有一边要扩，就至少长一格，别让「拖了两像素」被取整吃掉、看着像没反应
-    const nw = Math.max(w + (l + r > 0 ? 16 : 0), snapSide(w + l + r));
-    const nh = Math.max(h + (t + b > 0 ? 16 : 0), snapSide(h + t + b));
+    // 画布不可能比原图还小（snapSide 是四舍五入，98 这种尺寸会被舍到 96）。
+    // 不能再写 `w + 16` 兜底：那多出来的一格会全落到**没被拖的那一边**
+    // （拖左边 5px，右边凭空长 11px）。拖得不够一格就是没反应，这是取整的必然。
+    const nw = Math.max(w, snapSide(w + l + r));
+    const nh = Math.max(h, snapSide(h + t + b));
     // ox/oy **钉在被拖的那一边**（左/上），snap 的零头全落到右/下。
     // 早先是「零头两边平分」，结果拖右边时画布一跳档，左边也跟着挪了一两像素——
     // 明明只动了一条边，图却整体位移，手感很怪。比例档那边由 fitPad 保证对称，不吃这个亏。
@@ -8159,7 +8169,10 @@
     thumb.style.setProperty('--ar', (op0.w / op0.h).toFixed(4));
     // 画布要溢出缩略图，得压在邻居上面，不然「长出去」的那半边被别的节点挡住
     if (el) el.classList.add('op-raised');
-    const state = { k: 1 };
+    // 别叫 state：模块级已经有一个 state（视图缩放 state.view.k 在里面），
+    // 同名局部变量会把它整个遮住 —— 下面乘 state.view.k 那行就成了 undefined → 1，
+    // 拖动换算少乘一次视图缩放，拖 100px 只扩 89px（这个 bug 就是这么来的）。
+    let dragK = 1;
     const same = (a, b) => ['l', 't', 'r', 'b'].every((k) => Math.abs((a[k] || 0) - (b[k] || 0)) <= 1.5);
 
     const draw = () => {
@@ -8172,26 +8185,17 @@
       // 画布比原图大多少，就按同一个 k 往右/下**真的长出去**多少。
       // 早先反着来（画布塞满缩略图、原图往里缩），拖右边时看到的只是「图被压扁、框没变宽」，
       // 用户的原话就是「图片大小固定不变」——扩出来的部分根本没长出来。
-      const k1 = tw / op.w;
-      // 扩得太大时整体缩回来，别让锚点（和下面的按钮）跑到屏幕外。
-      // 只约束**扩出来的那部分**：原图本来就在视口里，拿整块画布去比会把「节点靠下」
-      // 也算成扩图的错，白白把原图压小一圈。
-      const r = thumb.getBoundingClientRect();
-      const thumbH = thumb.clientHeight;
-      const GAP = 10;
-      const extraL = f.ox, extraT = f.oy;
-      const extraR = Math.max(0, f.nw - f.ox - op.w);
-      const extraB = Math.max(0, f.nh - f.oy - op.h);
-      // 原图自己就已经出界的那一侧不再约束：再怎么缩也救不回来，硬缩只会把图压成小点
-      const kL = extraL > 0 && r.left > GAP ? (r.left - GAP) / extraL : Infinity;
-      const kT = extraT > 0 && r.top > GAP ? (r.top - GAP) / extraT : Infinity;
-      const kR = extraR > 0 && r.left + tw < window.innerWidth - GAP
-        ? (window.innerWidth - GAP - r.left - tw) / extraR : Infinity;
-      const kB = extraB > 0 && r.top + thumbH < window.innerHeight - GAP
-        ? (window.innerHeight - GAP - r.top - thumbH) / extraB : Infinity;
-      // 最多缩到「原图只剩 45%」，再大就让它溢出——总比缩成一个看不清的小点强
-      const k = Math.max(Math.min(k1, kL, kT, kR, kB), k1 * 0.45);
-      state.k = k;
+      // k **恒定**：屏幕位移 ↔ 原图像素是 1:1 线性，拖多少就扩多少。
+      // 这里绝不能再掺「画布别出视口」的约束——一掺进去 k 就随 pad 变，
+      // 原图跟着缩小（实测拖到 4 倍时从 339px 掉到 152px），
+      // 而且同一段鼠标位移换算出的像素数跟着变，越拖越快，手感直接崩。
+      // 画布溢出视口就让溢出，用户自己平移/缩放画布即可。
+      const k = tw / op.w;
+      // 拖动换算要的是**屏幕像素 / 原图像素**，不是 CSS 比例：
+      // style 里写的是 CSS 像素，外面还套着一层画布视图缩放（`#nodes { transform: scale }`），
+      // 拿 CSS 比例去除，拖 100px 只会扩 93px（视图 93% 时），缩到 50% 就只扩一半。
+      // 这个数只在 pointermove 里用，别拿它去写样式。
+      dragK = k * (state.view && state.view.k ? state.view.k : 1);
       // 画布（= 舞台）相对缩略图的偏移就是 -ox·k / -oy·k：原图的位置一点不动
       stage.style.left = `${-f.ox * k}px`;
       stage.style.top = `${-f.oy * k}px`;
@@ -8245,7 +8249,7 @@
       if (!drag) return;
       const op = outpaintOf(n);
       if (!op) return;
-      const k = state.k || 1;
+      const k = dragK || 1;
       const dx = (ev.clientX - drag.x) / k, dy = (ev.clientY - drag.y) / k;
       drag.x = ev.clientX;
       drag.y = ev.clientY;
