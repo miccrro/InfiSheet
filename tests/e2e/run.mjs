@@ -1711,6 +1711,74 @@ try {
   check('返回首页并改写 hash', backHome.hash === '#home' && backHome.home, JSON.stringify(backHome));
   check('最近项目里有夹具画布', backHome.cards >= 1 && /e2e 夹具画布/.test(backHome.name), backHome.name);
 
+  // ---- 首页页脚三件事：就地办完，不把人踹进画布 ----
+  // 以前「快捷键」只 flash 一行字就顺手 showCanvas()，「工作流库」也先 showCanvas() 再开弹窗，
+  // 「ComfyUI 地址」是个外链——想改个端口得先进画布、开设置、改完再点回首页。
+  const footActs = await page.evaluate(`[...document.querySelectorAll('[data-home-act]')].map((b) => b.dataset.homeAct)`);
+  check('首页页脚三个入口都在：地址 / 快捷键 / 工作流库',
+    footActs.join('|') === 'comfy|help|workflows', footActs.join('|'));
+
+  await page.evaluate(`document.querySelector('[data-home-act="comfy"]').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const comfyPop = await page.evaluate(`(() => {
+    const m = document.querySelector('.popmenu.comfy-pop');
+    const inp = m && m.querySelector('input');
+    const r = m && m.getBoundingClientRect();
+    return {
+      has: !!m,
+      url: inp ? inp.value : '',
+      hint: m ? m.querySelector('.set-tip').textContent : '',
+      buttons: m ? [...m.querySelectorAll('button')].map((b) => b.textContent) : [],
+      // 弹层必须完整落在视口里：页脚贴着窗口下沿，翻上来的位置算错就会被切掉
+      inside: !!r && r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth,
+      onHome: !document.getElementById('home').classList.contains('hidden'),
+      hash: location.hash,
+    };
+  })()`);
+  check('首页点 ComfyUI 地址：就地弹出小面板（输入框 + 状态 + 保存），不跳画布',
+    comfyPop.has && /^https?:\/\//.test(comfyPop.url) && /已连接|连不上/.test(comfyPop.hint)
+      && comfyPop.buttons.join('|') === '保存并测试|恢复默认'
+      && comfyPop.inside && comfyPop.onHome && comfyPop.hash === '#home',
+    JSON.stringify(comfyPop));
+  // 点外面就收起来（探针是 JS 直接 click，不走 pointerdown，得手动补一次）
+  await page.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 250));
+  const popGone = await page.evaluate(`document.querySelectorAll('.popmenu.comfy-pop').length`);
+  check('点别处就收起地址小面板', popGone === 0, `${popGone} 个`);
+
+  await page.evaluate(`document.querySelector('[data-home-act="help"]').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const homeHelp = await page.evaluate(`(() => {
+    const h = document.getElementById('helpSheet');
+    const r = h.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      open: !h.classList.contains('hidden'),
+      // 命中点必须落在浮层里：被 #home 盖住的话这里会是首页的元素
+      onTop: !!hit && h.contains(hit),
+      onHome: !document.getElementById('home').classList.contains('hidden'),
+      hash: location.hash,
+    };
+  })()`);
+  check('首页点「快捷键」：浮层直接盖在首页上（没被首页盖住），不跳画布',
+    homeHelp.open && homeHelp.onTop && homeHelp.onHome && homeHelp.hash === '#home',
+    JSON.stringify(homeHelp));
+  await page.evaluate(`document.getElementById('helpSheet').classList.add('hidden')`);
+
+  await page.evaluate(`document.querySelector('[data-home-act="workflows"]').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const homeLib = await page.evaluate(`(() => ({
+    modal: !document.getElementById('modal').classList.contains('hidden'),
+    cards: document.querySelectorAll('#pane-preset .card').length,
+    onHome: !document.getElementById('home').classList.contains('hidden'),
+    hash: location.hash,
+  }))()`);
+  check('首页点「工作流库」：资产库弹窗盖在首页上，不跳画布',
+    homeLib.modal && homeLib.cards > 0 && homeLib.onHome && homeLib.hash === '#home',
+    JSON.stringify(homeLib));
+  await page.evaluate(`document.querySelector('#modalClose').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+
   // 设置弹层能开能关
   await page.evaluate(`document.querySelector('#recentList .proj-card .pm').click()`);
   await new Promise((r) => setTimeout(r, 900));
@@ -3694,7 +3762,10 @@ try {
     !!opPick && !/局部重绘/.test(opPick), opPick);
 
   await page.evaluate(`document.querySelector('.node.selected .op-bar [data-of="size"]').click()`);
-  await new Promise((r) => setTimeout(r, 350));
+  // 等菜单里真的出现那一项再点：固定 350ms 在慢机器上偶尔会点空，
+  // 后面那条「点生成后还是选的工作流」就会因为尺寸没改而假红。
+  await page.waitFor(`[...document.querySelectorAll('.popmenu button')]
+    .some((b) => b.textContent.trim() === '16:9')`, 4000);
   await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
     .find((b) => b.textContent.trim() === '16:9').click()`);
   await new Promise((r) => setTimeout(r, 500));

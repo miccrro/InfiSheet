@@ -3484,6 +3484,70 @@
     inp.click();
   }
 
+  // ComfyUI 地址编辑器：设置面板和首页页脚的小弹层**共用这一份**。
+  // 两处各写一遍的话，「连不上」的文案、以及「存住了但连不上」和「没存住」的区分，
+  // 迟早会有一边先走样。传进来的就是几个 DOM 元素，逻辑不关心它们在哪个容器里。
+  function bindComfyEditor({ input, hint, save, reset, onSaved }) {
+    const paint = (info, note) => {
+      const src = info.source ? ` · 来源：${info.source}` : '';
+      const tail = note ? ` · ${note}` : '';
+      if (info.reachable) {
+        const dev = (info.devices || [])[0] || {};
+        const bits = [`已连接 ${info.version || ''}`.trim()];
+        if (info.ms != null) bits.push(`${info.ms}ms`);
+        if (dev.name) bits.push(dev.name);
+        hint.className = 'set-tip ok';
+        hint.textContent = bits.join(' · ') + src + tail;
+      } else {
+        // 地址就在上面那个输入框里，这里只留「为什么连不上」，别重复一遍 URL
+        const why = String(info.error || '没有响应').split(info.url || '\u0000').join('').trim();
+        hint.className = 'set-tip bad';
+        hint.textContent = `连不上：${why || '没有响应'}${src}${tail}`;
+      }
+      input.value = info.url || '';
+      if (onSaved) onSaved(info);
+    };
+    const read = async () => {
+      const r = await api('/api/comfy');
+      if (!r || r.ok === false) {
+        hint.className = 'set-tip bad';
+        hint.textContent = `读不到当前地址：${(r && r.error) || '接口不存在'}（服务端是旧版本？重启 python server.py）`;
+        return;
+      }
+      paint(r);
+    };
+    const commit = async () => {
+      const label = save.textContent;
+      save.disabled = true;
+      save.textContent = '测试中…';
+      try {
+        const r = await postJson('/api/comfy', { url: input.value });
+        if (r && r.ok) {
+          // 存住是存住、连不连得上是两件事：连不上也要如实说，别让人以为没保存
+          paint(r, r.saved ? '已保存' : '已恢复默认');
+          flash(r.reachable ? 'ComfyUI 已连上' : '地址已保存，但暂时连不上');
+          health();
+        } else {
+          hint.className = 'set-tip bad';
+          hint.textContent = (r && r.error) || '保存失败';
+        }
+      } catch (e) {
+        hint.className = 'set-tip bad';
+        hint.textContent = `保存失败：${e.message || e}`;
+      } finally {
+        save.disabled = false;
+        save.textContent = label;
+      }
+    };
+    read();
+    save.onclick = commit;
+    if (reset) reset.onclick = () => { input.value = ''; commit(); };
+    input.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+    };
+    return { read, commit };
+  }
+
   function openSettingsSheet(focus) {
     closeSettingsSheet();
     const box = document.createElement('div');
@@ -3638,63 +3702,12 @@
     // 为什么放在设置里而不是启动参数：另一台机器上跑 ComfyUI 是很常见的用法，
     // 而「改脚本再重启」对不写代码的人等于没有这个功能。
     const comfyInput = box.querySelector('#setComfyUrl');
-    const comfyHint = box.querySelector('#setComfyHint');
-    const comfySave = box.querySelector('#setComfySave');
-    const paintComfy = (info, note, keepInput) => {
-      const src = info.source ? ` · 来源：${info.source}` : '';
-      const tail = note ? ` · ${note}` : '';
-      if (info.reachable) {
-        const dev = (info.devices || [])[0] || {};
-        const bits = [`已连接 ${info.version || ''}`.trim()];
-        if (info.ms != null) bits.push(`${info.ms}ms`);
-        if (dev.name) bits.push(dev.name);
-        comfyHint.className = 'set-tip ok';
-        comfyHint.textContent = bits.join(' · ') + src + tail;
-      } else {
-        // 地址就在上面那个输入框里，这里只留「为什么连不上」，别重复一遍 URL
-        const why = String(info.error || '没有响应').split(info.url || '\u0000').join('').trim();
-        comfyHint.className = 'set-tip bad';
-        comfyHint.textContent = `连不上：${why || '没有响应'}${src}${tail}`;
-      }
-      if (!keepInput) comfyInput.value = info.url || '';
-    };
-    const readComfy = async () => {
-      const r = await api('/api/comfy');
-      if (!r || r.ok === false) {
-        comfyHint.className = 'set-tip bad';
-        comfyHint.textContent = `读不到当前地址：${(r && r.error) || '接口不存在'}（服务端是旧版本？重启 python server.py）`;
-        return;
-      }
-      paintComfy(r);
-    };
-    readComfy();
-    const saveComfy = async () => {
-      comfySave.disabled = true;
-      comfySave.textContent = '测试中…';
-      try {
-        const r = await postJson('/api/comfy', { url: comfyInput.value });
-        if (r && r.ok) {
-          // 存住是存住、连不连得上是两件事：连不上也要如实说，别让人以为没保存
-          paintComfy(r, r.saved ? '已保存' : '已恢复默认');
-          flash(r.reachable ? 'ComfyUI 已连上' : '地址已保存，但暂时连不上');
-          health();
-        } else {
-          comfyHint.className = 'set-tip bad';
-          comfyHint.textContent = (r && r.error) || '保存失败';
-        }
-      } catch (e) {
-        comfyHint.className = 'set-tip bad';
-        comfyHint.textContent = `保存失败：${e.message || e}`;
-      } finally {
-        comfySave.disabled = false;
-        comfySave.textContent = '保存并测试';
-      }
-    };
-    comfySave.onclick = saveComfy;
-    box.querySelector('#setComfyReset').onclick = () => { comfyInput.value = ''; saveComfy(); };
-    comfyInput.onkeydown = (ev) => {
-      if (ev.key === 'Enter') { ev.preventDefault(); saveComfy(); }
-    };
+    bindComfyEditor({
+      input: comfyInput,
+      hint: box.querySelector('#setComfyHint'),
+      save: box.querySelector('#setComfySave'),
+      reset: box.querySelector('#setComfyReset'),
+    });
     box.onclick = (ev) => { if (ev.target === box) closeSettingsSheet(); };
     document.body.appendChild(box);
     if (focus === 'comfy') {
@@ -6307,6 +6320,8 @@
   async function useGraph(graph, title) {
     if (!graph) { flash('该记录没有 API 图'); return; }
     $('#modal').classList.add('hidden');
+    // 资产库可以从首页打开（挑一个不用先进画布），但挑完是要往画布上落节点的
+    showCanvas();
     const n = await addWorkflowNode(graph, title);
     if (n) flash(`已添加工作流节点：${title}`);
   }
@@ -7012,6 +7027,67 @@
 
   // 顶栏那一段 ComfyUI 状态本身就是入口：连不上时点它直接跳到设置里的地址输入框。
   // 只在「连不上」时才把光标送进去——正常在线时用户点开多半只是想看一眼设置。
+  // 首页页脚那颗「ComfyUI 地址」：点开就地改。
+  // 以前它是个外链，而改地址得先跳进画布再开全局设置——为改一个端口把人从首页踹走，
+  // 回到首页还得再点一次「最近项目」。这里换成锚在页脚上的小弹层，改完当场测。
+  function openComfyPop(anchor) {
+    if (popAnchor && popAnchor === anchor) { closePopMenu(); return; }
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu comfy-pop';
+    const title = document.createElement('div');
+    title.className = 'popmenu-title';
+    title.textContent = 'ComfyUI 地址';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.placeholder = 'http://127.0.0.1:8188';
+    const hint = document.createElement('p');
+    hint.className = 'set-tip';
+    hint.textContent = '正在读取…';
+    const row = document.createElement('div');
+    row.className = 'comfy-pop-row';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'primary';
+    save.textContent = '保存并测试';
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.textContent = '恢复默认';
+    const open = document.createElement('a');
+    open.className = 'comfy-pop-open';
+    open.target = '_blank';
+    open.rel = 'noreferrer';
+    open.textContent = '在浏览器打开 ComfyUI ↗';
+    row.append(save, reset);
+    menu.append(title, input, hint, row, open);
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+    bindComfyEditor({
+      input, hint, save, reset,
+      onSaved: (info) => {
+        const url = info.url || '';
+        const el = document.getElementById('homeComfyUrl');
+        if (el) el.textContent = url.replace(/^https?:\/\//, '') || '未设置';
+        open.href = url;
+        open.classList.toggle('hidden', !url);
+      },
+    });
+    input.focus();
+    input.select();
+  }
+
+  // 页脚那行地址跟着服务端的真实配置走（换了端口、换到另一台机器上都会变）
+  async function refreshHomeComfy() {
+    const el = document.getElementById('homeComfyUrl');
+    if (!el) return;
+    const r = await api('/api/comfy');
+    if (r && r.url) el.textContent = String(r.url).replace(/^https?:\/\//, '');
+  }
+
   function initComfyChip() {
     const chip = document.getElementById('comfyChip');
     if (!chip) return;
@@ -7082,11 +7158,11 @@
     // 记一下 ComfyUI 在不在：有些"顺手校验"只在线时才做得成，
     // 离线去问只会白挨一个 502，还在控制台里留一条红字。
     state.comfyOnline = !!res.comfy;
-    // 旧服务端没有新接口：提示重启，否则「新增预设」会静默 404
+    // 旧服务端没有新接口：提示重启，否则资产库里的内置预设会静默空着
     if (!Array.isArray(res.features) || !res.features.includes('presets')) {
       if (!health._warned) {
         health._warned = true;
-        flash('服务端是旧版本：重启 python server.py 后「新增预设」才可用');
+        flash('服务端是旧版本：重启 python server.py 后内置预设才会出现在资产库里');
       }
     }
     const dot = $('#healthDot'), text = $('#healthText');
@@ -7591,6 +7667,8 @@
     // 首页只剩「新建画布」+「最近项目」：以前这里还有一排「快速开始」卡片，直接从预设开画布。
     // 但那条路和「新建画布 → 生成面板里选工作流」是同一件事，而且没有预设时只留一个空标题，
     // 所以整排删掉了（工作流的选择统一收在生成面板里）。工作流列表由 boot() 和设置面板各自刷新。
+    // 页脚那行 ComfyUI 地址跟着服务端的真实配置走：在设置里改过端口，回首页要看到新的
+    refreshHomeComfy();
     const row = document.getElementById('recentRow');
     const list = document.getElementById('recentList');
     if (row && list) {
@@ -9699,8 +9777,11 @@
     document.querySelectorAll('[data-home-act]').forEach((b) => {
       b.onclick = () => {
         const what = b.dataset.homeAct;
-        if (what === 'help') { showCanvas(); flash('拖空白平移 · 滚轮缩放 · 双击空白建节点 · Shift 框选 · Ctrl+G 打组'); }
-        if (what === 'workflows') { showCanvas(); openModal(); }
+        // 三件事都**就地**办完，不往画布里跳：
+        // 地址是锚在页脚上的小弹层，快捷键是浮层，工作流库是盖在首页上的弹窗。
+        if (what === 'comfy') { openComfyPop(b); return; }
+        if (what === 'help') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
+        if (what === 'workflows') { openModal(); return; }
       };
     });
 

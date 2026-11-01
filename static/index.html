@@ -88,8 +88,12 @@
         <div class="recent-grid" id="recentList"></div>
       </section>
 
+      <!-- 页脚三件事都就地解决，不往画布里跳：地址点开是小弹层（改完就测），
+           快捷键是浮层，工作流库是覆盖在首页上的弹窗。 -->
       <footer class="home-foot">
-        <span>ComfyUI <a href="http://127.0.0.1:8188" target="_blank" rel="noreferrer">127.0.0.1:8188</a></span>
+        <button class="link" data-home-act="comfy" title="点一下改 ComfyUI 地址（换电脑 / 换端口 / 另一台机器都在这）">
+          ComfyUI <span id="homeComfyUrl">127.0.0.1:8188</span>
+        </button>
         <span class="sep-dot">·</span>
         <button class="link" data-home-act="help">快捷键</button>
         <span class="sep-dot">·</span>
