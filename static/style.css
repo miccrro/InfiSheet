@@ -156,13 +156,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .home-top { display: flex; align-items: center; justify-content: space-between; }
 .home-brand { display: flex; align-items: center; gap: 12px; }
-/* 品牌标：直接用 app 图标（黑底 + 斜放的纸和笔）。
-   以前是一块 conic-gradient 彩球——和图标库里的任何东西都没关系，纯装饰。
-   这里只给尺寸和一点外发光，图形本身在 SVG 里画好了。 */
+/* 品牌标：直接用 app 图标本身（原图不改——圆角、黑底、字标都在 SVG 里画好了）。
+   这里只管尺寸；以前是一块 conic-gradient 彩球，和品牌没关系。 */
 .logo-orb {
-  width: 36px; height: 36px; border-radius: 13px; flex: 0 0 auto;
+  width: 36px; height: 36px; flex: 0 0 auto;
   display: block;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 .home-brand b { display: block; font-size: 14px; letter-spacing: 0.2px; }
 .home-brand span { font-size: 11.5px; color: var(--faint); }
@@ -1707,12 +1705,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #bar .icon.prime svg { width: 19px; height: 19px; stroke-width: 1.9; }
 #bar .vsep { height: 22px; margin: 0 4px; }
 
-/* 左下角那颗「返回首页」：以前是一颗彩色玻璃球（和品牌无关的装饰）。
-   现在直接就是 app 图标，方角跟着图标走——图标本身是圆角方块，套在圆形按钮里会被切掉四个角。
-   圆角得写在这里，全局那条 button:not(…) 的特异度更高，所以它被排除在外（见文件末尾那条）。 */
+/* 左下角那颗「返回首页」：以前是一颗彩色玻璃球（和品牌无关的装饰），现在就是 app 图标本身。
+   不描边、不额外切圆角——图标的圆角画在 SVG 里（1024 里 rx=120，缩到 48px 约 5.6px），
+   按钮圆角对齐成同一个值，让 hover 的阴影贴着图标轮廓。
+   全局那条 button:not(…) 的 border-radius: 999px 特异度更高，所以 .dock-orb 在排除名单里。 */
 #dockWrap .dock-orb {
-  width: 48px; height: 48px; padding: 0; border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  width: 48px; height: 48px; padding: 0; border: none; border-radius: 6px;
   background: transparent; overflow: hidden;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
   display: grid; place-items: center; cursor: pointer;

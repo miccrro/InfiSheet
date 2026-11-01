@@ -506,7 +506,7 @@ infisheet/
 - **连线更容易对准**：拖动时兼容端口高亮（`.drop-ok`），命中区比视觉圆点大 6px；松手按「端口 → 目标节点自动选第一个兼容插槽 → 26px 内最近端口」兜底，只有落在空白处才弹新建菜单。
 - **生成器面板的提示词不能被 `.node textarea` 接管**：面板挂在节点卡片里，通用规则 `.node textarea`（`min-height:32px` + 描边 + 深井底）权重高于 `.gen-prompt`，提示词会被压成两行、文字被硬裁、外面再套一圈边框——看起来就像「UI 变形」。现在用 `.gen-panel .gen-prompt` 限定（86~168px 高、无边框、12.5px/1.6），超出时底部渐隐 + 可滚动。
 - **`history` 不能当变量名**：撤销栈对象起名 `history`，会在模块作用域里遮住 `window.history`，`history.replaceState(...)` 直接抛 `TypeError`，路由 hash 永远停在 `#canvas`（首页/画布切换时控制台报错）。已改名为 `undoStack`。
-- **图标是两档 SVG**：标签页 / 小尺寸用 `static/icon-small.svg`（黑底 + 放大的「纸 + 笔」图形，16px 还认得出），iOS 那种 180px 的大图标用完整的字标版 `static/icon.svg`——字标缩到 16px 只会糊成一团白点。首页品牌位和左下角「返回首页」按钮直接用这份图标，以前那两个位置是 conic-gradient 彩球和玻璃球，和品牌没关系。
+- **图标就是那张原图**：`static/icon.svg`（黑底圆角方块 + INFI SHEET 字标 + 斜放的纸和笔）原样使用，不裁剪不改写；标签页、`apple-touch-icon`、首页品牌位、左下角「返回首页」按钮四处都指向它。以前这四个位置各是一套东西：内联 data URI 的小方块、`conic-gradient` 彩球、彩色玻璃球，和品牌都没关系。
 
 ## 已知边界
 

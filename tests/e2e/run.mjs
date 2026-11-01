@@ -1737,30 +1737,30 @@ try {
   check('返回首页并改写 hash', backHome.hash === '#home' && backHome.home, JSON.stringify(backHome));
   check('最近项目里有夹具画布', backHome.cards >= 1 && /e2e 夹具画布/.test(backHome.name), backHome.name);
 
-  // ---- 品牌图标：首页那块和标签页那颗都得是 app 图标本身 ----
+  // ---- 品牌图标：首页那块、标签页那颗、左下角按钮，用的都是同一张原图 ----
   // 以前首页品牌位是一块 conic-gradient 彩球、标签页是内联 data URI 的小方块，
-  // 和图标库里的东西都没关系。现在两处都指向 static/icon-*.svg。
+  // 和品牌没关系。现在全部指向 static/icon.svg（桌面那张图，原样，不裁剪不改写）。
   const brand = await page.evaluate(`(() => {
     const img = document.querySelector('.home-brand .logo-orb');
     const icon = document.querySelector('link[rel="icon"]');
     const touch = document.querySelector('link[rel="apple-touch-icon"]');
+    const dock = document.querySelector('#dockWrap .dock-orb img');
     return {
       tag: img ? img.tagName : '',
       src: img ? img.getAttribute('src') : '',
       loaded: img ? img.naturalWidth : 0,
       w: img ? Math.round(img.getBoundingClientRect().width) : 0,
-      radius: img ? getComputedStyle(img).borderRadius : '',
       icon: icon ? icon.getAttribute('href') : '',
       touch: touch ? touch.getAttribute('href') : '',
-      dockImg: !!document.querySelector('#dockWrap .dock-orb img'),
+      dockSrc: dock ? dock.getAttribute('src') : '',
     };
   })()`);
   check('首页品牌位就是 app 图标本身，不是彩球，且真的加载出来了',
-    brand.tag === 'IMG' && brand.src === '/icon-small.svg' && brand.loaded > 0 && brand.w === 36,
+    brand.tag === 'IMG' && brand.src === '/icon.svg' && brand.loaded > 0 && brand.w === 36,
     JSON.stringify(brand));
-  check('标签页图标用 icon-small.svg（16px 还认得出），180px 的大图标才用完整字标',
-    brand.icon === '/icon-small.svg' && brand.touch === '/icon.svg', `${brand.icon} · ${brand.touch}`);
-  check('左下角「返回首页」按钮里也是同一个图标', brand.dockImg === true, String(brand.dockImg));
+  check('标签页图标和 180px 大图标都指向同一张 icon.svg',
+    brand.icon === '/icon.svg' && brand.touch === '/icon.svg', `${brand.icon} · ${brand.touch}`);
+  check('左下角「返回首页」按钮里也是同一张图', brand.dockSrc === '/icon.svg', String(brand.dockSrc));
 
   // ---- 首页页脚三件事：就地办完，不把人踹进画布 ----
   // 以前「快捷键」只 flash 一行字就顺手 showCanvas()，「工作流库」也先 showCanvas() 再开弹窗，

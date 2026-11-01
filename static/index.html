@@ -4,9 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>InfiSheet · 无限画布</title>
-<!-- 图标分两档：标签页 / 小尺寸用 icon-small（黑底 + 放大的图形，16px 还认得出），
-     iOS 那种 180px 的大图标用完整的字标版 icon.svg。字标缩到 16px 只会糊成一团白点。 -->
-<link rel="icon" type="image/svg+xml" href="/icon-small.svg" />
+<!-- 图标就是桌面那张 InfiSheet.svg，原样用，不做任何裁剪或改写。
+     标签页和 180px 大图标都指向同一份文件。 -->
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="apple-touch-icon" href="/icon.svg" />
 <link rel="stylesheet" href="/style.css" />
 </head>
@@ -66,7 +66,7 @@
     <div class="home-wrap">
       <div class="home-top">
         <div class="home-brand">
-          <img class="logo-orb" src="/icon-small.svg" alt="" width="36" height="36" />
+          <img class="logo-orb" src="/icon.svg" alt="" width="36" height="36" />
           <div>
             <b>InfiSheet · 无限画布</b>
             <span>本地 ComfyUI 的可视化创作台</span>
@@ -132,7 +132,7 @@
     </button>
   </header>
 
-  <button class="icon orb dock-orb" data-act="home" title="返回首页"><img src="/icon-small.svg" alt="" /></button>
+  <button class="icon orb dock-orb" data-act="home" title="返回首页"><img src="/icon.svg" alt="" /></button>
   </div>
 
   <main id="stage">
