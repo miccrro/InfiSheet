@@ -8031,8 +8031,22 @@
       if (ta) ta.value = OP_PROMPT;
     }
     rerenderNode(n.id, true);
+    // 节点贴着屏幕底边时，画布一往下长就把比例档和「完成」顶出视口——用户找不到出口，
+    // 只能猜 Esc。开框时把视图往上抬一下，保证「图 + 下面那条按钮」整块露出来。
+    ensureOutpaintVisible(n);
     queueSave();
     flash('拖边框上的八个锚点决定往哪边扩、扩多少，然后点生成');
+  }
+
+  function ensureOutpaintVisible(n) {
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // 64px ≈ 比例档两行 + 读数 + 按钮 + 间距
+    const over = r.bottom + 64 - (window.innerHeight - 12);
+    if (over <= 0) return;
+    state.view.y -= over / (state.view.k || 1);
+    applyView();
   }
 
   function closeOutpaint(n) {
