@@ -17,6 +17,17 @@
 | macOS | `启动.command`（首次右键 → 打开） |
 | Linux | `./start.sh` |
 
+**macOS 打不开的话，基本是这两件事之一：**
+
+```bash
+chmod +x 启动.command                          # ① 双击只弹「permission denied」：执行位丢了
+xattr -d com.apple.quarantine 启动.command     # ② 提示「无法验证开发者」：去掉隔离标记
+```
+
+压缩包（尤其是从 GitHub 直接下载的 zip）解压后不带执行位，`git clone` 下来才有。
+两条都不想敲的话，直接在终端里 `bash 启动.command` 也行——脚本本身不依赖执行位。
+脚本现在会把失败原因打在窗口里并停住，不会一闪而过。
+
 打开后先看到**首页**：新建画布 / 最近项目（节点数 + 保存时间）。
 
 ```bash

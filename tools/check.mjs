@@ -6,7 +6,7 @@
  *   npm run check
  */
 import { spawnSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +41,28 @@ for (const file of files) {
   } else {
     failed += 1;
     console.log('FAIL  ' + rel + '\n' + (r.stderr || '').trim());
+  }
+}
+
+// 启动脚本的执行位：macOS 双击 .command 要求文件本身可执行。这个位丢过一次——
+// 仓库里的 .command / .sh 是 100644，clone 或下载下来双击只有一句 permission denied。
+// Windows 上 core.filemode 是关的，重新 add 很容易再丢，所以在 CI 里钉住。
+// zip 分发包没有 .git，查不到就跳过；没装 git 也一样跳过。
+if (existsSync(path.join(ROOT, '.git'))) {
+  for (const name of ['启动.command', 'start.sh']) {
+    const r = spawnSync('git', ['ls-files', '-s', '--', name], { cwd: ROOT, encoding: 'utf8' });
+    const mode = (r.stdout || '').trim().split(/\s+/)[0] || '';
+    if (r.error || r.status !== 0) {
+      console.log(`skip  ${name} 执行位（git 不可用）`);
+    } else if (!mode) {
+      console.log(`skip  ${name} 执行位（没被 git 跟踪）`);
+    } else if (mode === '100755') {
+      console.log(`ok    ${name} 执行位 100755`);
+    } else {
+      failed += 1;
+      console.log(`FAIL  ${name} 执行位是 ${mode}，macOS 双击会报 permission denied\n` +
+        `      git update-index --chmod=+x ${name}`);
+    }
   }
 }
 

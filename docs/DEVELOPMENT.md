@@ -23,8 +23,15 @@ Windows 上双击 `启动.bat` 等价。
 
 ### 多平台入口与数据目录
 
-三个平台跑同一份代码（纯标准库），入口脚本只负责「找 Python + cd 到脚本目录」：
+三个平台跑同一份代码（纯标准库），入口脚本只负责「找 Python + cd 到脚本目录 + 版本把关」：
 `启动.bat`（Windows）/ `启动.command`（macOS，首次要右键→打开）/ `start.sh`（Linux）。
+
+macOS 那个脚本额外做了三件事，都是为了「双击之后不能只闪一下就没了」：
+① 确认 `python3` 真的能跑（没装命令行工具的机器上 `/usr/bin/python3` 只是个壳，
+报 `command line tools are required` 而且退出码有时还是 0）；② 拦下 3.9 以下；
+③ 服务异常退出时把原因打在窗口里并 `read` 停住，顺带提示端口被占用可以 `--port` 换一个。
+执行位在仓库里是 `100755`（`git update-index --chmod=+x`），`tools/pack.py` 打 zip 时也显式写 0755——
+但 **GitHub 的 zip 下载不保留执行位**，所以 README 里给了 `chmod +x` / `bash 启动.command` 两条兜底。
 
 数据目录优先级：`--data` > `INFISHEET_DATA` > 程序目录下的 `./data`（存在就沿用，老用户不搬家）>
 平台标准目录（Windows `%LOCALAPPDATA%\InfiSheet`、macOS `~/Library/Application Support/InfiSheet`、
