@@ -253,32 +253,6 @@
   </div>
 </div>
 
-<!-- 资产库：固定尺寸，左导航 + 右内容。
-     这里只做「挑一个 → 加到画布」。改名 / 换分类 / 设默认 / 删除 / 导入都在
-     全局设置的工作流区，两处不再各摆一套按钮。 -->
-<div id="modal" class="hidden">
-  <div class="sheet">
-    <header>
-      <strong>资产库</strong>
-      <button id="modalClose">✕</button>
-    </header>
-    <div class="modal-body">
-      <nav id="modalTabs">
-        <button class="tab active" data-tab="wf">
-          <span class="ico" data-icon="layers" aria-hidden="true"></span><span>工作流</span>
-        </button>
-        <button class="tab" data-tab="history">
-          <span class="ico" data-icon="time" aria-hidden="true"></span><span>ComfyUI 运行记录</span>
-        </button>
-      </nav>
-      <div class="modal-panes">
-        <div class="pane" id="pane-wf"></div>
-        <div class="pane hidden" id="pane-history"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
 <div id="lightbox" class="hidden">
   <img id="lightboxImg" alt="" />
   <div id="lightboxInfo" class="hidden"></div>

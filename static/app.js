@@ -3224,75 +3224,44 @@
     if (txt) txt.textContent = '服务已关闭。';
   }
 
-  // ---------- 设置里的「工作流」区 ----------
-  // 早先这里是六个按钮挤成两组：
-  //   默认工作流 ｜ [打开工作流库] [导入工作流 JSON…]
-  //   预设 / 工作流库 ｜ [新增预设…] [管理预设] [管理库工作流]
-  // 其中三对是同一件事（打开库 == 管理库、新增预设 ≈ 导入 JSON、管理预设 == 打开库的预设页），
-  // 而且那个下拉里**只有内置预设**——自己存进工作流库的永远选不到，用户的原话就是
-  // 「工作流被固定死了」。现在合成一处：一个下拉 + 一份列表 + 一排分类。
+  // ---------- 设置里的「工作流」区（就是工作流库） ----------
+  // 这份列表以前被拆成三处：设置里的「默认工作流下拉」、设置里的列表、资产库弹窗里的卡片。
+  // 下拉能做的事（设默认）行里的 ☆ 也能做，弹窗能做的事（加到画布）行里的按钮也能做，
+  // 所以现在只剩这一份：搜索 + 列表 + 一排分类。
+  let setWfQuery = '';
   function renderSetWorkflows(box) {
-    const sel = box.querySelector('#setDefaultWf');
     const listEl = box.querySelector('#setWfList');
     const catsEl = box.querySelector('#setCats');
-    if (!sel || !listEl || !catsEl) return;
+    const defEl = box.querySelector('#setWfDefault');
+    if (!listEl || !catsEl) return;
     const opts = presetOptions();
     const cats = wfCategories();
     const cur = defaultWorkflowId();
 
-    // ---- 默认工作流：按**用户分类**分组，预设和库都在里面 ----
-    sel.innerHTML = '';
-    const bucket = (c) => opts.filter((o) => o.group === c.id);
-    cats.forEach((c) => {
-      const group = bucket(c);
-      if (!group.length) return;
-      const g = document.createElement('optgroup');
-      g.label = c.name;
-      group.forEach((o) => {
-        const op = document.createElement('option');
-        op.value = o.id;
-        op.textContent = o.label;
-        if (o.id === cur) op.selected = true;
-        g.appendChild(op);
-      });
-      sel.appendChild(g);
-    });
-    // 分类被删掉、group 指向不存在的 id：兜到「其他」，别让工作流在下拉里消失
-    const orphans = opts.filter((o) => !cats.some((c) => c.id === o.group));
-    if (orphans.length) {
-      const g = document.createElement('optgroup');
-      g.label = '其他';
-      orphans.forEach((o) => {
-        const op = document.createElement('option');
-        op.value = o.id;
-        op.textContent = o.label;
-        if (o.id === cur) op.selected = true;
-        g.appendChild(op);
-      });
-      sel.appendChild(g);
+    // ---- 默认工作流：一行读数（以前是一个下拉，和这份列表列的是同一批东西） ----
+    if (defEl) {
+      const d = opts.find((o) => o.id === cur);
+      defEl.textContent = d
+        ? `默认：${d.label}（${d.catLabel}）· 同类里优先用它，点行里的 ☆ 换`
+        : '还没有可用的工作流，点上面的「导入工作流…」加一个。';
     }
-    if (!opts.length) {
-      const op = document.createElement('option');
-      op.value = '';
-      op.textContent = '（还没有工作流）';
-      sel.appendChild(op);
-    }
-    sel.onchange = () => {
-      if (!sel.value) return;
-      try { localStorage.setItem('infisheet-default-wf', sel.value); } catch { /* ignore */ }
-      flash('默认工作流已保存');
-      renderSetWorkflows(box);
-    };
 
-    // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 删除 ----
+    // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 加到画布 / 删除 ----
+    const q = setWfQuery.trim().toLowerCase();
+    const hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
     listEl.innerHTML = '';
     if (!opts.length) {
       const p = document.createElement('p');
       p.className = 'tip';
       p.textContent = '还没有工作流。点上面的「导入工作流…」加一个。';
       listEl.appendChild(p);
+    } else if (!hits.length) {
+      const p = document.createElement('p');
+      p.className = 'tip';
+      p.textContent = `没有匹配「${setWfQuery.trim()}」的工作流。`;
+      listEl.appendChild(p);
     }
-    opts.forEach((o) => {
+    hits.forEach((o) => {
       const row = document.createElement('div');
       row.className = 'wf-item' + (o.id === cur ? ' is-default' : '');
       row.dataset.id = o.id;
@@ -3327,6 +3296,15 @@
         renderSetWorkflows(box);
       };
 
+      // 「加到画布」：以前这一步在资产库弹窗里，现在就在这份列表上——
+      // 挑和管是同一个对象的两个动作，没必要分成两个面板
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.className = 'wf-use';
+      use.textContent = '加到画布';
+      use.title = '把这份工作流变成一个节点放到画布上';
+      use.onclick = () => useWfItem(o);
+
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'wf-del';
@@ -3334,7 +3312,7 @@
       del.title = '删除这个工作流';
       del.onclick = () => deleteWfItem(o);
 
-      row.append(name, cat, star, del);
+      row.append(name, cat, star, use, del);
       listEl.appendChild(row);
     });
 
@@ -3551,6 +3529,10 @@
     return { read, commit };
   }
 
+  // 全局设置：左侧导航 + 右侧分区，工作流库就是第一格。
+  // 以前是「一条长滚动」的设置 + 另外一整个「资产库」弹窗，同一个工作流列表在两处渲染，
+  // 「挑一个用」和「管它」被拆成两个地方。现在只有这一个面板：
+  //   工作流（库 + 分类）/ 运行记录 / 外观 / 连接 / 高级
   function openSettingsSheet(focus) {
     closeSettingsSheet();
     const box = document.createElement('div');
@@ -3558,68 +3540,106 @@
     box.innerHTML = `
       <div class="sheet">
         <header><strong>全局设置</strong><button type="button" class="x" title="关闭">×</button></header>
-        <div class="set-body">
-          <div class="set-group">工作流</div>
-          <label>默认工作流
-            <select id="setDefaultWf"></select>
-          </label>
-          <p class="set-tip" id="setWfTip">按分类自动挑；这里选的那个只要同类就优先用它。</p>
-          <div class="set-actions">
-            <button type="button" class="prime" id="setImportWf">导入工作流…</button>
-            <button type="button" id="setOpenLib">浏览资产库…</button>
-          </div>
-          <p class="set-tip">工作流只在这一页管：导入 / 改名 / 换分类 / 设默认 / 删除。
-            资产库（顶栏「工作流库」）只负责挑一个加到画布，那边没有管理按钮。</p>
-          <div class="wf-list" id="setWfList"></div>
-          <div class="set-group">分类</div>
-          <div class="wf-cats" id="setCats"></div>
-          <p class="set-tip">点分类可以改名 / 删除；点右边那一栏能给工作流换分类。分类只影响这里的归类，不影响生成时自动挑。</p>
-          <div class="set-sep"></div>
-          <div class="set-group">背景</div>
-          <div class="set-bg">
-            <div class="bg-swatches" id="setBgSwatches"></div>
-            <div class="set-actions">
-              <label class="bg-custom">自定义 <input type="color" id="setBgColor" /></label>
-              <button type="button" data-pattern="dots">点阵</button>
-              <button type="button" data-pattern="lines">网格</button>
-              <button type="button" data-pattern="none">纯色</button>
+        <div class="sheet-body">
+          <nav id="setTabs">
+            <button class="tab active" data-set="wf">
+              <span class="ico" data-icon="layers" aria-hidden="true"></span><span>工作流</span>
+            </button>
+            <button class="tab" data-set="history">
+              <span class="ico" data-icon="time" aria-hidden="true"></span><span>运行记录</span>
+            </button>
+            <button class="tab" data-set="look">
+              <span class="ico" data-icon="material" aria-hidden="true"></span><span>外观</span>
+            </button>
+            <button class="tab" data-set="conn">
+              <span class="ico" data-icon="link" aria-hidden="true"></span><span>连接</span>
+            </button>
+            <button class="tab" data-set="adv">
+              <span class="ico" data-icon="setting" aria-hidden="true"></span><span>高级</span>
+            </button>
+          </nav>
+          <div class="sheet-panes">
+            <div class="sheet-pane" id="set-pane-wf">
+              <div class="set-toolbar">
+                <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
+                <button type="button" class="prime" id="setImportWf">导入工作流…</button>
+              </div>
+              <p class="set-tip" id="setWfDefault"></p>
+              <div class="wf-list" id="setWfList"></div>
+              <div class="set-group">分类</div>
+              <div class="wf-cats" id="setCats"></div>
+              <p class="set-tip">点分类可以改名 / 删除；点行里的胶囊给工作流换分类。分类只影响这里的归类，不影响生成时自动挑。</p>
             </div>
-          </div>          <div class="set-group">画布</div>
-          <label class="set-row"><input type="checkbox" id="setSnap" /> 网格吸附</label>
-          <label class="set-row"><input type="checkbox" id="setLinks" /> 显示连线</label>
-          <label class="set-row"><input type="checkbox" id="setMinimap" /> 显示小地图</label>
-          <label class="set-row"><input type="checkbox" id="setAutosave" /> 自动保存（关闭后只存本机）</label>
-          <div class="set-sep"></div>
-          <div class="set-group">快捷键</div>
-          <p class="set-tip">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+C/V 复制粘贴 · Ctrl+D 副本 · Ctrl+S 保存 · Ctrl+K 设置 · F 适配视图 · N 添加节点</p>
-          <div class="set-sep"></div>
-          <div class="set-group">数据</div>
-          <div class="set-actions">
-            <button type="button" id="setFit">适配视图</button>
-            <button type="button" id="setExport">导出画布 JSON</button>
-            <button type="button" id="setImport">导入画布 JSON</button>
-            <button type="button" id="setHistory">历史画布…</button>
-          </div>
-          <div class="set-sep"></div>
-          <div class="set-group">ComfyUI 连接</div>
-          <label class="set-comfy">地址
-            <input type="text" id="setComfyUrl" spellcheck="false" autocomplete="off"
-                   placeholder="http://127.0.0.1:8188" />
-          </label>
-          <p class="set-tip" id="setComfyHint">正在读取…</p>
-          <div class="set-actions">
-            <button type="button" class="prime" id="setComfySave">保存并测试</button>
-            <button type="button" id="setComfyReset">恢复默认</button>
-          </div>
-          <div class="set-sep"></div>
-          <div class="set-group">服务</div>
-          <p class="set-tip">本地服务 <b>${location.host}</b>（ComfyUI 由它代理）。关掉之后所有标签页都会断连，
-            要重新运行项目里的启动脚本（启动.bat / 启动.command / start.sh）才能再开。</p>
-          <div class="set-actions" id="setSrvActions">
-            <button type="button" class="danger" id="setShutdown">关闭服务…</button>
+            <div class="sheet-pane hidden" id="set-pane-history"></div>
+            <div class="sheet-pane hidden" id="set-pane-look">
+              <div class="set-group">背景</div>
+              <div class="set-bg">
+                <div class="bg-swatches" id="setBgSwatches"></div>
+                <div class="set-actions">
+                  <label class="bg-custom">自定义 <input type="color" id="setBgColor" /></label>
+                  <button type="button" data-pattern="dots">点阵</button>
+                  <button type="button" data-pattern="lines">网格</button>
+                  <button type="button" data-pattern="none">纯色</button>
+                </div>
+              </div>
+              <div class="set-sep"></div>
+              <div class="set-group">画布</div>
+              <label class="set-row"><input type="checkbox" id="setSnap" /> 网格吸附</label>
+              <label class="set-row"><input type="checkbox" id="setLinks" /> 显示连线</label>
+              <label class="set-row"><input type="checkbox" id="setMinimap" /> 显示小地图</label>
+              <label class="set-row"><input type="checkbox" id="setAutosave" /> 自动保存（关闭后只存本机）</label>
+            </div>
+            <div class="sheet-pane hidden" id="set-pane-conn">
+              <div class="set-group">ComfyUI 连接</div>
+              <label class="set-comfy">地址
+                <input type="text" id="setComfyUrl" spellcheck="false" autocomplete="off"
+                       placeholder="http://127.0.0.1:8188" />
+              </label>
+              <p class="set-tip" id="setComfyHint">正在读取…</p>
+              <div class="set-actions">
+                <button type="button" class="prime" id="setComfySave">保存并测试</button>
+                <button type="button" id="setComfyReset">恢复默认</button>
+              </div>
+              <div class="set-sep"></div>
+              <div class="set-group">服务</div>
+              <p class="set-tip">本地服务 <b>${location.host}</b>（ComfyUI 由它代理）。关掉之后所有标签页都会断连，
+                要重新运行项目里的启动脚本（启动.bat / 启动.command / start.sh）才能再开。</p>
+              <div class="set-actions" id="setSrvActions">
+                <button type="button" class="danger" id="setShutdown">关闭服务…</button>
+              </div>
+            </div>
+            <div class="sheet-pane hidden" id="set-pane-adv">
+              <div class="set-group">画布数据</div>
+              <div class="set-actions">
+                <button type="button" id="setFit">适配视图</button>
+                <button type="button" id="setExport">导出画布 JSON</button>
+                <button type="button" id="setImport">导入画布 JSON</button>
+                <button type="button" id="setHistory">历史画布…</button>
+              </div>
+              <div class="set-sep"></div>
+              <div class="set-group">快捷键</div>
+              <p class="set-tip">Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+C/V 复制粘贴 · Ctrl+D 副本 · Ctrl+S 保存 · Ctrl+K 设置 · F 适配视图 · N 添加节点</p>
+              <div class="set-actions">
+                <button type="button" id="setHelp">教程与快捷键…</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>`;
+    // ---- 左侧导航：一次只显示一格；运行记录第一次点开才去问 ComfyUI ----
+    const panes = ['wf', 'history', 'look', 'conn', 'adv'];
+    const setTab = (name) => {
+      box.querySelectorAll('#setTabs .tab').forEach((t) => {
+        t.classList.toggle('active', t.dataset.set === name);
+      });
+      panes.forEach((k) => {
+        box.querySelector(`#set-pane-${k}`).classList.toggle('hidden', k !== name);
+      });
+      if (name === 'history') renderHistory();
+    };
+    box.querySelectorAll('#setTabs .tab').forEach((t) => {
+      t.onclick = () => setTab(t.dataset.set);
+    });
     // 背景：色板 / 自定义颜色 / 纹理
     const bgNow = loadCanvasBg();
     const swWrap = box.querySelector('#setBgSwatches');
@@ -3683,8 +3703,15 @@
       flash(auto.checked ? '已开启自动保存' : '已关闭自动保存（仍存本机）');
     };
     box.querySelector('.x').onclick = closeSettingsSheet;
-    box.querySelector('#setOpenLib').onclick = () => { closeSettingsSheet(); showCanvas(); openModal(); };
     box.querySelector('#setImportWf').onclick = () => importWorkflowToLibrary();
+    // 搜索：只重画列表（不重画工具条），输入框不会失焦
+    const wfSearch = box.querySelector('#setWfSearch');
+    wfSearch.value = setWfQuery;
+    wfSearch.oninput = () => { setWfQuery = wfSearch.value; renderSetWorkflows(box); };
+    box.querySelector('#setHelp').onclick = () => {
+      closeSettingsSheet();
+      document.getElementById('helpSheet').classList.toggle('hidden');
+    };
     box.querySelector('#setFit').onclick = () => { closeSettingsSheet(); fitView(); };
     box.querySelector('#setExport').onclick = () => { closeSettingsSheet(); exportCanvas(); };
     box.querySelector('#setImport').onclick = () => { closeSettingsSheet(); importCanvas(); };
@@ -3713,10 +3740,14 @@
     });
     box.onclick = (ev) => { if (ev.target === box) closeSettingsSheet(); };
     document.body.appendChild(box);
+    // 导航图标是这里才建出来的，加载时那一次 hydrate 扫不到，得单独补一遍
+    if (window.hydrateIcons) window.hydrateIcons(box);
+    // 落在哪一格：'comfy' 是「连不上时点顶栏那颗灯」的快捷入口，直接落到地址输入框
+    const startAt = focus === 'comfy' ? 'conn' : (panes.includes(focus) ? focus : 'wf');
+    setTab(startAt);
     if (focus === 'comfy') {
       comfyInput.focus();
       comfyInput.select();
-      comfyInput.scrollIntoView({ block: 'center' });
     }
   }
   function openSlotSheet(n) {
@@ -6095,107 +6126,6 @@
     if (res.ok) await refreshWorkflows();     // 存完立刻出现在下拉/首页/快速开始里
   }
 
-  // 资产库：只浏览 + 挑一个加到画布。导入 / 改名 / 换分类 / 设默认 / 删除全在
-  // 全局设置的工作流区——那套入口预设和库工作流都能管，弹窗里再摆一份就是重复。
-  let wfQuery = '';
-  async function openModal() {
-    $('#modal').classList.remove('hidden');
-    wfQuery = '';                             // 每次打开都从完整列表开始，别留着上次的搜索词
-    await refreshWorkflows();                 // 打开时重新拉库，别显示开局时的旧列表
-    renderWorkflows();
-    // 运行记录要打 ComfyUI 的 /history：离线时是 502。以前一开弹窗就拉，控制台先红一条，
-    // 而用户多半只是想看看工作流。改成点开那个标签页才拉（见下面的 tab 点击）。
-  }
-
-  // 弹窗里每页顶上的一句话。这里不再摆「新增 / 删除」按钮：那几件事在全局设置的
-  // 工作流区已经有一套（导入、改名、换分类、设默认、删除，预设和库工作流都能管），
-  // 两处各摆一份只会让人不知道点哪个。
-  function modalHint(text) {
-    const bar = document.createElement('div');
-    bar.className = 'pane-bar';
-    const tip = document.createElement('span');
-    tip.className = 'tip';
-    tip.textContent = text;
-    bar.appendChild(tip);
-    return bar;
-  }
-
-  // 资产库里的工作流：**一份列表**，预设和库合成（和设置里那份同一个数据源 presetOptions），
-  // 每张卡标「内置 / 我的」。以前分「内置预设」「我的工作流库」两页——同一批东西渲染两遍，
-  // 而"预设 vs 库"本来就是实现细节（随包分发的 presets/ 目录 vs 你自己的 data/library/），
-  // 用户不该为了找一个工作流在两页之间来回切。
-  function renderWorkflows() {
-    const pane = $('#pane-wf');
-    pane.innerHTML = '';
-    pane.appendChild(modalHint('挑一个加到画布。改名 / 换分类 / 设默认 / 删除在「设置 → 工作流」。'));
-
-    const search = document.createElement('div');
-    search.className = 'wf-search';
-    const inp = document.createElement('input');
-    inp.type = 'text';
-    inp.spellcheck = false;
-    inp.autocomplete = 'off';
-    inp.placeholder = '搜名字或分类…';
-    inp.value = wfQuery;
-    search.appendChild(inp);
-    const list = document.createElement('div');
-    list.className = 'list';
-    pane.append(search, list);
-
-    const addCard = (o, showCat) => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      // 分组视图里不再重复分类名（组头已经写了）；搜索结果是扁平的，才需要它
-      card.innerHTML = `<div class="info"><b>${esc(o.label)}<em class="src">${o.source === 'preset' ? '内置' : '我的'}</em></b>`
-        + `<span>${o.nodes} 个节点${showCat ? ' · ' + esc(o.catLabel) : ''}</span></div>`
-        + '<button class="primary">加到画布</button>';
-      card.onclick = async () => {
-        const graph = await loadGraphById(o.id);
-        if (!graph) { flash('读不到这份工作流'); return; }
-        await useGraph(graph, o.label);
-      };
-      list.appendChild(card);
-    };
-
-    const paint = () => {
-      const all = presetOptions();
-      const q = wfQuery.trim().toLowerCase();
-      const hits = q ? all.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : all;
-      list.innerHTML = '';
-      if (!all.length) {
-        list.innerHTML = '<p class="tip">还没有工作流。在「设置 → 工作流」里点「导入工作流…」加一个。</p>';
-        return;
-      }
-      if (!hits.length) {
-        list.innerHTML = `<p class="tip">没有匹配「${esc(wfQuery.trim())}」的工作流。</p>`;
-        return;
-      }
-      // 搜索结果是扁平的：几条命中摊在几个分类标题下反而更难扫
-      if (q) { hits.forEach((o) => addCard(o, true)); return; }
-      // 不搜索时按**用户分类**分组（设置里能改名 / 新增 / 删除的那套）。
-      // 早先这里按服务端推断的能力分类分组，用户改了自己的分类，这里却纹丝不动。
-      const groups = new Map();
-      hits.forEach((o) => {
-        if (!groups.has(o.group)) groups.set(o.group, []);
-        groups.get(o.group).push(o);
-      });
-      const catIds = wfCategories().map((c) => c.id);
-      const order = catIds.filter((c) => groups.has(c))
-        .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
-      order.forEach((cat) => {
-        const items = groups.get(cat) || [];
-        const head = document.createElement('div');
-        head.className = 'preset-group';
-        head.innerHTML = `<span>${esc(catName(cat))}</span><em>${items.length}</em>`;
-        list.appendChild(head);
-        items.forEach((o) => addCard(o, false));
-      });
-    };
-
-    inp.oninput = () => { wfQuery = inp.value; paint(); };
-    paint();
-  }
-
   // 从一次运行记录里挖出人看得懂的东西：提示词 + 采样参数 + 尺寸。
   // /history 只给 API 图和产物，提示词得自己从图里找：
   // 先踢掉被 KSampler.negative 引用的节点（那是负面词），再踢掉 LLM 扩写节点的系统提示，
@@ -6262,7 +6192,8 @@
   }
 
   async function renderHistory() {
-    const pane = $('#pane-history');
+    const pane = $('#set-pane-history');
+    if (!pane) return;                       // 面板没开（工作流格还没切过去）就不白跑一趟网络
     pane.innerHTML = '<p class="tip">读取中…</p>';
     const res = await api('/api/history?limit=15');
     const list = (res.entries || []).filter((e) => e.has_graph);
@@ -6315,10 +6246,17 @@
     pane.appendChild(grid);
   }
 
+  // 从工作流列表里挑一个用：设置面板里那一行的「加到画布」走这里
+  async function useWfItem(o) {
+    const graph = await loadGraphById(o.id);
+    if (!graph) { flash('读不到这份工作流'); return; }
+    await useGraph(graph, o.label);
+  }
+
   async function useGraph(graph, title) {
     if (!graph) { flash('该记录没有 API 图'); return; }
-    $('#modal').classList.add('hidden');
-    // 资产库可以从首页打开（挑一个不用先进画布），但挑完是要往画布上落节点的
+    closeSettingsSheet();
+    // 设置面板可以从首页打开（挑一个不用先进画布），但挑完是要往画布上落节点的
     showCanvas();
     const n = await addWorkflowNode(graph, title);
     if (n) flash(`已添加工作流节点：${title}`);
@@ -6334,12 +6272,13 @@
       return;
     }
     if (act === 'home') { showHome(); return; }
-    if (act === 'workflows' || act === 'add-wf') { showCanvas(); openModal(); return; }
+    // 工作流库现在就是设置面板的第一格，不再是单独一个弹窗
+    if (act === 'workflows' || act === 'add-wf') { showCanvas(); openSettingsSheet('wf'); return; }
     if (act === 'storyboard') { showCanvas(); addScriptNode(); return; }
     if (act === 'settings') { openSettingsSheet(); return; }
     if (act === 'assets') { showCanvas(); openAssetSheet(); return; }
     if (act === 'tutorial') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
-    if (act === 'history') { showCanvas(); openModal(); switchModalTab('history'); return; }
+    if (act === 'history') { showCanvas(); openSettingsSheet('history'); return; }
     if (act === 'pan-mode') { setTool(true); return; }
     if (act === 'select-mode') { setTool(false); return; }
     if (act === 'help') { flash('拖空白框选 · 空格/中键平移 · 滚轮缩放 · 双击空白建节点 · Ctrl+G 打组 · F 适配视图'); return; }
@@ -6491,7 +6430,7 @@
         ['out', '图片输出', () => addOutNode(p.x - 150, p.y - 60)],
       ]],
       ['工作流', [
-        ['wf', '打开工作流…', () => openModal()],
+        ['wf', '打开工作流…', () => openSettingsSheet('wf')],
         ['book', '从 JSON 导入…', () => importWorkflowFile()],
       ]],
     ];
@@ -6755,7 +6694,6 @@
         hideLightbox();
         return;
       }
-      $('#modal').classList.add('hidden');
       closeSlotSheet();
       closeSettingsSheet();
       closeCanvasHistory();
@@ -6770,21 +6708,6 @@
       const opn = imgToolNode();
       if (opn && outpaintOn(opn)) closeOutpaint(opn);
     }
-  });
-
-  $('#modalClose').onclick = () => $('#modal').classList.add('hidden');
-  $('#modal').addEventListener('click', (ev) => {
-    if (ev.target.id === 'modal') $('#modal').classList.add('hidden');
-  });
-  document.querySelectorAll('#modalTabs .tab').forEach((tab) => {
-    tab.onclick = () => {
-      document.querySelectorAll('#modalTabs .tab').forEach((t) => t.classList.toggle('active', t === tab));
-      ['wf', 'history'].forEach((name) => {
-        $(`#pane-${name}`).classList.toggle('hidden', name !== tab.dataset.tab);
-      });
-      // 只有真的要看运行记录时才去问 ComfyUI（离线时这一步会 502，没必要在开弹窗时就撞上）
-      if (tab.dataset.tab === 'history') renderHistory();
-    };
   });
 
   /* ---------------- MCP 接入灯 ---------------- */
@@ -7542,11 +7465,6 @@
     const close = document.getElementById('helpClose');
     if (close) close.onclick = () => sheet.classList.add('hidden');
     if (sheet) sheet.onclick = (ev) => { if (ev.target === sheet) sheet.classList.add('hidden'); };
-  }
-
-  function switchModalTab(name) {
-    const tab = document.querySelector(`#modalTabs .tab[data-tab="${name}"]`);
-    if (tab) tab.click();
   }
 
   /* ---------------- 首页 ---------------- */
@@ -9779,7 +9697,7 @@
         // 地址是锚在页脚上的小弹层，快捷键是浮层，工作流库是盖在首页上的弹窗。
         if (what === 'comfy') { openComfyPop(b); return; }
         if (what === 'help') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
-        if (what === 'workflows') { openModal(); return; }
+        if (what === 'workflows') { openSettingsSheet('wf'); return; }
       };
     });
 

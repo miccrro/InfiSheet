@@ -40,7 +40,10 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   await page.screenshot(path.join(shots, '03-gen-panel.png'), { selector: '.gen-panel', scale: 2 });
 
+  // 04 拍「外观」那一格：工作流格留给 05，两张图才不会一模一样
   await page.click('#projectBar [data-act="settings"]', { settle: 500 });
+  await page.evaluate(`document.querySelector('#setTabs .tab[data-set="look"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
   await page.screenshot(path.join(shots, '04-settings.png'));
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
 

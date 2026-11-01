@@ -1594,14 +1594,14 @@ try {
   check('dock / 视图工具为胶囊、白色加号为正圆',
     shapes.bar === '999px' && shapes.vt === '999px' && shapes.prime === '999px', JSON.stringify(shapes));
 
-  // ---- 资产库：固定尺寸 + 左导航右内容 ----
-  // 以前是顶部横向 tab + 内容自适应高度：4 个预设把窗口撑到 78vh，切到内容更少的页，
-  // 窗口又缩回去。这里盯两件事：尺寸不随 tab 变、导航真的在左边。
+  // ---- 工作流库并进全局设置：左导航 + 右分格 ----
+  // 以前是「设置一条长滚动」+「资产库一整个弹窗」：同一个工作流列表在两处渲染，
+  // 「挑一个用」和「管它」被拆成两个地方。现在只有这一个面板，工作流就是第一格。
   await page.evaluate(`document.querySelector('#projectBar [data-act="workflows"]').click()`);
-  await page.waitFor(`!document.querySelector('#modal').classList.contains('hidden')`, 6000);
-  await new Promise((r) => setTimeout(r, 350));
+  await page.waitFor(`!!document.getElementById('appSettings')`, 6000);
+  await new Promise((r) => setTimeout(r, 400));
 
-  // 弹窗里不允许出现蓝色：扫描所有元素的文字/底色/描边/阴影，找明显偏蓝的 rgb
+  // 面板里不允许出现蓝色：扫描所有元素的文字/底色/描边/阴影，找明显偏蓝的 rgb
   // （b 比 r、g 都高出 40 以上）。主题色 #09caf5 会立刻被抓到。
   const blueHits = await page.evaluate(`(() => {
     const isBlue = (v) => {
@@ -1611,7 +1611,7 @@ try {
       return b > 120 && b - r > 40 && b - g > 40;
     };
     const hits = [];
-    document.querySelectorAll('#modal *').forEach((el) => {
+    document.querySelectorAll('#appSettings *').forEach((el) => {
       const cs = getComputedStyle(el);
       ['color', 'backgroundColor', 'borderTopColor', 'borderLeftColor', 'boxShadow'].forEach((p) => {
         if (isBlue(cs[p])) hits.push((el.className || el.tagName) + ' · ' + p);
@@ -1619,20 +1619,22 @@ try {
     });
     return [...new Set(hits)];
   })()`);
-  check('弹窗里没有蓝色：选中条 / 卡片 / 描边都是中性色',
+  check('设置面板里没有蓝色：选中条 / 行 / 描边都是中性色',
     blueHits.length === 0, JSON.stringify(blueHits));
 
-  const modalBox = () => page.evaluate(`(() => {
-    const s = document.querySelector('#modal .sheet').getBoundingClientRect();
-    const nav = document.querySelector('#modalTabs').getBoundingClientRect();
-    const panes = document.querySelector('.modal-panes').getBoundingClientRect();
-    const tabs = [...document.querySelectorAll('#modalTabs .tab')];
+  const setBox = () => page.evaluate(`(() => {
+    const s = document.querySelector('#appSettings .sheet').getBoundingClientRect();
+    const nav = document.querySelector('#setTabs').getBoundingClientRect();
+    const panes = document.querySelector('.sheet-panes').getBoundingClientRect();
+    const tabs = [...document.querySelectorAll('#setTabs .tab')];
     const tab = tabs[0];
     return {
       w: Math.round(s.width), h: Math.round(s.height),
-      // 期望值按视口算：窗口够大时就是 1200×780，小屏被 max-width/max-height 兜底
-      expectW: Math.min(1200, Math.round(innerWidth * 0.94)),
-      expectH: Math.min(780, Math.round(innerHeight * 0.92)),
+      // 期望值按视口算：窗口够大时就是 880×640，小屏被 max-width / 90vh 兜底。
+      // 基准取 documentElement.clientHeight 而不是 innerHeight——后者含横向滚动条那十几个像素，
+      // 和 CSS 里 vh 的基准对不上，算出来的期望值会凭空高出 16px。
+      expectW: Math.min(880, Math.round(document.documentElement.clientWidth * 0.94)),
+      expectH: Math.min(640, Math.round(document.documentElement.clientHeight * 0.9)),
       sideBySide: Math.round(nav.right) <= Math.round(panes.left) + 1,
       navW: Math.round(nav.width), panesW: Math.round(panes.width),
       tabRadius: parseFloat(getComputedStyle(tab).borderRadius),
@@ -1641,85 +1643,87 @@ try {
       labels: tabs.map((t) => (t.querySelector('span:last-child') || {}).textContent),
     };
   })()`);
-  const mPreset = await modalBox();
+  const sSet = await setBox();
 
-  // 工作流按分类分组：组头（文生图 / 图生图 / 高清放大）与卡片数必须对得上，
-  // 否则就是「分了组但漏了卡片」——列表少一条比不分组更糟。
-  const grp = await page.evaluate(`(() => {
-    const pane = document.getElementById('pane-wf');
+  // 工作流格：搜索 + 导入 + 默认读数 + 一份列表 + 一排分类。
+  // 这四样以前散在三个地方（设置里的下拉 / 设置里的列表 / 资产库弹窗的卡片）。
+  const wfPane = await page.evaluate(`(() => {
+    const pane = document.getElementById('set-pane-wf');
+    const rows = [...pane.querySelectorAll('.wf-item')];
     return {
-      heads: [...pane.querySelectorAll('.preset-group span')].map((s) => s.textContent.trim()),
-      counts: [...pane.querySelectorAll('.preset-group em')].map((s) => Number(s.textContent)),
-      cards: pane.querySelectorAll('.card').length,
-      srcs: [...pane.querySelectorAll('.card .info b .src')].map((e) => e.textContent),
+      missing: ['setWfSearch', 'setWfList', 'setCats', 'setImportWf', 'setWfDefault']
+        .filter((id) => !document.getElementById(id)),
+      rows: rows.length,
+      shape: rows.length ? rows[0].children.length : 0,
+      stars: rows.filter((r) => r.querySelector('.wf-star')).length,
+      uses: rows.filter((r) => r.querySelector('.wf-use')).length,
+      dels: rows.filter((r) => r.querySelector('.wf-del')).length,
+      cats: rows.filter((r) => r.querySelector('.wf-cat')).length,
+      chips: pane.querySelectorAll('.wf-chip').length,
+      def: (document.getElementById('setWfDefault') || {}).textContent || '',
     };
   })()`);
-  check('工作流按分类分组：组头与卡片数对得上、文生图排在最前',
-    grp.heads.length > 0 && grp.heads[0] === '文生图'
-      && grp.counts.reduce((a, b) => a + b, 0) === grp.cards && grp.cards > 0,
-    `${grp.heads.join(' / ')} · 卡片 ${grp.cards}`);
-  // 预设和库工作流合成一份列表，靠角标区分来源（以前是两个页签，同一批东西渲染两遍）
-  check('预设和库工作流在同一份列表里，靠「内置 / 我的」角标区分',
-    grp.srcs.length === grp.cards && grp.srcs.every((s) => s === '内置' || s === '我的'),
-    JSON.stringify(grp.srcs.slice(0, 8)));
+  check('工作流库就是设置的第一格：搜索 / 导入 / 默认读数 / 列表 / 分类都在',
+    wfPane.missing.length === 0 && wfPane.rows > 0 && wfPane.chips > 0,
+    JSON.stringify(wfPane));
+  check('每行五件套：名字 / 分类 / 默认 / 加到画布 / 删除',
+    wfPane.shape === 5 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
+      && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows,
+    JSON.stringify(wfPane));
+  check('默认工作流是一行读数，不再是和列表重复一遍的下拉',
+    /^默认：/.test(wfPane.def), wfPane.def);
 
-  // 尺寸不随内容变：把搜索框填成匹配不到的词，内容从一屏卡片塌成一句「没有匹配」
+  // 尺寸不随内容变：把搜索框填成匹配不到的词，内容从一屏行塌成一句「没有匹配」
   await page.evaluate(`(() => {
-    const i = document.querySelector('#pane-wf .wf-search input');
+    const i = document.getElementById('setWfSearch');
     i.value = 'zzz-没有这个工作流';
     i.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await new Promise((r) => setTimeout(r, 300));
-  const mEmpty = await modalBox();
+  const sEmpty = await setBox();
   const emptyHit = await page.evaluate(`(() => ({
-    cards: document.querySelectorAll('#pane-wf .card').length,
-    tip: (document.querySelector('#pane-wf .list .tip') || {}).textContent || '',
+    rows: document.querySelectorAll('#set-pane-wf .wf-item').length,
+    tip: (document.querySelector('#setWfList .tip') || {}).textContent || '',
   }))()`);
   check('搜索能过滤：一个词把列表收到「没有匹配」',
-    emptyHit.cards === 0 && /没有匹配/.test(emptyHit.tip), JSON.stringify(emptyHit));
-  check('弹窗标题改成「资产库」',
-    (await page.evaluate(`document.querySelector('#modal .sheet header strong').textContent`)) === '资产库');
-  check('资产库尺寸固定 1200×780：内容从一屏卡片塌成一句「没有匹配」也不变',
-    mPreset.w === mEmpty.w && mPreset.h === mEmpty.h
-      && Math.abs(mPreset.w - mPreset.expectW) <= 2 && Math.abs(mPreset.h - mPreset.expectH) <= 2,
-    `${mPreset.w}×${mPreset.h} → ${mEmpty.w}×${mEmpty.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
+    emptyHit.rows === 0 && /没有匹配/.test(emptyHit.tip), JSON.stringify(emptyHit));
+  check('设置面板尺寸固定 880×640：内容塌成一句「没有匹配」也不变',
+    sSet.w === sEmpty.w && sSet.h === sEmpty.h
+      && Math.abs(sSet.w - sSet.expectW) <= 2 && Math.abs(sSet.h - sSet.expectH) <= 2,
+    `${sSet.w}×${sSet.h} → ${sEmpty.w}×${sEmpty.h}（期望 ${sSet.expectW}×${sSet.expectH}）`);
   await page.evaluate(`(() => {
-    const i = document.querySelector('#pane-wf .wf-search input');
+    const i = document.getElementById('setWfSearch');
     i.value = '';
     i.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await new Promise((r) => setTimeout(r, 250));
-  check('资产库是左右双栏：导航在左、内容在右，导航项不是胶囊',
-    mPreset.sideBySide && mPreset.navW >= 180 && mPreset.navW <= 260
-      && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
-    JSON.stringify(mPreset));
-  check('左侧导航是「图标 + 名称」：2 个 tab 的图标都填上了，文字没被吃掉',
-    mPreset.icons === 2 && mPreset.tabDisplay === 'flex'
-      && mPreset.labels.join('|') === '工作流|ComfyUI 运行记录',
-    JSON.stringify({ icons: mPreset.icons, display: mPreset.tabDisplay, labels: mPreset.labels }));
-  // 资产库退回**纯浏览**：新增 / 删除 / 导入这些管理动作只在全局设置里有一份。
-  // 早先这里也有「＋ 新增预设」和卡片上的「删除」，和设置里的导入 / 删除列表各摆一套。
-  const modalActs = await page.evaluate(`(() => {
-    const texts = [...document.querySelectorAll('#modal button')].map((b) => b.textContent.trim());
-    const tips = [...document.querySelectorAll('#modal .pane-bar .tip')].map((t) => t.textContent);
-    return {
-      texts, tips,
-      del: document.querySelectorAll('#modal .card .del').length,
-      add: document.querySelectorAll('#modal .pane-bar button').length,
-    };
-  })()`);
-  check('资产库只负责「挑一个用」：没有新增 / 删除 / 导入按钮',
-    modalActs.del === 0 && modalActs.add === 0
-      && !modalActs.texts.some((t) => /删除|新增|导入|载入/.test(t)),
-    JSON.stringify(modalActs.texts));
-  check('资产库顶上写清了管理入口在「设置 → 工作流」',
-    modalActs.tips.length === 1 && /设置 → 工作流/.test(modalActs.tips[0]),
-    JSON.stringify(modalActs.tips));
-  // 开弹窗不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
-  // 这里只验「没预加载」，不点 history 标签——CI 里没有 ComfyUI，点了反而会真报错。
-  const histPreload = await page.evaluate(`document.querySelector('#pane-history').children.length`);
-  check('打开弹窗不预加载运行记录（点那个标签页才去问 ComfyUI）', histPreload === 0, `${histPreload} 个子节点`);
-  await page.evaluate(`document.querySelector('#modalClose').click()`);
+  check('设置是左右双栏：导航在左、内容在右，导航项不是胶囊',
+    sSet.sideBySide && sSet.navW >= 150 && sSet.navW <= 220
+      && sSet.panesW > sSet.navW * 2 && sSet.tabRadius <= 12,
+    JSON.stringify(sSet));
+  check('左侧导航 5 格：图标都填上了，文字没被吃掉',
+    sSet.icons === 5 && sSet.tabDisplay === 'flex'
+      && sSet.labels.join('|') === '工作流|运行记录|外观|连接|高级',
+    JSON.stringify({ icons: sSet.icons, display: sSet.tabDisplay, labels: sSet.labels }));
+  // 开面板不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
+  // 这里只验「没预加载」，不点运行记录那一格——CI 里没有 ComfyUI，点了反而会真报错。
+  const histPreload = await page.evaluate(`document.querySelector('#set-pane-history').children.length`);
+  check('打开设置不预加载运行记录（点那一格才去问 ComfyUI）', histPreload === 0, `${histPreload} 个子节点`);
+  // 切一格：只换右边，左边导航和面板尺寸都不动
+  await page.evaluate(`document.querySelector('#setTabs .tab[data-set="look"]').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const switched = await page.evaluate(`(() => ({
+    look: !document.getElementById('set-pane-look').classList.contains('hidden'),
+    wf: document.getElementById('set-pane-wf').classList.contains('hidden'),
+    active: document.querySelector('#setTabs .tab.active').dataset.set,
+    swatches: document.querySelectorAll('#setBgSwatches .bg-swatch').length,
+  }))()`);
+  check('点左导航只换右边那一格：外观格出来了，工作流格收起，色板也在',
+    switched.look && switched.wf && switched.active === 'look' && switched.swatches > 0,
+    JSON.stringify(switched));
+  await page.evaluate(`document.querySelector('#setTabs .tab[data-set="wf"]').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(`document.querySelector('#appSettings .x').click()`);
   await new Promise((r) => setTimeout(r, 300));
 
   // 回首页：列表里应有夹具画布，hash 改成 #home
@@ -1790,15 +1794,17 @@ try {
   await page.evaluate(`document.querySelector('[data-home-act="workflows"]').click()`);
   await new Promise((r) => setTimeout(r, 900));
   const homeLib = await page.evaluate(`(() => ({
-    modal: !document.getElementById('modal').classList.contains('hidden'),
-    cards: document.querySelectorAll('#pane-wf .card').length,
+    open: !!document.getElementById('appSettings'),
+    pane: !!(document.getElementById('set-pane-wf')
+      && !document.getElementById('set-pane-wf').classList.contains('hidden')),
+    rows: document.querySelectorAll('#set-pane-wf .wf-item').length,
     onHome: !document.getElementById('home').classList.contains('hidden'),
     hash: location.hash,
   }))()`);
-  check('首页点「工作流库」：资产库弹窗盖在首页上，不跳画布',
-    homeLib.modal && homeLib.cards > 0 && homeLib.onHome && homeLib.hash === '#home',
+  check('首页点「工作流库」：直接开设置的工作流格，盖在首页上，不跳画布',
+    homeLib.open && homeLib.pane && homeLib.rows > 0 && homeLib.onHome && homeLib.hash === '#home',
     JSON.stringify(homeLib));
-  await page.evaluate(`document.querySelector('#modalClose').click()`);
+  await page.evaluate(`document.querySelector('#appSettings .x').click()`);
   await new Promise((r) => setTimeout(r, 300));
 
   // 设置弹层能开能关
@@ -1829,15 +1835,14 @@ try {
     const ids = [...box.querySelectorAll('[id]')].map((b) => b.id);
     return {
       dup: ids.filter((id, i) => ids.indexOf(id) !== i),
-      has: ['setDefaultWf', 'setWfList', 'setCats', 'setImportWf', 'setOpenLib']
+      has: ['setWfSearch', 'setWfList', 'setCats', 'setImportWf', 'setWfDefault']
         .every((id) => !!box.querySelector('#' + id)),
-      gone: ['setAddPreset', 'setManagePreset', 'setManageLibrary']
+      gone: ['setAddPreset', 'setManagePreset', 'setManageLibrary', 'setOpenLib']
         .filter((id) => !!box.querySelector('#' + id)).length,
       rows: rows.length,
       shape: rows.length
         ? [...rows[0].children].map((c) => c.tagName.toLowerCase() + (c.className ? '.' + c.className : ''))
         : [],
-      groups: [...box.querySelectorAll('#setDefaultWf optgroup')].map((g) => g.label),
       stars: rows.filter((r) => r.querySelector('.wf-star').textContent === '★').length,
       listH: Math.round(box.querySelector('#setWfList').getBoundingClientRect().height),
       libRow: rows.some((r) => r.dataset.id.indexOf('lib:') === 0),
@@ -1846,14 +1851,13 @@ try {
   check('设置里的工作流区不再重复：一组按钮 + 一份列表，旧的「新增 / 管理预设、管理库工作流」全删了',
     wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
     JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
-  check('工作流列表每行是「名字 / 分类 / 默认 / 删除」四件套，且只有一行是默认',
-    wfSet.shape.join('|') === 'b|button.wf-cat|button.wf-star|button.wf-del' && wfSet.stars === 1,
+  check('工作流列表每行是「名字 / 分类 / 默认 / 加到画布 / 删除」五件套，且只有一行是默认',
+    wfSet.shape.join('|') === 'b|button.wf-cat|button.wf-star|button.wf-use|button.wf-del'
+      && wfSet.stars === 1,
     JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
-  check('列表按内容撑开（不被 grid 压成一条线），预设和自己存进库的工作流在同一份列表里',
+  check('列表按内容撑开（不被压成一条线），预设和自己存进库的工作流在同一份列表里',
     wfSet.listH >= 96 && wfSet.libRow && wfSet.rows >= 7,
     JSON.stringify({ h: wfSet.listH, rows: wfSet.rows, lib: wfSet.libRow }));
-  check('默认工作流下拉按分类分组，第一组还是「文生图」',
-    wfSet.groups[0] === '文生图' && wfSet.groups.length >= 2, wfSet.groups.join(' / '));
 
   // 分类可以自己加：新建「我的常用」，再把库工作流挪过去
   await page.evaluate(`window.prompt = () => '我的常用'`);
@@ -1877,14 +1881,12 @@ try {
     const row = box.querySelector('#setWfList .wf-item[data-id^="lib:"]');
     return {
       cat: row ? row.querySelector('.wf-cat').textContent : '',
-      groups: [...box.querySelectorAll('#setDefaultWf optgroup')].map((g) => g.label),
       chips: [...box.querySelectorAll('.wf-chip')].map((c) => c.textContent),
     };
   })()`);
-  check('给工作流换分类：行里的胶囊跟着变，默认下拉里立刻多出这一组',
-    catMoved.cat === '我的常用' && catMoved.groups.includes('我的常用')
-      && catMoved.chips.includes('我的常用1'),
-    JSON.stringify({ cat: catMoved.cat, groups: catMoved.groups, chips: catMoved.chips }));
+  check('给工作流换分类：行里的胶囊跟着变，分类那排立刻多出这一组',
+    catMoved.cat === '我的常用' && catMoved.chips.includes('我的常用1'),
+    JSON.stringify({ cat: catMoved.cat, chips: catMoved.chips }));
 
   // 存进服务端，不是只记在内存里：关掉重开还在
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
