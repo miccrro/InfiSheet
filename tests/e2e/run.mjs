@@ -4055,12 +4055,19 @@ try {
     };
     document.querySelector('[data-panel-for="i2"] .gen-run').click();
     const seen = [];
+    // 面板上那行状态（生成中 42% · 1024×1024 · 12s）走的是另一条拼装路径：
+    // 以前它只用**当拍**的 p，某一拍没数字就退成「生成中 · …」，于是遮罩上还有 42%、
+    // 旁边那行却没有——用户看到的还是「百分比消失」。所以两处一起盯。
+    const seenSt = [];
     // 准备阶段要读工作流、跑 /api/analyze（ComfyUI 没开时这一步会慢），
     // 采样窗口给到 24s：只盯 5 个 tick，够宽但不至于把整套拖太久。
     for (let k = 0; k < 200; k++) {
       const ov = document.querySelector('.node[data-id="i2"] .gen-overlay');
       const txt = ov && !ov.classList.contains('hidden') ? ov.textContent.trim() : '';
       if (txt && seen[seen.length - 1] !== txt) seen.push(txt);
+      const stEl = document.querySelector('[data-panel-for="i2"] .gen-status');
+      const stTxt = stEl ? stEl.textContent.trim() : '';
+      if (stTxt && seenSt[seenSt.length - 1] !== stTxt) seenSt.push(stTxt);
       if (i >= ticks.length) break;
       await sleep(120);
     }
@@ -4070,7 +4077,7 @@ try {
     // 收尾：提示词和队列记录都不留给后面的用例
     const clear = document.querySelector('[data-panel-for="i2"] .gen-chips .chip:nth-child(3)');
     if (clear) clear.click();
-    return { seen, status, hits };
+    return { seen, seenSt, status, hits };
   })()`);
   const pctSeq = pctSeqBox.seen;
   const afterFirst = pctSeq.slice(Math.max(0, pctSeq.indexOf('生成中 12%')));
@@ -4078,6 +4085,14 @@ try {
     pctSeq.includes('生成中 5%') && pctSeq.includes('生成中 12%') && pctSeq.includes('生成中 30%')
       && !afterFirst.includes('生成中…'),
     JSON.stringify(pctSeqBox));
+  // 状态行同理：从它第一次带上数字那一刻起，后面**还在跑**的每一拍都必须还带着数字
+  // （「完成 · 8s」这种收尾文案本来就不该有百分比，不算在内）
+  const stSeq = pctSeqBox.seenSt || [];
+  const stFirst = stSeq.findIndex((s) => /生成中 \d+%/.test(s));
+  const stAfter = stFirst >= 0 ? stSeq.slice(stFirst).filter((s) => s.startsWith('生成中')) : [];
+  check('面板状态行也不会丢百分比（「生成中 12% · …」之后不许退成「生成中 · …」）',
+    stFirst >= 0 && stAfter.length > 0 && stAfter.every((s) => /生成中 \d+%/.test(s)),
+    JSON.stringify(stSeq));
 
   // ---- MCP：外部改画布，浏览器要自己跟上 ----
   // 服务端那条链路归 tests/mcp.py；这里验的是**前端**：它手里握着整份画布快照，

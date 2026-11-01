@@ -25,7 +25,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 路由 | `do_GET/POST/PUT/DELETE` → `api_get/api_post/api_put/api_delete`，非 `/api/` 路径走 `serve_static` |
 | 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
-| 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅 |
+| 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅。ws 一个数都没有时，`/api/job` 退一步去读 ComfyUI 控制台日志（`/internal/logs/raw`）里 tqdm 的百分比兜底 |
 | 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
@@ -66,6 +66,28 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
   （`#setWfList`，每行 名字 / 分类 / 默认 / 删除）+ 一排分类胶囊（`#setCats`）。
   `renderSetWorkflows(box)` 负责重绘，改完一处就调 `refreshSetWf()` 局部重绘——不重建整个面板，
   滚动位置不会跳回顶上。
+
+### 进度百分比：两个来源，一条规矩
+
+百分比只有两处能拿到，前端只认「最新已知」这一个值：
+
+| 来源 | 怎么来 | 什么时候用 |
+|---|---|---|
+| websocket | 后台线程订阅 ComfyUI `/ws`，`progress` / `progress_state` → `_progress_update()` 累加各节点 `value/max` 写进 `PROGRESS`（只算 `max > 1` 的节点，99 封顶） | 主来源 |
+| 控制台日志 | `GET /internal/logs/raw` 里 tqdm 行（` 42%\|███ \| 10/25`）→ `_log_progress()` 写进 `PROGRESS_LOG` | 只在 `PROGRESS` 一个数都没有时兜底 |
+
+- **两个来源分开存，不合并算**：并进一张表就成了「日志 + 真节点」两个来源一起进分母，百分比会翻倍。
+- **日志必须按提交时刻筛**：`/internal/logs/raw` 是最近 300 条的环形缓冲，上一单跑完的
+  `100%|25/25` 会一直躺在里面。`/api/run` 成功时记 `PROMPT_START[pid]`，`_log_progress()`
+  只认这之后的行，并留 3 秒余量；否则新任务刚提交就顶着 100% 不动。
+- **前端：`progress == null` 只表示「这一拍没拿到新数字」**，不是「没有百分比」。遮罩
+  （`genOverlayText`）、面板状态行、队列条目三处都沿用节点上记着的那个数，只有
+  `resetProgress`（新一轮）/ `finishProgress`（100%）/ `clearProgress`（出错/取消）才清。
+  早先只有遮罩做了沿用，状态行还在用当拍的 `p`，于是同一屏里「图上有 42%、旁边写着生成中 · …」——
+  用户看到的仍然是「百分比有几率消失」。
+- **节点重画时补一次**：`buildNode` 每次都新建一层 `.gen-overlay`（默认「隐藏 + 生成中…」），
+  所以它建完要按 `overlayVisible(n)` / `genOverlayText(n)` 补回当前状态，否则生成到一半
+  碰任何会让节点重画的按钮，图上的百分比就没了。
 
 ## 前端 `static/`
 

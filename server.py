@@ -400,6 +400,92 @@ def start_progress_ws() -> None:
     threading.Thread(target=_ws_loop, daemon=True).start()
 
 
+# --------------------------------------------------------------------------- #
+# 进度兜底：读 ComfyUI 控制台日志里的 tqdm 行
+#
+# websocket 那条链路有时会整段哑掉——ComfyUI 刚重启、client_id 撞车、局域网抖一下，
+# 表现都是「跑到一半数字没了」或者「一直只有『生成中…』」。而 ComfyUI 自己把 tqdm 的
+# 进度行（` 42%|███  | 10/25 [00:12<00:18]`）也写进了控制台日志，`GET /internal/logs/raw`
+# 就能拿到——那是它亲口说的数字，做兜底最稳。
+#
+# 两条硬规则：
+#   1. **只认「这一单提交之后」的行**。日志是最近 300 条的环形缓冲，里面永远躺着上一单
+#      的 `100%|25/25`；不按时间过滤的话，新任务刚提交就会顶着 100% 一动不动。
+#   2. **单独存 PROGRESS_LOG，不并进 PROGRESS**。并进去就成了「日志 + 真节点」两个来源
+#      一起算，百分比会翻倍；兜底就是兜底，只在 websocket 一个数都没有时才拿出来用。
+# --------------------------------------------------------------------------- #
+PROGRESS_LOG: dict[str, int] = {}
+PROMPT_START: dict[str, float] = {}
+_LOG_TQDM = re.compile(r"(\d{1,3})%\|.*?(\d+)/(\d+)")
+_LOG_TS = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
+_log_cache: dict = {"at": 0.0, "entries": []}
+_log_lock = threading.Lock()
+
+
+def _log_entries() -> list:
+    """ComfyUI 控制台日志条目（1 秒缓存）。
+
+    多个节点同时轮询时只打一次接口；老版本 ComfyUI 没有这个路由，读不到就当没有，
+    绝不让它影响主链路（进度本来就有 websocket 那份）。
+    """
+    now = time.time()
+    with _log_lock:
+        if now - _log_cache["at"] < 1.0:
+            return _log_cache["entries"]
+    try:
+        data = comfy_json("/internal/logs/raw", timeout=4)
+        entries = data.get("entries") if isinstance(data, dict) else data
+        if not isinstance(entries, list):
+            entries = []
+    except Exception:  # noqa: BLE001
+        entries = []
+    with _log_lock:
+        _log_cache["at"] = now
+        _log_cache["entries"] = entries
+    return entries
+
+
+def _log_stamp(text) -> float | None:
+    """把日志条目的 `t`（本地时间字符串）换成 epoch 秒；认不出来就 None。"""
+    m = _LOG_TS.match(str(text or ""))
+    if not m:
+        return None
+    y, mo, d, hh, mm, ss, frac = m.groups()
+    try:
+        stamp = time.mktime((int(y), int(mo), int(d), int(hh), int(mm), int(ss), 0, 0, -1))
+    except (ValueError, OverflowError):
+        return None
+    return stamp + (float("0." + frac) if frac else 0.0)
+
+
+def _log_progress(pid) -> int | None:
+    """从控制台日志里捞这一单的百分比（0~99）；捞不到就 None。
+
+    取**最后一条** tqdm 行：多采样器工作流里日志是一行行覆盖的，最新那行就是当前
+    正在跑的那个节点。100% 压成 99——采样器跑满时解码/保存还没完，写 100 会卡着不动。
+    """
+    key = str(pid or "")
+    started = PROMPT_START.get(key)
+    if not started:
+        return None
+    pct = None
+    for ent in _log_entries():
+        if not isinstance(ent, dict):
+            continue
+        m = _LOG_TQDM.search(ent.get("m") or "")
+        if not m:
+            continue
+        stamp = _log_stamp(ent.get("t"))
+        # 留 3 秒余量：/prompt 落地到第一行 tqdm 之间，两边时钟可能差那么一点
+        if stamp is not None and stamp < started - 3:
+            continue
+        pct = int(m.group(1))
+    if pct is None:
+        return None
+    pct = max(0, min(99, pct))
+    PROGRESS_LOG[key] = pct
+    return pct
+
 
 # --------------------------------------------------------------------------- #
 # ComfyUI 通信
@@ -1392,7 +1478,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
                    "features": ["presets", "projects", "canvas_history", "ui_import", "mcp",
-                                "comfy_config", "wf_categories", "wf_meta"]}
+                                "comfy_config", "wf_categories", "wf_meta", "progress_log"]}
             # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
@@ -1501,7 +1587,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail("缺少 pid", 400)
             out = job_status(pid)
             with PROGRESS_LOCK:
-                out["progress"] = PROGRESS.get(pid)
+                pct = PROGRESS.get(pid)
+            # websocket 一个数都没报（或者整条链路哑了）时，去 ComfyUI 控制台日志里读
+            # tqdm 的百分比兜底——这是用户提的那条路：它亲口打印的数字，最不容易漏。
+            # 只在跑着/排着的时候读：已经结束的任务读出来也没有意义，还白花一次请求。
+            if pct is None and out.get("status") in ("running", "queued"):
+                pct = _log_progress(pid)
+            out["progress"] = pct
             return self.json_out(out)
 
         if path == "/api/assets":
@@ -1671,7 +1763,18 @@ class Handler(BaseHTTPRequestHandler):
                 data = {"raw": raw.decode("utf-8", "replace")}
             if status != 200:
                 return self.json_out({"ok": False, "status": status, "error": data}, 200)
-            return self.json_out({"ok": True, "prompt_id": data.get("prompt_id"),
+            pid = data.get("prompt_id")
+            if pid:
+                # 记下提交时刻：日志兜底要靠它把「上一单的 100%」筛掉（见 _log_progress）
+                PROMPT_START[str(pid)] = time.time()
+                PROGRESS_LOG.pop(str(pid), None)
+                if len(PROMPT_START) > 400:
+                    # 只清一小时前的：整表 clear 会把**正在跑**的那单的起点一起抹掉，
+                    # 那条链路的兜底就当场哑了
+                    cutoff = time.time() - 3600
+                    for old in [k for k, v in PROMPT_START.items() if v < cutoff]:
+                        PROMPT_START.pop(old, None)
+            return self.json_out({"ok": True, "prompt_id": pid,
                                   "number": data.get("number"), "node_errors": data.get("node_errors")})
 
         if path == "/api/cancel":

@@ -547,6 +547,13 @@
       const overlay = document.createElement('div');
       overlay.className = 'gen-overlay hidden';
       overlay.innerHTML = '<span class="gen-overlay-text">生成中…</span>';
+      // 重画节点（改尺寸、换图、撤销、切张数…）每次都会新建这层遮罩，默认是「隐藏 + 生成中…」。
+      // 不在这儿按当前状态补一次的话，生成到一半碰一下任何会让节点重画的按钮，图上那个
+      // 42% 就没了（要等下一拍轮询才回来）——这也是「百分比会消失」的一个来源。
+      if (overlayVisible(n)) {
+        overlay.classList.remove('hidden');
+        overlay.querySelector('.gen-overlay-text').textContent = genOverlayText(n);
+      }
       thumb.appendChild(overlay);
       body.appendChild(thumb);
       // 扩图模式的边框在下面「挂生成面板」那一步一起建：参数条要并进面板，
@@ -2777,9 +2784,15 @@
       // 面板重建、gen 被拷贝都不会让它丢，取消时一定能停掉这一次轮询。
       g.job.poll = pollPrompt(res.prompt_id,
         (label, secs, p) => {
-          g.status = `${label}${pctText(p)} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote} · ${secs}s`;
+          // 「这一拍没数字」不等于「没有百分比」：排队中、ws 还没到第一个采样器、换采样器
+          // 的那一瞬间，服务端都会短暂报不出数，可上一次的 42% 仍然成立。状态行必须用
+          // 「最新已知」的那个数去拼，否则它会在「生成中 42% · …」和「生成中 · …」之间
+          // 来回跳——用户看到的就是「百分比会消失」（遮罩那边早就做了同样的沿用，
+          // 只有这一行和队列条目还在用当拍的 p，所以只消失半秒又回来）。
+          const pct = typeof p === 'number' ? p : (typeof n.progress === 'number' ? n.progress : null);
+          g.status = `${label}${pctText(pct)} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote} · ${secs}s`;
           setProgress(n, p);
-          patchJob(g.job, { phase: label === '排队中' ? 'queued' : 'running', progress: p, secs });
+          patchJob(g.job, { phase: label === '排队中' ? 'queued' : 'running', progress: pct, secs });
           refreshGenPanel(n);
         },
         async (arts, err, secs) => {
@@ -5062,7 +5075,8 @@
         n.status = res.status;
         n.statusText = `${res.status === 'queued' ? '排队中' : '生成中'} · ${secs}s`;
         setProgress(n, res.progress ?? null);
-        patchJob(n.job, { phase: res.status, progress: res.progress ?? null, secs });
+        // 和图片节点同一条规矩：这一拍没数字就沿用上一次的，别把队列条目上的 % 抹掉
+        patchJob(n.job, { phase: res.status, progress: n.progress ?? null, secs });
         paintWfStatus(n);          // 轻量更新，避免打断用户输入
         return;
       }

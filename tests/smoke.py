@@ -361,6 +361,38 @@ def main() -> int:
         check("进度：采样器还没开工时不编数字（留空 →「生成中…」）",
               "tk4" not in srv.PROGRESS, str(srv.PROGRESS.get("tk4")))
 
+        # ---- 进度兜底：读 ComfyUI 控制台日志里的 tqdm 行 ----
+        # websocket 那条链路哑掉时只剩这条路。它必须分得清「这一单的 42%」和「上一单的
+        # 100%」——日志是最近 300 条的环形缓冲，上一单跑完那行 100% 会一直躺在里面，
+        # 不按提交时刻筛掉的话，新任务刚提交就会顶着 100% 一动不动。
+        real_entries = srv._log_entries
+
+        def _stamp(ts: float) -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)) + ".000000"
+
+        now = time.time()
+        log = [
+            {"t": _stamp(now - 600), "m": "\r100%|██████████| 25/25 [01:18<00:00,  3.13s/it]"},
+            {"t": _stamp(now - 2), "m": "\r 42%|████      | 10/25 [00:12<00:18,  1.38s/it]"},
+            {"t": _stamp(now - 1), "m": "[INFO] got prompt"},
+        ]
+        srv._log_entries = lambda: log
+        srv.PROMPT_START["lg"] = now - 60
+        srv.PROGRESS_LOG.clear()
+        p_log = srv._log_progress("lg")
+        check("进度兜底：日志里只认本单的 tqdm 行（上一单的 100% 不算）", p_log == 42, str(p_log))
+        log.append({"t": _stamp(now), "m": "\r100%|██████████| 25/25 [02:22<00:00,  5.72s/it]"})
+        p_log_full = srv._log_progress("lg")
+        check("进度兜底：日志说 100% 也只报 99%（100% 留给「完成」那一刻）",
+              p_log_full == 99, str(p_log_full))
+        srv._log_entries = lambda: [{"t": _stamp(now - 600), "m": "100%|██| 25/25"}]
+        check("进度兜底：日志里只有上一单的行就不给数字（宁可不显示，也不显示错的）",
+              srv._log_progress("lg") is None, str(srv._log_progress("lg")))
+        check("进度兜底：没记过提交时刻的 pid 直接跳过（没有起点就无从筛）",
+              srv._log_progress("lg-nope") is None, "")
+        srv._log_entries = real_entries
+        srv.PROMPT_START.pop("lg", None)
+
         status, _ = request(base, "/definitely-not-here")
         check("未知路由 404", status == 404, f"HTTP {status}")
 
