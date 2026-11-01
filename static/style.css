@@ -48,16 +48,6 @@ body {
   width: 17px; height: 17px; fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
-#bar .icon.orb {
-  width: 32px; height: 32px; border-radius: 50%;
-  background: conic-gradient(from 200deg, #6ea8fe, #a78bfa, #34d399, #6ea8fe);
-  margin-left: 0;
-}
-#bar .icon.orb:hover { background: conic-gradient(from 200deg, #86b7ff, #b79bff, #4fe0ac, #86b7ff); }
-#bar .icon.orb .orb-dot {
-  width: 11px; height: 11px; border-radius: 50%;
-  background: rgba(20, 20, 20, 0.55); border: 1px solid rgba(255, 255, 255, 0.45);
-}
 #bar .vsep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); margin: 0 2px; }
 
 /* ---------- 顶部：项目栏 + 状态 ---------- */
@@ -166,11 +156,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .home-top { display: flex; align-items: center; justify-content: space-between; }
 .home-brand { display: flex; align-items: center; gap: 12px; }
+/* 品牌标：直接用 app 图标（黑底 + 斜放的纸和笔）。
+   以前是一块 conic-gradient 彩球——和图标库里的任何东西都没关系，纯装饰。
+   这里只给尺寸和一点外发光，图形本身在 SVG 里画好了。 */
 .logo-orb {
   width: 36px; height: 36px; border-radius: 13px; flex: 0 0 auto;
-  background: conic-gradient(from 200deg, #6ea8fe, #a78bfa, #34d399, #6ea8fe);
-  box-shadow: 0 8px 22px rgba(110, 168, 254, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  opacity: 0.95;
+  display: block;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 .home-brand b { display: block; font-size: 14px; letter-spacing: 0.2px; }
 .home-brand span { font-size: 11.5px; color: var(--faint); }
@@ -1714,42 +1706,34 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 #bar .icon.prime svg { width: 19px; height: 19px; stroke-width: 1.9; }
 #bar .vsep { height: 22px; margin: 0 4px; }
-#bar .icon.orb { display: none; }
 
+/* 左下角那颗「返回首页」：以前是一颗彩色玻璃球（和品牌无关的装饰）。
+   现在直接就是 app 图标，方角跟着图标走——图标本身是圆角方块，套在圆形按钮里会被切掉四个角。
+   圆角得写在这里，全局那条 button:not(…) 的特异度更高，所以它被排除在外（见文件末尾那条）。 */
 #dockWrap .dock-orb {
-  width: 46px; height: 46px; border-radius: 50%; padding: 0;
-  border: 2px solid rgba(255, 255, 255, 0.16);
-  background: conic-gradient(from 200deg, #6ea8fe, #a78bfa, #34d399, #6ea8fe);
-  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.03), 0 10px 24px rgba(0, 0, 0, 0.5);
+  width: 48px; height: 48px; padding: 0; border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent; overflow: hidden;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
   display: grid; place-items: center; cursor: pointer;
   transition: transform 0.16s, box-shadow 0.16s;
 }
+#dockWrap .dock-orb img { width: 100%; height: 100%; display: block; }
 #dockWrap .dock-orb:hover {
   transform: translateY(-1px);
-  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.05), 0 12px 28px rgba(0, 0, 0, 0.55);
-}
-#dockWrap .dock-orb .orb-dot {
-  width: 15px; height: 15px; border-radius: 50%;
-  background: rgba(20, 20, 20, 0.5); border: 1.5px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.58);
 }
 
 /* 对齐微调：顶栏间距、dock 图标颜色 */
 #projectBar { gap: 4px; padding: 0 6px; }
 #projectName { width: 126px; }
 
-/* 参考图对齐：去掉首页按钮边框、图标更细、分割线放时钟后、orb 做成玻璃球 */
+/* 参考图对齐：去掉首页按钮边框、图标更细、分割线放时钟后 */
 #projectBar .icon.tiny[data-act="home"] {
   border-color: transparent; background: transparent;
 }
 #projectBar .icon.tiny[data-act="home"]:hover { background: rgba(255, 255, 255, 0.06); }
 #bar .icon svg { width: 16px; height: 16px; stroke-width: 1.65; }
-#dockWrap .dock-orb {
-  border-color: rgba(255, 255, 255, 0.22);
-  background:
-    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.95) 0 5%, rgba(255, 255, 255, 0.22) 16%, transparent 38%),
-    radial-gradient(circle at 62% 70%, #7ef0d0 0 16%, #67c7ff 40%, #8f8bff 66%, #b06bff 100%);
-}
-#dockWrap .dock-orb .orb-dot { display: none; }
 
 /* 画布菜单的 ▾ 换成小三角，跟参考图一致 */
 #canvasMenuBtn .caret {
@@ -1818,7 +1802,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #canvasMenuBtn { height: 32px; }
 #viewTools .vt { width: 32px; height: 32px; }
 #viewTools .vt svg { width: 17px; height: 17px; }
-#dockWrap .dock-orb { width: 48px; height: 48px; }
 
 /* ---------- 背景：#1a1a1a + #474747 点阵，20px ---------- */
 #stage {
@@ -1975,7 +1958,7 @@ button.primary { border-radius: 999px; }
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。
    风格格子和它的关闭键同理：缩略图要方方正正地铺成宫格，圆角 999px 会把图裁成圆圈
    （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn):not(.wf-star):not(.wf-del) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }

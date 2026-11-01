@@ -65,7 +65,7 @@
 ### 1.5 文档与分发
 
 - **接口表漏了 `/api/presets`**：`server.py:953`（GET 列表）、`:1113`（DELETE）都实现了，README 的接口表没有。
-- **截图过期**：`docs/screenshot-*.png` 是 10-25 的，之后 UI 改过多轮（`npm run shots` 可重拍）。
+- **截图过期**：`docs/screenshot-genpanel.png` 还是 10-25 的（画布那张已按新顶栏 + 新图标重拍）。`npm run shots` 可重出全套。
 - **Windows 专属路径没有 CI**：`启动.bat` 只在 Windows 手工验过，CI 是 `ubuntu-latest`。
 - **4K 无预警**：面板只有「本地偏慢」四个字，没有基于显存的实际估算。
 
