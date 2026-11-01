@@ -8500,8 +8500,8 @@
     };
     n.gen.outpaint = { l: 0, t: 0, r: 0, b: 0, w, h };
     syncOutpaintDims(n);
-    // 扩图靠遮罩驱动：不吃遮罩的工作流跑出来会「原图原样回来」，先换掉
-    ensureMaskWorkflow(n);
+    // 扩图要的是「能吃图」：吃遮罩的只补新边，只吃图的整张重画。只有纯文生图才必须换掉
+    ensureOutpaintWorkflow(n);
     // 提示词只在空着的时候填模板，别覆盖用户自己写的
     if (!String(n.gen.prompt || '').trim()) {
       n.gen.prompt = OP_PROMPT;
@@ -8563,8 +8563,17 @@
     // 原有笔画整体平移，再补上新长出来的四条带子
     const old = maskDocOf(n);
     const strokes = ((old && old.strokes) || []).map(shiftStroke(f.ox, f.oy));
-    outpaintBands(W, H, f.nw, f.nh, f.ox, f.oy)
-      .forEach((r) => strokes.push({ tool: 'rect', rect: r }));
+    // 新边要不要写成遮罩笔画，看用户选的工作流**吃不吃遮罩**：
+    //   吃遮罩（局部重绘）→ 写，只重绘这几圈，最准；
+    //   只吃图不吃遮罩（图生图 / 图像编辑）→ 不写，新边留透明，ComfyUI 的 LoadImage
+    //   会把它算成黑边，模型整张重画一遍。两条路都能扩，只是精度不同。
+    // 早先这里无条件写遮罩，于是「不吃遮罩的工作流」全被 reconcileWorkflow 换掉，
+    // 用户看到的就是「我选的工作流一点生成就跳回默认那个」。
+    const wfNow = presetOptions().find((o) => o.id === (n.gen && n.gen.wf));
+    if (!wfNow || wfNow.alphaMask) {
+      outpaintBands(W, H, f.nw, f.nh, f.ox, f.oy)
+        .forEach((r) => strokes.push({ tool: 'rect', rect: r }));
+    }
     const doc = { w: f.nw, h: f.nh, strokes };
     // 换图：上传缓存必须清掉，否则 ensureUploaded 会把扩图前那个文件当成参考图，
     // 遮罩又按新尺寸烘进旧图，两头错位。
@@ -8748,16 +8757,25 @@
     };
 
     const openWfMenu = () => {
-      const list = presetOptions();
-      if (!list.length) { flash('还没有可用工作流：先在 ComfyUI 里跑一次，再从「工作流库 → 运行记录」导入'); return; }
-      openPopMenu(btnOf('wf'), list.map((o) => [`${o.catLabel} · ${o.label}`, () => {
-        n.gen.wf = o.id;
-        n.gen.wfAuto = false;      // 手选过就别再被「按参考图自动换」覆盖
-        queueSave();
-        commit();
-        syncBar();
-        syncGenOpts(n);
-      }, o.id === n.gen.wf ? 'active' : '']), '工作流');
+      // 扩图只列**吃图**的工作流：纯文生图喂不进图，选了也只会重新生成一张。
+      // 前缀标出它走哪条路——「遮罩」只重绘新长出来的边（最准），「整图」整张重画一遍。
+      const list = presetOptions().filter((o) => o.image);
+      if (!list.length) {
+        flash('还没有能吃图的工作流：扩图要么用局部重绘（吃遮罩），要么用图生图 / 图像编辑');
+        return;
+      }
+      openPopMenu(btnOf('wf'), list.map((o) => [
+        `${o.alphaMask ? '遮罩' : '整图'} · ${o.label}`,
+        () => {
+          n.gen.wf = o.id;
+          n.gen.wfAuto = false;      // 手选过就别再被「按参考图自动换」覆盖
+          queueSave();
+          commit();
+          syncBar();
+          syncGenOpts(n);
+        },
+        o.id === n.gen.wf ? 'active' : ''],
+      ), '工作流（只列吃图的）');
     };
 
     const openSizeMenu = () => {
@@ -9095,7 +9113,7 @@
       }
       g.wf = hit.id;
       paintWfChip(n);
-      flash(`这张图有遮罩，自动切到「${hit.label}」`);
+      flash(`这张图有遮罩，只能用吃遮罩的工作流，已切到「${hit.label}」`);
       queueSave();
       return true;
     }
@@ -9131,6 +9149,28 @@
       }
     }
     return true;
+  }
+
+  // 扩图对工作流的唯一硬要求是「**吃图**」：
+  //   吃遮罩（局部重绘）→ 只重绘新长出来的那几圈，最准；
+  //   只吃图不吃遮罩（图生图 / 图像编辑）→ 整张重画一遍，新边透明→黑边，靠模型补；
+  //   完全不吃图（纯文生图）→ 喂进去的图会被默默丢掉，出来是一张全新的图，必须换掉。
+  // 早先这里直接调 ensureMaskWorkflow（要求吃遮罩），于是用户选了别的工作流，
+  // 一点生成就被静默换成局部重绘——看起来就是「我选的根本不生效」。
+  function ensureOutpaintWorkflow(n) {
+    const g = n && n.gen;
+    if (!g) return null;
+    const opts = presetOptions();
+    const cur = opts.find((o) => o.id === g.wf);
+    if (cur && cur.image) return cur;
+    const hit = opts.find((o) => o.alphaMask) || opts.find((o) => o.image);
+    if (!hit) return null;
+    const from = cur ? cur.label : '当前工作流';
+    g.wf = hit.id;
+    paintWfChip(n);
+    queueSave();
+    flash(`「${from}」不吃图，扩图用不上它，已换成「${hit.label}」`);
+    return hit;
   }
 
   // 当前工作流吃不了遮罩就切到能吃的那张，并说清楚换成了什么（不静默换）

@@ -3598,6 +3598,82 @@ try {
     undone.w === 16 && undone.h === 16 && !undone.pill && /1:1 · 1K/.test(undone.opt),
     JSON.stringify(undone));
 
+  // ---- 扩图的工作流由用户说了算 ----
+  // 早先扩图面板列的是**全部**工作流，但生成时 reconcileWorkflow 只认「吃遮罩」的，
+  // 于是选了别的（比如 Qwen 图像编辑）一点生成就被换成局部重绘——用户的原话是
+  // 「虽然可以选择工作流，但一旦点击生成就跳转到默认的工作流」。
+  // 现在：下拉只列吃图的（前缀标出「遮罩 / 整图」两条路），选了谁就用谁。
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="outpaint"]').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const wfMenuBtn = await page.center('.node.selected .op-bar [data-of="wf"]');
+  await page.clickAt(wfMenuBtn.x, wfMenuBtn.y, { settle: 400 });
+  const opWfMenu = await page.evaluate(`(() => ({
+    title: (document.querySelector('.popmenu .popmenu-title') || {}).textContent || '',
+    items: [...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()),
+  }))()`);
+  check('扩图的工作流下拉只列吃图的，并标出「遮罩 / 整图」两条路',
+    /只列吃图的/.test(opWfMenu.title) && opWfMenu.items.length > 0
+      && opWfMenu.items.every((t) => /^(遮罩|整图) · /.test(t))
+      && opWfMenu.items.some((t) => t.startsWith('遮罩 · ')),
+    JSON.stringify(opWfMenu));
+
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
+    .find((b) => b.textContent.trim().startsWith('整图')).click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const opPick = await page.evaluate(`(() => {
+    const b = document.querySelector('.node.selected .op-bar [data-of="wf"]');
+    return b ? b.textContent.trim() : '';
+  })()`);
+  check('选了「整图」那条，参数条上立刻显示它（不是还写着局部重绘）',
+    !!opPick && !/局部重绘/.test(opPick), opPick);
+
+  await page.evaluate(`document.querySelector('.node.selected .op-bar [data-of="size"]').click()`);
+  await new Promise((r) => setTimeout(r, 350));
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
+    .find((b) => b.textContent.trim() === '16:9').click()`);
+  await new Promise((r) => setTimeout(r, 500));
+  await page.evaluate(`(() => {
+    window.__realFetch = window.fetch;
+    window.fetch = (u, o) => (String(u).includes('/api/run')
+      ? Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint-2' }), { status: 200 }))
+      : window.__realFetch(u, o));
+  })()`);
+  await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
+  await page.waitFor(`!document.querySelector('.node.selected .op-sel')`, 8000).catch(() => null);
+  await new Promise((r) => setTimeout(r, 800));
+  const opKeep = await page.evaluate(`(() => {
+    const el = document.querySelector('.node.selected');
+    const im = el.querySelector('.thumb img');
+    const cv = document.createElement('canvas');
+    let corner = null;
+    if (im && im.naturalWidth) {
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      cv.getContext('2d').drawImage(im, 0, 0);
+      const d = cv.getContext('2d').getImageData(1, 1, 1, 1).data;
+      corner = [d[0], d[1], d[2], d[3]];
+    }
+    window.fetch = window.__realFetch;
+    return {
+      wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
+      pill: (el.querySelector('.n-mask') || {}).textContent || '',
+      w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
+      corner,
+    };
+  })()`);
+  check('点生成后用的还是选的那个工作流（不再被换成局部重绘），也不硬塞一个遮罩',
+    opKeep.wf === opPick && !/遮罩/.test(opKeep.pill)
+      && opKeep.w > opKeep.h && opKeep.corner && opKeep.corner[3] === 0,
+    JSON.stringify({ picked: opPick, ...opKeep }));
+
+  // 这一跑同样被挡掉了，等 busy 落地再收尾（后面还有好几处「点生成」）
+  await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
+    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+  // 选工作流 + 烘焙各压了一条撤销记录，退两次才回到「开扩图之前」
+  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
+  await new Promise((r) => setTimeout(r, 350));
+  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
+  await new Promise((r) => setTimeout(r, 500));
+
   await selectImg();
   await new Promise((r) => setTimeout(r, 250));
   // 抠图：整张交给图像编辑，必须挑一个真吃图的工作流
