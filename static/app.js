@@ -8754,6 +8754,8 @@
       btnOf('res').title = '输出分辨率：按当前画布比例缩放到目标长边';
       btnOf('batch').innerHTML = `<span>${n.gen.batch || 1} 张</span><i class="of-caret"></i>`;
       readout.textContent = `${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
+      // 一行放不下时这串数字会被省略号截断，全文放 title 里
+      readout.title = `原图 ${op.w} × ${op.h} → 画布 ${f.nw} × ${f.nh}`;
     };
 
     const openWfMenu = () => {

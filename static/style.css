@@ -2915,12 +2915,27 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .node .of-input::placeholder { color: var(--faint); }
 .node .of-input:hover { background: rgba(0, 0, 0, 0.32); }
 .node .of-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.32); background: rgba(0, 0, 0, 0.38); }
-/* 下行：参数 + 取消 + 状态 + 生成。取消靠右站，别和左边那串参数挤在一起 */
-.of-params { gap: 2px; }
-.of-params .of-btn.ghost { margin-left: auto; }
+/* 下行：参数 + 取消 + 状态 + 生成。取消靠右站，别和左边那串参数挤在一起。
+   **这一行不许换行**：以前是 wrap，工作流名长一点（Qwen-image-2.1图像编辑）+ 读数长一点
+   （1056 × 1216 → 1648 × 1216）+ 状态长一点（完成 · 77s · 1 张），生成按钮就被挤到下一行
+   单独占一行，看着像面板多长了一条腿。放不下时让能截断的各自截断。 */
+.of-params { gap: 2px; flex-wrap: nowrap; }
+/* 工作流名可能很长：给它上限，超了省略号（文字在 span 里，ellipsis 才生效） */
+.of-params .of-btn[data-of="wf"] { flex: 0 1 auto; min-width: 0; max-width: 200px; }
+.of-params .of-btn[data-of="wf"] > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.of-params .of-btn:not([data-of="wf"]) { flex: 0 0 auto; }
+/* 「原图 → 画布」读数也一样：宽画幅下这串数字能长到 180px */
+.of-params .of-read { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 状态文字是从 `.gen-bar` 搬过来的：这里不许它抢参数的位置 */
-.of-params .gen-status { flex: 0 1 auto; max-width: 40%; padding: 0 4px; }
+.of-params .gen-status { flex: 0 1 auto; min-width: 0; max-width: 34%; padding: 0 4px; }
+.of-params .of-btn.ghost { flex: 0 0 auto; margin-left: auto; }
 .of-params .gen-run { flex: 0 0 32px; }
+/* 面板窄到真放不下时（手机 / 分屏）退回换行——总比把生成按钮切到面板外面强 */
+@media (max-width: 560px) {
+  .of-params { flex-wrap: wrap; }
+}
 
 /* 扩图期间整个面板只剩这一条：上传/素材/清空/风格、大提示词框、底下那排全部让位。
    扩图时这些要么用不上（图已经定了），要么和这条重复（工作流 / 尺寸 / 张数）。

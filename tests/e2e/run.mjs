@@ -3310,6 +3310,24 @@ try {
         ? panel.querySelector('.gen-prompt').textContent.trim() : null,
       runInBar: !!bar && !!bar.querySelector('.gen-run'),
       statusInBar: !!bar && !!bar.querySelector('.gen-status'),
+      // 参数行必须**单行**：以前是 flex-wrap，工作流名 + 读数 + 状态一起变长时，
+      // 生成按钮被挤到下一行单独占一行（用户截图里那个孤零零的 ↑）
+      paramRow: (() => {
+        const row = bar && bar.querySelector('.of-params');
+        if (!row) return null;
+        const rr = row.getBoundingClientRect();
+        const kids = [...row.children].map((c) => c.getBoundingClientRect());
+        // 每个孩子都完整落在这**一行**里 = 没换行。别拿 top 相等去比：
+        // 小字号元素是垂直居中的，top 天然比行顶低几个像素。
+        return {
+          h: Math.round(rr.height),
+          w: Math.round(rr.width),
+          scrollW: row.scrollWidth,
+          inside: kids.every((r) => r.top >= rr.top - 1 && r.bottom <= rr.bottom + 1),
+          // 生成按钮的右边缘不能越过参数条（越了就是溢出到面板外面）
+          fits: kids.every((r) => r.right <= rr.right + 1 && r.left >= rr.left - 1),
+        };
+      })(),
       buttons: bar ? [...bar.querySelectorAll('[data-of]')].map((b) => b.dataset.of) : [],
       labels: bar ? ['wf', 'size', 'res', 'batch', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
       read: bar ? bar.querySelector('.of-read').textContent.trim() : '',
@@ -3348,6 +3366,36 @@ try {
   check('面板退到画布外框下沿外面（不压住新扩出来的地方），横向对着外框中线',
     outUi.frameGap >= 8 && Math.abs(outUi.frameDx) <= 2,
     JSON.stringify({ gap: outUi.frameGap, dx: outUi.frameDx }));
+  // 工作流名 + 读数 + 状态一起变长时，生成按钮曾被挤到下一行单独占一行。
+  // 参数行现在是 nowrap + 能截断的各自截断，所以：同一行、且都不越出这一条。
+  check('参数行是单行：工作流 / 尺寸 / 分辨率 / 张数 / 读数 / 取消 / 状态 / 生成 都在同一行，不溢出',
+    !!outUi.paramRow && outUi.paramRow.inside && outUi.paramRow.fits
+      && outUi.paramRow.h < 34 && outUi.paramRow.scrollW <= outUi.paramRow.w + 1,
+    JSON.stringify(outUi.paramRow));
+  // 用户截图里的触发条件：状态变成「完成 · 77s · 1 张」、读数也是一长串（1056 × 1216 → 1648 × 1216）
+  const paramLong = await page.evaluate(`(() => {
+    const row = document.querySelector('.node.selected .of-params');
+    const st = row.querySelector('.gen-status');
+    const read = row.querySelector('.of-read');
+    const oldSt = st.textContent, oldRead = read.textContent;
+    st.textContent = '完成 · 77s · 1 张';
+    read.textContent = '1056 × 1216 → 1648 × 1216';
+    const rr = row.getBoundingClientRect();
+    const kids = [...row.children].map((c) => c.getBoundingClientRect());
+    const out = {
+      inside: kids.every((r) => r.top >= rr.top - 1 && r.bottom <= rr.bottom + 1),
+      fits: kids.every((r) => r.right <= rr.right + 1),
+      h: Math.round(rr.height),
+      scrollW: row.scrollWidth, w: row.clientWidth,
+    };
+    st.textContent = oldSt;
+    read.textContent = oldRead;
+    return out;
+  })()`);
+  check('状态变长（「完成 · 77s · 1 张」）加长读数时，参数行仍然单行、不把生成按钮挤到下一行',
+    paramLong.inside && paramLong.fits && paramLong.h < 34
+      && paramLong.scrollW <= paramLong.w + 1,
+    JSON.stringify(paramLong));
   check('刚打开时边框和原图一样大（还没扩），尺寸档报「原图」、读数是「原图 → 画布」',
     outUi.stage[0] === outUi.img[0] && outUi.stage[1] === outUi.img[1] && outUi.bands === 0
       && outUi.labels[1] === '原图'
@@ -3632,10 +3680,13 @@ try {
   await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
     .find((b) => b.textContent.trim() === '16:9').click()`);
   await new Promise((r) => setTimeout(r, 500));
+  // 这次让提交**直接失败**（不是返回假 prompt_id）：烘焙在提交之前就做完了，
+  // 断言要看的全在那一步；而失败会让节点立刻退出 busy——
+  // 留一个假任务在轮询里，后面「遮罩清掉后自动换工作流」那条用例点生成会被 busy 吞掉。
   await page.evaluate(`(() => {
     window.__realFetch = window.fetch;
     window.fetch = (u, o) => (String(u).includes('/api/run')
-      ? Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint-2' }), { status: 200 }))
+      ? Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }))
       : window.__realFetch(u, o));
   })()`);
   await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
