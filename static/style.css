@@ -2800,22 +2800,21 @@ button.primary:hover,
 #statusChip #mcpChip .mcp-go { color: var(--faint); font-size: 12px; line-height: 1; }
 #statusChip #mcpChip:hover .mcp-go { color: var(--accent); }
 
-#mcpSetup { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
-#mcpSetup .sheet { width: 720px; max-width: 94vw; max-height: 90vh; display: flex; flex-direction: column; }
-#mcpSetup .mcp-body { padding: 14px 16px 16px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
-
-#mcpSetup .mcp-status {
+/* MCP 接入：设置面板「连接」格里的第三块。
+   选中态和主按钮一律中性白——整个面板都不用主题蓝，这里也一样 */
+.mcp-block { display: flex; flex-direction: column; gap: 10px; }
+.mcp-block .mcp-status {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; border-radius: 10px;
   background: var(--panel-2); border: 1px solid var(--line);
   font-size: 12.5px; color: var(--dim);
 }
-#mcpSetup .mcp-status.on { color: #7fd8b8; border-color: rgba(127, 216, 184, 0.35); }
-#mcpSetup .mcp-status b { color: var(--text); font-weight: 600; }
+.mcp-block .mcp-status.on { color: #7fd8b8; border-color: rgba(127, 216, 184, 0.35); }
+.mcp-block .mcp-status b { color: var(--text); font-weight: 600; }
 
-#mcpSetup .mcp-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-#mcpSetup .mcp-k { flex: 0 0 66px; font-size: 11.5px; color: var(--faint); }
-#mcpSetup .mcp-row code {
+.mcp-block .mcp-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mcp-block .mcp-k { flex: 0 0 66px; font-size: 11.5px; color: var(--faint); }
+.mcp-block .mcp-row code {
   flex: 1 1 auto; min-width: 0;
   padding: 6px 9px; border-radius: 8px;
   background: rgba(0, 0, 0, 0.28); border: 1px solid var(--line);
@@ -2823,43 +2822,45 @@ button.primary:hover,
   font-size: 11.5px; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#mcpSetup .mcp-flag { flex: 0 0 auto; font-size: 11px; color: var(--faint); }
-#mcpSetup .mcp-flag.ok { color: var(--ok); }
+.mcp-block .mcp-flag { flex: 0 0 auto; font-size: 11px; color: var(--faint); }
+.mcp-block .mcp-flag.ok { color: var(--ok); }
 
-#mcpSetup .mcp-tip { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dim); }
-#mcpSetup .mcp-tip.dim { color: var(--faint); }
-#mcpSetup .mcp-tip code { font-size: 11.5px; color: var(--text); }
+.mcp-block .mcp-tip { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dim); }
+.mcp-block .mcp-tip.dim { color: var(--faint); }
+.mcp-block .mcp-tip code { font-size: 11.5px; color: var(--text); }
 
-#mcpSetup .mcp-tabs { display: flex; gap: 6px; }
-#mcpSetup .mcp-tab {
+.mcp-block .mcp-tabs { display: flex; gap: 6px; }
+.mcp-block .mcp-tab {
   padding: 6px 11px; border-radius: 8px; cursor: pointer;
   background: transparent; border: 1px solid var(--line); color: var(--dim);
   font-size: 12px; line-height: 1;
 }
-#mcpSetup .mcp-tab:hover { color: var(--text); border-color: #4a4a4a; }
-#mcpSetup .mcp-tab.on { background: rgba(110, 168, 254, 0.16); border-color: rgba(110, 168, 254, 0.55); color: #cfe0ff; }
+.mcp-block .mcp-tab:hover { color: var(--text); border-color: #4a4a4a; }
+.mcp-block .mcp-tab.on { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.55); color: #fff; }
 
-#mcpSetup .mcp-pane { display: flex; flex-direction: column; gap: 10px; }
-#mcpSetup .mcp-json {
+.mcp-block .mcp-pane { display: flex; flex-direction: column; gap: 10px; }
+/* 不给自己再套一层滚动条：外层那一格本来就在滚，嵌套滚动只会让人不知道该滚哪个。
+   横向仍然可滚——JSON 里有很长的绝对路径，换行反而更难读。 */
+.mcp-block .mcp-json {
   margin: 0; padding: 12px 14px; border-radius: 10px;
   background: rgba(0, 0, 0, 0.34); border: 1px solid var(--line);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 11.5px; line-height: 1.65; color: #d7dbe0;
-  max-height: 210px; overflow: auto; white-space: pre;
+  overflow-x: auto; white-space: pre;
 }
-#mcpSetup .mcp-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#mcpSetup .mcp-btn {
+.mcp-block .mcp-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mcp-block .mcp-btn {
   padding: 6px 12px; border-radius: 8px; cursor: pointer;
   background: transparent; border: 1px solid var(--line); color: var(--dim);
   font-size: 12px; line-height: 1;
 }
-#mcpSetup .mcp-btn:hover { color: var(--text); border-color: #4a4a4a; }
-#mcpSetup .mcp-btn.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 600; }
-#mcpSetup .mcp-btn.primary:hover { background: #8bbcfd; }
-#mcpSetup .mcp-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
-#mcpSetup .mcp-note { font-size: 11.5px; color: var(--faint); min-width: 0; }
-#mcpSetup .mcp-note.ok { color: var(--ok); }
-#mcpSetup .mcp-note.err { color: var(--err); }
+.mcp-block .mcp-btn:hover { color: var(--text); border-color: #4a4a4a; }
+.mcp-block .mcp-btn.primary { background: #ffffff; border-color: transparent; color: #141414; font-weight: 600; }
+.mcp-block .mcp-btn.primary:hover { background: #f2f2f2; color: #141414; }
+.mcp-block .mcp-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.mcp-block .mcp-note { font-size: 11.5px; color: var(--faint); min-width: 0; }
+.mcp-block .mcp-note.ok { color: var(--ok); }
+.mcp-block .mcp-note.err { color: var(--err); }
 
 /* ---------- 关闭服务 ---------- */
 /* 设置面板里的「服务」分组：关掉后端是不可逆动作，按钮做成描边红字，

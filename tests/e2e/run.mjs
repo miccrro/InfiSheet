@@ -4306,14 +4306,20 @@ try {
   check('MCP 灯里写着是哪个应用接的', /MCP 已连接 · e2e/.test(lampDiag.text), lampDiag.text);
   check('MCP 灯能说清是谁接进来的', /e2e/.test(lampDiag.title), lampDiag.title);
 
-  // ---- MCP 安装入口：点顶栏那盏灯 ----
-  // 门槛全在第一步（端点是什么、stdio 命令怎么写、路径在哪），所以这个面板必须把
+  // ---- MCP 安装入口：点顶栏那盏灯，落到设置的「连接」格 ----
+  // 门槛全在第一步（端点是什么、stdio 命令怎么写、路径在哪），所以这一块必须把
   // 「能直接抄的东西」摆出来。写入那步在 e2e 里也能真点：HOME 已指到临时目录。
+  // 以前 MCP 是个单独的整屏面板；现在它和 ComfyUI 地址、服务开关同属「这台机器怎么和外面连」，
+  // 归在设置 → 连接里，顶栏那盏灯只负责把人送到这一格。
   const readSetup = () => page.evaluate(`(() => {
-    const box = document.getElementById('mcpSetup');
+    const panel = document.getElementById('appSettings');
+    const pane = document.getElementById('set-pane-conn');
     const note = document.getElementById('mcpSetupNote');
     return {
-      open: !!box && !box.classList.contains('hidden'),
+      open: !!panel && !!(pane && !pane.classList.contains('hidden')),
+      // MCP 必须落在「连接」格里面，不是另一个弹窗
+      inConn: !!pane && pane.contains(document.getElementById('setMcp')),
+      active: ((document.querySelector('#setTabs .tab.active') || {}).dataset || {}).set || '',
       endpoint: (document.getElementById('mcpSetupEndpoint') || {}).textContent || '',
       tabs: [...document.querySelectorAll('#mcpSetupTabs .mcp-tab')].map((b) => b.textContent),
       on: [...document.querySelectorAll('#mcpSetupTabs .mcp-tab.on')].map((b) => b.textContent),
@@ -4326,15 +4332,16 @@ try {
   })()`);
 
   await page.evaluate(`document.getElementById('mcpChip').click()`);
-  // 面板要先打两个接口（setup + health）才填得上内容：等它填满，别赌 700ms
+  // 这一块要先打两个接口（setup + health）才填得上内容：等它填满，别赌 700ms
   let setupA = await readSetup();
   for (let k = 0; k < 40 && !(setupA.open && setupA.endpoint && setupA.tabs.length); k++) {
     await new Promise((r) => setTimeout(r, 100));
     setupA = await readSetup();
   }
-  check('点顶栏的 MCP 灯 → 打开接入面板（端点 + 三个客户端）',
-    setupA.open && /\/mcp$/.test(setupA.endpoint) && setupA.tabs.length === 3,
-    `${setupA.endpoint} · ${setupA.tabs.join('/')}`);
+  check('点顶栏的 MCP 灯 → 落到设置的「连接」格，MCP 那一块就在里面（端点 + 三个客户端）',
+    setupA.open && setupA.active === 'conn' && setupA.inConn
+      && /\/mcp$/.test(setupA.endpoint) && setupA.tabs.length === 3,
+    `${setupA.active} · inConn=${setupA.inConn} · ${setupA.endpoint} · ${setupA.tabs.join('/')}`);
   check('面板里的配置能直接抄：stdio 指向 mcp_server.py',
     /mcp_server\.py/.test(setupA.json) && /"stdio"/.test(setupA.json) && /mcpServers/.test(setupA.json),
     setupA.json.split('\n').slice(0, 3).join(' '));

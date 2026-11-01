@@ -3601,6 +3601,44 @@
                 <button type="button" id="setComfyReset">恢复默认</button>
               </div>
               <div class="set-sep"></div>
+              <!-- MCP 接入：和上面那条 ComfyUI 地址是同一类事——这台机器怎么和外面连。
+                   以前它是一个单独的整屏面板（顶栏那盏灯点开），现在灯只负责把人送到这一格。
+                   MCP 的门槛全在第一步（端点、stdio 命令、路径），所以能抄的配置直接摆在这儿。 -->
+              <div class="set-group">MCP 接入 · 让 AI 直接操作这块画布</div>
+              <div class="mcp-block" id="setMcp">
+                <div class="mcp-status" id="mcpSetupStatus">
+                  <span class="dot" id="mcpSetupDot"></span>
+                  <span id="mcpSetupState">正在读取…</span>
+                </div>
+                <div class="mcp-row">
+                  <span class="mcp-k">HTTP 端点</span>
+                  <code id="mcpSetupEndpoint">…</code>
+                  <button type="button" class="mcp-btn" data-copy="endpoint">复制</button>
+                </div>
+                <p class="mcp-tip">
+                  两种接法，任选其一：<b>stdio 桥</b>（推荐，客户端自己拉起进程，服务没起会自动启动）；
+                  或者自己先跑 <code>python server.py</code>，在客户端里填上面的 HTTP 端点。
+                </p>
+                <div class="mcp-tabs" id="mcpSetupTabs"></div>
+                <div class="mcp-pane">
+                  <div class="mcp-row">
+                    <span class="mcp-k">配置文件</span>
+                    <code id="mcpSetupPath">…</code>
+                    <span class="mcp-flag" id="mcpSetupExists"></span>
+                  </div>
+                  <pre class="mcp-json" id="mcpSetupJson"></pre>
+                  <div class="mcp-actions">
+                    <button type="button" class="mcp-btn primary" id="mcpSetupCopy">复制这段 JSON</button>
+                    <button type="button" class="mcp-btn" id="mcpSetupWrite">写入这个文件</button>
+                    <span class="mcp-note" id="mcpSetupNote"></span>
+                  </div>
+                </div>
+                <p class="mcp-tip dim">
+                  写完之后：WorkBuddy / CodeBuddy 到<b>连接器管理右上角「自定义连接器」点 Trust</b>（新条目不会自动生效）；
+                  Claude Desktop 重启客户端即可。接上之后顶栏那盏灯会自己变绿，不用刷新页面。
+                </p>
+              </div>
+              <div class="set-sep"></div>
               <div class="set-group">服务</div>
               <p class="set-tip">本地服务 <b>${location.host}</b>（ComfyUI 由它代理）。关掉之后所有标签页都会断连，
                 要重新运行项目里的启动脚本（启动.bat / 启动.command / start.sh）才能再开。</p>
@@ -3636,6 +3674,8 @@
         box.querySelector(`#set-pane-${k}`).classList.toggle('hidden', k !== name);
       });
       if (name === 'history') renderHistory();
+      // 接入信息只在真的切到「连接」时才去问：开面板不该顺手打两个接口
+      if (name === 'conn') loadMcpSection(box);
     };
     box.querySelectorAll('#setTabs .tab').forEach((t) => {
       t.onclick = () => setTab(t.dataset.set);
@@ -3739,15 +3779,22 @@
       reset: box.querySelector('#setComfyReset'),
     });
     box.onclick = (ev) => { if (ev.target === box) closeSettingsSheet(); };
+    bindMcpSection(box);
     document.body.appendChild(box);
     // 导航图标是这里才建出来的，加载时那一次 hydrate 扫不到，得单独补一遍
     if (window.hydrateIcons) window.hydrateIcons(box);
-    // 落在哪一格：'comfy' 是「连不上时点顶栏那颗灯」的快捷入口，直接落到地址输入框
-    const startAt = focus === 'comfy' ? 'conn' : (panes.includes(focus) ? focus : 'wf');
+    // 落在哪一格：'comfy' 是「连不上时点顶栏那颗灯」的快捷入口，直接落到地址输入框；
+    // 'mcp' 是点顶栏 MCP 那盏灯，落到同一格但滚到 MCP 那一块
+    const startAt = (focus === 'comfy' || focus === 'mcp') ? 'conn'
+      : (panes.includes(focus) ? focus : 'wf');
     setTab(startAt);
     if (focus === 'comfy') {
       comfyInput.focus();
       comfyInput.select();
+    }
+    if (focus === 'mcp') {
+      const sec = box.querySelector('#setMcp');
+      if (sec) sec.scrollIntoView({ block: 'center' });
     }
   }
   function openSlotSheet(n) {
@@ -6917,16 +6964,17 @@
     mcpSetupNote('');
   }
 
-  async function openMcpSetup() {
-    const el = document.getElementById('mcpSetup');
-    if (!el) return;
-    el.classList.remove('hidden');
+  // 接入信息填进设置面板「连接」那一格。只在切到那一格时跑一次（按 box 打标记，
+  // 面板重建后标记自然消失，下次开还是新数据）。
+  async function loadMcpSection(box) {
+    if (!box || box.dataset.mcpLoaded) return;
+    box.dataset.mcpLoaded = '1';
     mcpSetupNote('正在读取配置…');
     try {
       const [setup, health] = await Promise.all([api('/api/mcp/setup'), api('/api/health')]);
       if (!setup || setup.ok === false) throw new Error((setup && setup.error) || '服务端没有 /api/mcp/setup');
       mcpSetupData = setup;
-      const ep = document.getElementById('mcpSetupEndpoint');
+      const ep = box.querySelector('#mcpSetupEndpoint');
       if (ep) { ep.textContent = setup.endpoint; ep.title = setup.endpoint; }
       paintMcpSetupStatus(health && health.mcp);
       renderMcpSetupTabs();
@@ -6936,9 +6984,44 @@
     }
   }
 
-  function closeMcpSetup() {
-    const el = document.getElementById('mcpSetup');
-    if (el) el.classList.add('hidden');
+  // 复制端点 / 复制 JSON / 写入配置文件。面板是每次打开重建的，绑定也得跟着重建。
+  function bindMcpSection(box) {
+    if (!box) return;
+    const epBtn = box.querySelector('[data-copy="endpoint"]');
+    if (epBtn) {
+      epBtn.onclick = async () => {
+        const text = (box.querySelector('#mcpSetupEndpoint') || {}).textContent || '';
+        const ok = await copyText(text);
+        mcpSetupNote(ok ? '端点已复制' : '复制失败，手动选一下吧', ok ? 'ok' : 'err');
+      };
+    }
+    const copyBtn = box.querySelector('#mcpSetupCopy');
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        const text = (box.querySelector('#mcpSetupJson') || {}).textContent || '';
+        mcpSetupNote((await copyText(text)) ? '配置已复制，粘到文件里就能用' : '复制失败，手动选一下吧', 'ok');
+      };
+    }
+    const writeBtn = box.querySelector('#mcpSetupWrite');
+    if (writeBtn) {
+      writeBtn.onclick = async () => {
+        const id = mcpSetupClient;
+        const label = (box.querySelector(`#mcpSetupTabs .mcp-tab[data-client="${id}"]`) || {}).textContent || id;
+        writeBtn.disabled = true;
+        mcpSetupNote('正在写入…');
+        try {
+          const r = await postJson('/api/mcp/install', { client: id });
+          if (!r || r.ok === false) throw new Error((r && r.error) || '写入失败');
+          const tail = r.backup ? `（原文件已备份到 ${r.backup.split(/[\\/]/).pop()}）` : '（新建）';
+          mcpSetupNote(`已写入 ${label}：${r.path} ${tail}`, 'ok');
+          flash(r.backup ? `已合并进 ${label} 的配置，原文件已备份` : `已写入 ${label} 的配置`);
+        } catch (e) {
+          mcpSetupNote(`没写进去：${e.message}`, 'err');
+        } finally {
+          writeBtn.disabled = false;
+        }
+      };
+    }
   }
 
   function initServerDown() {
@@ -7020,57 +7103,16 @@
     };
   }
 
+  // 顶栏那盏灯现在只是「状态 + 入口」：点一下把你送到设置的「连接」格，MCP 那一块就在那儿。
+  // 面板本身不在这里建（它是 openSettingsSheet 的一部分），所以这里只留跳转。
   function initMcpSetup() {
     const chip = document.getElementById('mcpChip');
-    if (chip) {
-      chip.onclick = () => openMcpSetup();
-      chip.onkeydown = (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openMcpSetup(); }
-      };
-    }
-    const close = document.getElementById('mcpSetupClose');
-    if (close) close.onclick = closeMcpSetup;
-    const box = document.getElementById('mcpSetup');
-    if (box) box.onclick = (ev) => { if (ev.target === box) closeMcpSetup(); };
-    document.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape' && box && !box.classList.contains('hidden')) closeMcpSetup();
-    });
-
-    const epBtn = document.querySelector('#mcpSetup [data-copy="endpoint"]');
-    if (epBtn) {
-      epBtn.onclick = async () => {
-        const text = (document.getElementById('mcpSetupEndpoint') || {}).textContent || '';
-        const ok = await copyText(text);
-        mcpSetupNote(ok ? '端点已复制' : '复制失败，手动选一下吧', ok ? 'ok' : 'err');
-      };
-    }
-    const copyBtn = document.getElementById('mcpSetupCopy');
-    if (copyBtn) {
-      copyBtn.onclick = async () => {
-        const text = (document.getElementById('mcpSetupJson') || {}).textContent || '';
-        mcpSetupNote((await copyText(text)) ? '配置已复制，粘到文件里就能用' : '复制失败，手动选一下吧', 'ok');
-      };
-    }
-    const writeBtn = document.getElementById('mcpSetupWrite');
-    if (writeBtn) {
-      writeBtn.onclick = async () => {
-        const id = mcpSetupClient;
-        const label = (document.querySelector(`#mcpSetupTabs .mcp-tab[data-client="${id}"]`) || {}).textContent || id;
-        writeBtn.disabled = true;
-        mcpSetupNote('正在写入…');
-        try {
-          const r = await postJson('/api/mcp/install', { client: id });
-          if (!r || r.ok === false) throw new Error((r && r.error) || '写入失败');
-          const tail = r.backup ? `（原文件已备份到 ${r.backup.split(/[\\/]/).pop()}）` : '（新建）';
-          mcpSetupNote(`已写入 ${label}：${r.path} ${tail}`, 'ok');
-          flash(r.backup ? `已合并进 ${label} 的配置，原文件已备份` : `已写入 ${label} 的配置`);
-        } catch (e) {
-          mcpSetupNote(`没写进去：${e.message}`, 'err');
-        } finally {
-          writeBtn.disabled = false;
-        }
-      };
-    }
+    if (!chip) return;
+    const open = () => openSettingsSheet('mcp');
+    chip.onclick = open;
+    chip.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
+    };
   }
 
   /* ---------------- 健康检查 ---------------- */

@@ -249,6 +249,20 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 - 左导航图标是运行时建出来的，`openSettingsSheet()` 末尾要补一次 `hydrateIcons(box)`，
   加载时那一次 hydrate 扫不到。
 
+### 「连接」格里的三块
+
+`#set-pane-conn` 从上到下是 **ComfyUI 地址 / MCP 接入 / 服务**，判断标准是同一条：
+「这台机器怎么和外面连」。所以 MCP 不再是单独的整屏面板（`#mcpSetup`，已删除），
+顶栏那盏灯只负责 `openSettingsSheet('mcp')` 把人送到这一格并滚到 `#setMcp`。
+
+- 接入信息（`/api/mcp/setup` + `/api/health`）**切到这一格才拉**：`setTab('conn')` → `loadMcpSection(box)`，
+  按 `box.dataset.mcpLoaded` 去重（面板每次打开都是新的 box，所以重开自然拿到新数据）；
+- 复制 / 写入那几个按钮由 `bindMcpSection(box)` 在面板建好时绑定——DOM 是重建的，
+  像以前那样在 `initMcpSetup()` 里绑一次会绑到不存在的节点上；
+- `.mcp-json` 不设 `max-height`：外层那一格本来就在滚，再套一层只会让人不知道该滚哪个
+  （横向仍可滚，JSON 里有很长的绝对路径）；
+- 选中态与主按钮走中性白，和面板其它地方一致（设置面板里不用主题蓝，e2e 会扫）。
+
 详情卡的内容**不是接口给的**：`/history` 只有 API 图和产物，提示词和采样参数得从图里挖
 （`historyMeta()`）：
 
