@@ -3185,22 +3185,23 @@ try {
     const sel = el.querySelector('.op-sel');
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
-    const bar = document.querySelector('.op-float');
-    const br = bar ? bar.getBoundingClientRect() : null;
+    const panel = el.querySelector('.gen-panel');
+    const bar = document.querySelector('.op-bar');
     const btn = (k) => bar && bar.querySelector('[data-of="' + k + '"]');
     return {
       open: true,
-      // 边框长在节点上（舞台 + 锚点），参数条是屏幕坐标的浮条（挂在 body 上，不在节点里）
-      onNode: !!el.querySelector('.op-stage') && !el.querySelector('.op-bar'),
-      float: !!bar && !el.contains(bar) && document.body.contains(bar),
-      fixed: bar ? getComputedStyle(bar).position : '',
+      // 边框长在节点上（舞台 + 锚点），参数条并进这个节点的生成面板
+      onNode: !!el.querySelector('.op-stage') && !!bar && !!panel && panel.contains(bar),
+      inFlow: bar ? getComputedStyle(bar).position : '',
+      // 面板里那两颗胶囊（工作流 / 尺寸·张数）让位给参数条，避免同一个值显示两遍
+      hidesDup: !!panel && panel.classList.contains('op-on')
+        && getComputedStyle(panel.querySelector('.wfsel')).display === 'none'
+        && getComputedStyle(panel.querySelector('.optsel')).display === 'none',
       buttons: bar ? [...bar.querySelectorAll('[data-of]')].map((b) => b.dataset.of) : [],
       labels: bar ? ['wf', 'size', 'res', 'batch', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
       read: bar ? bar.querySelector('.of-read').textContent.trim() : '',
       // 「完成」已经取消：收起扩图只走「取消」，烘像素交给「生成」
       noDone: !(bar && bar.querySelector('[data-op="done"]')),
-      inView: br ? br.left >= 0 && br.right <= window.innerWidth && br.bottom <= window.innerHeight : false,
-      centered: br ? Math.abs((br.left + br.width / 2) - (st.left + st.width / 2)) <= 3 : false,
       anchors: [...sel.querySelectorAll('.ch')].map((c) => c.dataset.anchor).sort(),
       stage: [Math.round(st.width), Math.round(st.height)],
       img: [Math.round(im.width), Math.round(im.height)],
@@ -3215,10 +3216,10 @@ try {
     outUi.open && outUi.onNode && outUi.anchors.join('/') === 'e/n/ne/nw/s/se/sw/w'
       && outUi.toolsShown && outUi.toolOn && outUi.noModal,
     JSON.stringify(outUi));
-  check('参数条是浮在画布上的悬浮条（屏幕坐标、挂在 body 上），贴在图片下方居中、在视野里',
-    outUi.float && outUi.fixed === 'fixed' && outUi.inView && outUi.centered,
-    JSON.stringify({ float: outUi.float, fixed: outUi.fixed, inView: outUi.inView, centered: outUi.centered }));
-  check('悬浮条五段：工作流 / 尺寸 / 分辨率 / 数量 / 取消，没有「完成」',
+  check('参数条并进了生成面板（在节点里、跟着节点走），面板原来的工作流 / 尺寸胶囊让位',
+    outUi.onNode && outUi.inFlow === 'static' && outUi.hidesDup,
+    JSON.stringify({ onNode: outUi.onNode, pos: outUi.inFlow, hidesDup: outUi.hidesDup }));
+  check('参数条五段：工作流 / 尺寸 / 分辨率 / 数量 / 取消，没有「完成」',
     outUi.buttons.join('/') === 'wf/size/res/batch/cancel'
       && outUi.labels[4] === '取消' && outUi.noDone
       && outUi.labels[0].length > 0 && outUi.labels[2].length > 0 && /^\d+ 张$/.test(outUi.labels[3]),
@@ -3230,7 +3231,7 @@ try {
     JSON.stringify({ stage: outUi.stage, img: outUi.img, size: outUi.labels[1], read: outUi.read }));
 
   // 尺寸档现在藏在「尺寸」按钮的下拉里（悬浮条上只显示当前档，不铺一排按钮）
-  const openOf = (k) => page.evaluate(`document.querySelector('.op-float [data-of="${k}"]').click()`);
+  const openOf = (k) => page.evaluate(`document.querySelector('.op-bar [data-of="${k}"]').click()`);
   const pickMenu = (label) => page.evaluate(`(() => {
     const b = [...document.querySelectorAll('.popmenu button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)});
     if (!b) return false;
@@ -3251,8 +3252,8 @@ try {
     return { stage: [Math.round(st.width), Math.round(st.height)],
              img: [Math.round(im.width), Math.round(im.height)],
              bands: [...el.querySelectorAll('.op-bands i')].length,
-             read: document.querySelector('.op-float .of-read').textContent.trim(),
-             onChip: document.querySelector('.op-float [data-of="size"]').textContent.trim() };
+             read: document.querySelector('.op-bar .of-read').textContent.trim(),
+             onChip: document.querySelector('.op-bar [data-of="size"]').textContent.trim() };
   })()`);
   check('选 16:9 → 舞台变横（原图只占中间一条），左右两条新边亮出来，悬浮条上的尺寸档跟着变',
     outWide.stage[0] > outWide.stage[1] && outWide.stage[0] > outWide.img[0]
@@ -3272,7 +3273,7 @@ try {
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
              stageW: Math.round(st.width), imgW: Math.round(im.width),
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
-             size: document.querySelector('.op-float .of-read').textContent.trim(),
+             size: document.querySelector('.op-bar .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '' };
   })()`);
   await page.evaluate(`(() => {
@@ -3291,14 +3292,17 @@ try {
     const el = document.querySelector('.node.selected');
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
-    const br = document.querySelector('.op-float').getBoundingClientRect();
+    const br = document.querySelector('.op-bar').getBoundingClientRect();
+    const pr = el.querySelector('.gen-panel').getBoundingClientRect();
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
              stageW: Math.round(st.width), imgW: Math.round(im.width),
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
-             size: document.querySelector('.op-float .of-read').textContent.trim(),
+             size: document.querySelector('.op-bar .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '',
-             onChip: document.querySelector('.op-float [data-of="size"]').textContent.trim(),
-             barInView: br.left >= 0 && br.right <= window.innerWidth && br.bottom <= window.innerHeight };
+             onChip: document.querySelector('.op-bar [data-of="size"]').textContent.trim(),
+             // 参数条还在自己这个面板里（不是跑到屏幕角落去了）
+             barInPanel: br.top >= pr.top - 1 && br.bottom <= pr.bottom + 1
+               && br.left >= pr.left - 1 && br.right <= pr.right + 1 };
   })()`);
   // 屏幕像素不能直接比：画布一变宽，同一个「左边几像素」对应的原图像素就变了。
   // 按各自的缩放换算回原图像素，才是「这条边到底动没动」。
@@ -3320,10 +3324,42 @@ try {
       && after.stageW > after.thumbW + 20,
     JSON.stringify({ imgW: [before.imgW, after.imgW], thumbW: [before.thumbW, after.thumbW],
       stageW: [before.stageW, after.stageW] }));
-  // 悬浮条的全部意义就在这条：画布已经溢出视口，按钮还在视野里。
-  // 早先按钮挂在节点里，往下拖时节点底边一直往外走，比例档和「完成」直接被顶出屏幕。
-  check('画布拖到溢出视口，悬浮条还在视野里（按钮挂在节点里时会被顶出屏幕）',
-    after.barInView === true, JSON.stringify({ barInView: after.barInView }));
+  // 画布拖到溢出视口，参数条还得在自己的面板里（不是被甩到屏幕角落）
+  check('画布拖到溢出视口，参数条仍在自己这个节点的面板里',
+    after.barInPanel === true, JSON.stringify({ barInPanel: after.barInPanel }));
+  // 「无法跟随」的直接回归：画布一平移，参数条要和节点一起走（相对位置不变）。
+  // 之前它是屏幕坐标的浮条，节点拖到哪儿它都钉在原地，用户的原话就是「无法跟随」。
+  // 用中键拖（button 1）平移画布，不用拖节点：拖节点会往撤销栈里压一条，
+  // 后面「撤销一次回到扩图前」就退不到扩图之前了。
+  const opFollow = await page.evaluate(`(async () => {
+    const el = document.querySelector('.node.selected');
+    const st = document.getElementById('stage');
+    const base = { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'mouse', isPrimary: true };
+    const at = (dx, dy) => ({ ...base, button: 1, buttons: 4, clientX: 700 + dx, clientY: 300 + dy });
+    const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+    const sample = () => {
+      const n = el.getBoundingClientRect();
+      const b = document.querySelector('.op-bar').getBoundingClientRect();
+      return { node: [Math.round(n.left), Math.round(n.top)],
+               rel: [Math.round(b.left - n.left), Math.round(b.top - n.top)] };
+    };
+    st.dispatchEvent(new PointerEvent('pointerdown', at(0, 0)));
+    await raf();
+    const s0 = sample();
+    window.dispatchEvent(new PointerEvent('pointermove', at(60, 40)));
+    await raf();
+    const s1 = sample();
+    window.dispatchEvent(new PointerEvent('pointerup', at(60, 40)));
+    await raf();
+    return { s0, s1 };
+  })()`);
+  check('平移画布时参数条跟着节点一起走（相对节点的位置不变，不是钉在屏幕上）',
+    opFollow.s1.node[0] === opFollow.s0.node[0] + 60
+      && opFollow.s1.node[1] === opFollow.s0.node[1] + 40
+      && Math.abs(opFollow.s1.rel[0] - opFollow.s0.rel[0]) <= 2
+      && Math.abs(opFollow.s1.rel[1] - opFollow.s0.rel[1]) <= 2,
+    JSON.stringify(opFollow));
+
   check('拖的同时面板里的尺寸胶囊跟着变（不是等生成完才改）',
     after.opt !== before.opt && /^\d+×\d+ · \d+张$/.test(after.opt),
     JSON.stringify({ before: before.opt, after: after.opt }));

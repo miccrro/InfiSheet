@@ -267,11 +267,6 @@
   });
 
   /* ---------------- 视图 ---------------- */
-  // 扩图浮条的重定位钩子：buildOutpaintFrame 挂上、收起时摘掉。
-  // 用 var 不用 let —— applyView 在模块初始化时就会跑，那时下面那句 let 还没执行到，
-  // let 会直接踩 TDZ 抛错，var 只是 undefined，`if` 一下就跳过了。
-  var opFloatPlace = null;
-
   function applyView() {
     const { x, y, k } = state.view;
     const zb = document.getElementById('zoomBtn');
@@ -284,7 +279,6 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
-    if (opFloatPlace) opFloatPlace();      // 扩图浮条贴着画布，视图一动也得跟过去
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
     const cell = clamp(28 * k, 16, 112);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
@@ -550,9 +544,8 @@
       overlay.innerHTML = '<span class="gen-overlay-text">生成中…</span>';
       thumb.appendChild(overlay);
       body.appendChild(thumb);
-      // 扩图模式：图片上直接长出八个锚点。边框和生成面板属于同一个节点，
-      // 不再是「弹个浮层、点扩出来、再新建一个节点」那套。
-      if (outpaintOn(n)) buildOutpaintFrame(n, thumb, body);
+      // 扩图模式的边框在下面「挂生成面板」那一步一起建：参数条要并进面板，
+      // 得等面板先存在（见 buildOutpaintFrame 的第三个参数）。
 
       // 多图切换：以前只有 7px 小圆点，用户根本发现不了「还有 3 张」——
       // 「生成多张只显示一张，其余无法显示」就是这么来的。现在给三件套：
@@ -602,7 +595,14 @@
       // 挂在 .node 上而不是 .node-card：标题行在卡片外面（在 flow 里占高度），
       // 挂卡片上的话「面板放上方」会压住标题——bottom:100% 相对整个节点才对。
       // 纯图片节点（n.plain）不挂：它就是一张图，下面不该拖着一个「提示词 + 工作流 + 生成」。
-      if (!n.plain) el.appendChild(buildGenPanel(n));
+      if (!n.plain) {
+        const panel = buildGenPanel(n);
+        el.appendChild(panel);
+        // 扩图模式：八个锚点长在图上，参数条**并进这个面板**。
+        // 两样都在节点里，节点一平移/缩放它们就跟着走——早先是屏幕坐标的浮条，
+        // 用户的原话是「无法跟随」：节点在右边、条却钉在屏幕左下角。
+        if (outpaintOn(n)) buildOutpaintFrame(n, thumb, panel);
+      }
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
       imgIn.onpointerdown = (ev) => { ev.stopPropagation(); startPortDrag(ev, n.id, 'in'); };
@@ -8156,6 +8156,9 @@
     const im = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
     const w = im && im.naturalWidth, h = im && im.naturalHeight;
     if (!w || !h) { flash('这张图还没加载完，稍等一下再试'); return; }
+    // 纯图片节点（加载图片进来的那种）没有生成面板，参数条就没地方挂。
+    // 扩图本来就得靠生成面板跑局部重绘，顺手把面板打开——和标题上那颗「生成」药丸一个效果。
+    if (n.plain) { delete n.plain; }
     // 收起时要还原用户的尺寸档，别因为我们开过一次框就永久变成「自定义」
     n.gen.opBackup = {
       size: n.gen.size,
@@ -8174,7 +8177,7 @@
       if (ta) ta.value = OP_PROMPT;
     }
     rerenderNode(n.id, true);
-    // 这里不再抬视图：按钮已经搬到屏幕坐标的悬浮条上（placeBar 会自己翻边/贴边），
+    // 这里不再抬视图：参数条并进了生成面板（在节点里、跟着节点走），
     // 画布往下长多少都不会把出口顶出视口，也就没有理由替用户动他的画布位置。
     queueSave();
     flash('拖边框上的八个锚点决定往哪边扩、扩多少，然后点生成');
@@ -8257,15 +8260,15 @@
     if (!opSession) return;
     if (id && opSession.id !== id) return;
     try { opSession.ac.abort(); } catch { /* 已经 abort 过 */ }
-    // 浮条挂在 document.body 上，不在节点里：节点重建/收起都不会带走它，得手动摘
+    // 参数条在面板里，节点一重建就跟着没了；但「只收起不重建」那条路上它还在，手动摘一下
     if (opSession.bar && opSession.bar.isConnected) opSession.bar.remove();
-    opFloatPlace = null;
     opSession = null;
   }
 
   // 节点上的扩图边框：舞台铺满缩略图，原图按 ox/oy 摆进去，四条新边标蓝，
   // 八个锚点在最外圈。锚点直接复用裁剪那套 .crop-sel .ch（形状、光标都一致）。
-  function buildOutpaintFrame(n, thumb, body) {
+  // panel = 这个节点的生成面板，参数条要并进去（不是屏幕浮层）。
+  function buildOutpaintFrame(n, thumb, panel) {
     const op0 = outpaintOf(n);
     if (!op0 || !op0.w || !op0.h) return;
     closeOpSession(n.id);
@@ -8299,11 +8302,16 @@
     thumb.appendChild(stage);
     thumb.appendChild(sel);
 
-    // ---- 悬浮参数条 ----
-    // 挂在 document.body 上、position: fixed：画布会往外溢出，跟着节点走的话一拖下边
-    // 就把按钮顶出视口（用户找不到出口只能猜 Esc）。屏幕坐标的浮条永远在视野里。
+    // ---- 参数条：并进生成面板的一行 ----
+    // 早先是屏幕坐标的浮条（`position: fixed` + 挂 body）：好处是永远不会被顶出视口，
+    // 坏处是**它跟不住节点**——节点在画布右边、条却钉在屏幕左下角，看着像两块东西。
+    // 现在它是面板里的一行：面板本身挂在 `.node` 上（绝对定位 + 跟着画布缩放），
+    // 所以节点动它就动，天然跟随。
+    //
+    // 面板底下那行已经有「工作流 / 尺寸 · 张数」了，这里再来一套就是两处显示同一个值。
+    // 所以扩图期间由这条接管：`.gen-panel.op-on` 把 `.wfsel` / `.optsel` 藏掉。
     const bar = document.createElement('div');
-    bar.className = 'op-float';
+    bar.className = 'op-bar';
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', '扩图参数');
     bar.innerHTML = '<button type="button" class="of-btn" data-of="wf"></button>'
@@ -8312,31 +8320,15 @@
       + '<button type="button" class="of-btn" data-of="batch"></button>'
       + '<span class="of-read"></span>'
       + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>';
-    document.body.appendChild(bar);
+    const genBar = panel.querySelector('.gen-bar');
+    if (genBar) panel.insertBefore(bar, genBar);
+    else panel.appendChild(bar);
+    panel.classList.add('op-on');
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     if (opSession) opSession.bar = bar;
 
     const readout = bar.querySelector('.of-read');
     const btnOf = (k) => bar.querySelector(`[data-of="${k}"]`);
-
-    // 贴画布下方居中；下方放不下就贴到视口底部的安全区（让开底部那排画布控件）
-    const placeBar = () => {
-      const r = stage.getBoundingClientRect();
-      const w = bar.offsetWidth, h = bar.offsetHeight;
-      if (!w) return;
-      const topBarEl = document.getElementById('topBar');
-      const minY = (topBarEl ? topBarEl.offsetHeight : 44) + 6;
-      // 底部那排（缩放 / 对齐 / 小地图）是 26px 高、离底 12px，留 64px 才让得开。
-      // 不让开的话画布一大就被钉在视口最底下，和缩放条叠在一起，两边的字互相糊。
-      const maxY = Math.max(minY, window.innerHeight - h - 64);
-      const left = clamp(r.left + r.width / 2 - w / 2, 10, Math.max(10, window.innerWidth - w - 10));
-      // 首选画布正下方；画布比自己还高（缩放很大 / 往下扩了很多）就只能贴安全区
-      let top = Math.min(r.bottom + 10, maxY);
-      if (top < minY) top = minY;
-      bar.style.left = `${Math.round(left)}px`;
-      bar.style.top = `${Math.round(top)}px`;
-    };
-    opFloatPlace = placeBar;
 
     // 尺寸档按「当前 pad 等于哪一档」反推：拖过锚点之后没有一档成立，就报「自定义」
     const sizeTag = (op) => {
@@ -8511,7 +8503,6 @@
       });
       if (dimEl) dimEl.textContent = `${f.nw} × ${f.nh}`;
       syncBar();
-      placeBar();
     };
 
     // 锚点：增量除以 k。不用绝对坐标——拖动中途 pad 变了，缩略图的宽高和 k 也跟着变，

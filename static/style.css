@@ -2137,7 +2137,7 @@ button.primary, .card .primary, #setOpenLib, #pasteGo,
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。
    风格格子和它的关闭键同理：缩略图要方方正正地铺成宫格，圆角 999px 会把图裁成圆圈
    （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2828,22 +2828,24 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 /* 往上扩时画布会盖住节点标题，标题里的「生成」就被挡了：只给扩图中的这个节点提一层 */
 .node.op-raised .node-title { position: relative; z-index: 2; }
 
-/* ---------- 扩图参数悬浮条 ----------
-   工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消。
-   **屏幕坐标（fixed）挂在 body 上**，不跟节点走：画布是往外长的，往下拖时
-   节点自己的底边一直在动，按钮挂在节点里就会被顶出视口——用户找不到出口，只能猜 Esc。
-   位置由 placeBar() 每次 draw / 视图变化时重算：贴画布下方居中，放不下就翻到内侧。 */
-.op-float {
-  position: fixed; z-index: 46;          /* 和 #imgTools 同层：都在弹出层(60/80)下面 */
-  display: flex; align-items: center; gap: 2px; padding: 4px;
-  background: rgba(38, 38, 38, 0.96);
-  border: 0.5px solid #3a3a3a; border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  /* 只有按钮吃点击：浮条难免压到旁边的节点，压住标题时至少还能点中标题 */
-  pointer-events: none;
+/* ---------- 扩图参数条 ----------
+   工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消，**生成面板里的一行**。
+   曾经是屏幕坐标的浮条（fixed + 挂 body）：不会被顶出视口，但它跟不住节点——
+   节点在画布右边、条钉在屏幕左下角，用户的原话就是「无法跟随」。面板本身挂在
+   `.node` 上（绝对定位 + 抵消画布缩放），并进来就天然跟随。 */
+.op-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  margin: 2px 0 8px; padding: 3px 4px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
-.op-float .of-btn { pointer-events: auto; }
+/* 扩图期间这条接管工作流 / 尺寸 / 张数：面板底下那行再显示一遍就是同一个值两处显示 */
+.gen-panel.op-on .wfsel,
+.gen-panel.op-on .optsel { display: none; }
+/* 那两颗胶囊一藏，`.gen-status`（flex-basis: 0）就塌成 0 宽，生成按钮被顶到最左边去了。
+   靠右对齐把它压回该在的位置；状态文字有内容时照样占满中间。 */
+.gen-panel.op-on .gen-bar { justify-content: flex-end; }
 .of-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 8px; border: none; border-radius: 8px;
