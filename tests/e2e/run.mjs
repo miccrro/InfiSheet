@@ -3193,10 +3193,26 @@ try {
       // 边框长在节点上（舞台 + 锚点），参数条并进这个节点的生成面板
       onNode: !!el.querySelector('.op-stage') && !!bar && !!panel && panel.contains(bar),
       inFlow: bar ? getComputedStyle(bar).position : '',
-      // 面板里那两颗胶囊（工作流 / 尺寸·张数）让位给参数条，避免同一个值显示两遍
+      // 面板收成一条：上传 / 画布素材 / 清空 / 风格（.gen-chips）、大提示词框、底下那排
+      // （工作流胶囊 / 尺寸胶囊 / 生成）全部让位，面板里还看得见的孩子只剩这条参数条。
+      // 注意别去查 .wfsel 的 display —— 它藏在自己的父级里，自身 computed 仍是 flex。
       hidesDup: !!panel && panel.classList.contains('op-on')
-        && getComputedStyle(panel.querySelector('.wfsel')).display === 'none'
-        && getComputedStyle(panel.querySelector('.optsel')).display === 'none',
+        && ['.gen-chips', '.gen-refs', '.gen-prompt', '.gen-bar'].every((s) => {
+          const x = panel.querySelector(s);
+          return !x || getComputedStyle(x).display === 'none';
+        })
+        && [...panel.children].filter((c) => getComputedStyle(c).display !== 'none')
+          .every((c) => c === bar),
+      // 第二行：提示词输入框 + 生成（状态文字也搬进来了，不然它和输入框抢地方）
+      rows: bar ? [...bar.children].map((c) => c.className) : [],
+      hasInput: !!bar && !!bar.querySelector('.of-input'),
+      inputVal: bar && bar.querySelector('.of-input') ? bar.querySelector('.of-input').value : '',
+      // 面板里那个大提示词框（这时被藏着）存的是同一条节点的提示词：两边必须一样，
+      // 说明单行输入框是**编辑同一个字段**，不是给扩图另开一份
+      panelPrompt: panel && panel.querySelector('.gen-prompt')
+        ? panel.querySelector('.gen-prompt').textContent.trim() : null,
+      runInBar: !!bar && !!bar.querySelector('.gen-run'),
+      statusInBar: !!bar && !!bar.querySelector('.gen-status'),
       buttons: bar ? [...bar.querySelectorAll('[data-of]')].map((b) => b.dataset.of) : [],
       labels: bar ? ['wf', 'size', 'res', 'batch', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
       read: bar ? bar.querySelector('.of-read').textContent.trim() : '',
@@ -3216,7 +3232,7 @@ try {
     outUi.open && outUi.onNode && outUi.anchors.join('/') === 'e/n/ne/nw/s/se/sw/w'
       && outUi.toolsShown && outUi.toolOn && outUi.noModal,
     JSON.stringify(outUi));
-  check('参数条并进了生成面板（在节点里、跟着节点走），面板原来的工作流 / 尺寸胶囊让位',
+  check('参数条并进了生成面板（在节点里、跟着节点走），面板收成这一条——胶囊 / 大提示词框 / 底下那排都让位',
     outUi.onNode && outUi.inFlow === 'static' && outUi.hidesDup,
     JSON.stringify({ onNode: outUi.onNode, pos: outUi.inFlow, hidesDup: outUi.hidesDup }));
   check('参数条五段：工作流 / 尺寸 / 分辨率 / 数量 / 取消，没有「完成」',
@@ -3224,6 +3240,13 @@ try {
       && outUi.labels[4] === '取消' && outUi.noDone
       && outUi.labels[0].length > 0 && outUi.labels[2].length > 0 && /^\d+ 张$/.test(outUi.labels[3]),
     JSON.stringify({ buttons: outUi.buttons, labels: outUi.labels }));
+  check('参数条是两行：上行参数，下行是提示词输入框 + 生成（状态文字也在这一行里）',
+    outUi.rows.join('|') === 'of-row|of-row of-prompt'
+      && outUi.hasInput && outUi.inputVal === outUi.panelPrompt
+      && outUi.runInBar && outUi.statusInBar,
+    JSON.stringify({ rows: outUi.rows, input: outUi.inputVal.slice(0, 18),
+      panel: String(outUi.panelPrompt).slice(0, 18),
+      run: outUi.runInBar, status: outUi.statusInBar }));
   check('刚打开时边框和原图一样大（还没扩），尺寸档报「原图」、读数是「原图 → 画布」',
     outUi.stage[0] === outUi.img[0] && outUi.stage[1] === outUi.img[1] && outUi.bands === 0
       && outUi.labels[1] === '原图'
@@ -3294,12 +3317,19 @@ try {
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
     const br = document.querySelector('.op-bar').getBoundingClientRect();
     const pr = el.querySelector('.gen-panel').getBoundingClientRect();
+    const tb = document.getElementById('imgTools').getBoundingClientRect();
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
              stageW: Math.round(st.width), imgW: Math.round(im.width),
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
              size: document.querySelector('.op-bar .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '',
              onChip: document.querySelector('.op-bar [data-of="size"]').textContent.trim(),
+             // 工具条贴的是**画布外框**（.op-stage），不是缩略图：外框比图宽出去之后，
+             // 还按缩略图居中就会「悬在框上方偏左」（用户截图里的那个样子）
+             toolsDx: Math.round((tb.left + tb.width / 2) - (st.left + st.width / 2)),
+             toolsGap: Math.round(st.top - tb.bottom),
+             toolsPlace: document.getElementById('imgTools').dataset.place,
+             toolsClamped: tb.left <= 11 || tb.right >= window.innerWidth - 11,
              // 参数条还在自己这个面板里（不是跑到屏幕角落去了）
              barInPanel: br.top >= pr.top - 1 && br.bottom <= pr.bottom + 1
                && br.left >= pr.left - 1 && br.right <= pr.right + 1 };
@@ -3327,6 +3357,14 @@ try {
   // 画布拖到溢出视口，参数条还得在自己的面板里（不是被甩到屏幕角落）
   check('画布拖到溢出视口，参数条仍在自己这个节点的面板里',
     after.barInPanel === true, JSON.stringify({ barInPanel: after.barInPanel }));
+  // 工具条是「贴着选中节点」的浮层，扩图时那个节点真正的外形是画布外框：
+  // 外框往右长出去之后，还按缩略图居中就会整条偏到左边（用户截图里「悬在框上方偏左」）。
+  // 被视口夹住是允许的（外框自己都溢出屏幕了）；节点本来就贴着屏幕上方时它会压在自己图上，
+  // 那种情况（place=over）只要求横向仍然对着外框中线。
+  check('扩图后工具条跟着画布外框居中（不是跟着缩略图）',
+    Math.abs(after.toolsDx) <= 2 || after.toolsClamped,
+    JSON.stringify({ dx: after.toolsDx, gap: after.toolsGap, place: after.toolsPlace,
+      clamped: after.toolsClamped, stageW: after.stageW, thumbW: after.thumbW }));
   // 「无法跟随」的直接回归：画布一平移，参数条要和节点一起走（相对位置不变）。
   // 之前它是屏幕坐标的浮条，节点拖到哪儿它都钉在原地，用户的原话就是「无法跟随」。
   // 用中键拖（button 1）平移画布，不用拖节点：拖节点会往撤销栈里压一条，
@@ -3367,6 +3405,21 @@ try {
   // 拖完点回 16:9：尺寸回到对称，后面烘出来的画布才有确定预期
   await clickChip('16:9');
   await new Promise((r) => setTimeout(r, 300));
+  // 提示词输入框改的是 n.gen.prompt **本身**（不是另存一份给扩图用）：生成时读的就是它。
+  // 这里写进去、点生成、等框收起来，大提示词框里应该原样是这串字——串起来才算真的接上了。
+  const OP_PROMPT_E2E = 'E2E 扩图提示词：两边补成雪原';
+  const promptIn = await page.evaluate(`(() => {
+    const inp = document.querySelector('.node.selected .op-bar .of-input');
+    if (!inp) return null;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(inp, ${JSON.stringify(OP_PROMPT_E2E)});
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    return { value: inp.value, title: inp.title };
+  })()`);
+  check('参数条里的输入框改的就是这条节点的提示词本身（不是给扩图另存一份）',
+    !!promptIn && promptIn.value === OP_PROMPT_E2E && promptIn.title === OP_PROMPT_E2E,
+    JSON.stringify(promptIn));
+
   // 生成这条路会把图丢给 ComfyUI：e2e 不碰真机（会把用户的显卡占住），
   // 只把 /api/run 挡掉——要验的「烘焙」发生在发请求之前。
   await page.evaluate(`(() => {
@@ -3399,6 +3452,7 @@ try {
       w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
       corner, frameGone: !el.querySelector('.op-sel'),
       wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
+      prompt: (el.querySelector('.gen-prompt') || {}).textContent || '',
     };
   })()`);
   check('点生成 → 先按边框把画布撑大：四边透明、遮罩药丸出现、边框收起、走局部重绘',
@@ -3411,11 +3465,9 @@ try {
   check('面板里的尺寸档和图片尺寸一致（以前停在 1:1 · 1K，生成出来尺寸就错了）',
     outRes.opt.startsWith(`${outRes.w}×${outRes.h} · `) && outRes.dim === `${outRes.w} × ${outRes.h}`,
     JSON.stringify({ opt: outRes.opt, dim: outRes.dim, img: [outRes.w, outRes.h] }));
-
-  // 这一跑是假的（/api/run 被挡掉了），但节点会一直 busy 到轮询超时为止。
-  // 必须等它落地：后面还有好几处「点生成」，busy 没清掉就会被静默吞掉（真踩过）。
-  await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
-    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+  check('在参数条里写的提示词跟着进了正式提示词框（生成读的就是这一份）',
+    outRes.prompt.includes(OP_PROMPT_E2E),
+    JSON.stringify({ prompt: outRes.prompt.slice(0, 40) }));
 
   // 这一跑是假的（/api/run 被挡掉了），但节点会一直 busy 到轮询超时为止。
   // 必须等它落地：后面还有好几处「点生成」，busy 没清掉就会被静默吞掉（真踩过）。
@@ -4102,7 +4154,8 @@ try {
     /服务已关闭/.test(downText) && !reachable, `${downText} · reachable=${reachable}`);
 
 } catch (e) {
-  check('运行过程未抛错', false, String(e && e.message ? e.message : e));
+  // 带上栈：只有一句 message 时，翻半天也定位不到是哪一步炸的（真踩过）
+  check('运行过程未抛错', false, String(e && e.stack ? e.stack : e));
 } finally {
   if (page) await page.close();
   if (chromeCtx) await stopChrome(chromeCtx);

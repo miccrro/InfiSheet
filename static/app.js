@@ -6924,6 +6924,15 @@
     positionLinkDel();
   }
 
+  // 只重贴浮条、不动连线/小地图：扩图拖锚点时节点本身没变，变的是它上面那块画布外框。
+  // 单独一个节拍，免得为了挪一条工具条把整张画布重画一遍。
+  let barsPending = false;
+  function scheduleFollowBars() {
+    if (barsPending) return;
+    barsPending = true;
+    requestAnimationFrame(() => { barsPending = false; followScreenBars(); });
+  }
+
   function scheduleLayout() {
     if (layoutPending) return;
     layoutPending = true;
@@ -7556,6 +7565,12 @@
     const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
     if (!el) return;
     const nb = el.getBoundingClientRect();
+    // 扩图时参照物是**画布外框**（`.op-stage`），不是节点：画布会往外长，节点只是其中一块，
+    // 贴着节点摆的话工具条会落在框里面、还压着节点标题。跟着外框上沿居中，它才和那圈蓝框是一套。
+    // 外框还没量出宽（刚挂上、draw 还没跑）就退回节点，别拿一个 0 宽的框去居中。
+    const opStage = el.querySelector('.op-stage');
+    const stageBox = opStage ? opStage.getBoundingClientRect() : null;
+    const ref = stageBox && stageBox.width > 1 ? stageBox : nb;
     const w = bar.offsetWidth || 300;
     const h = bar.offsetHeight || 34;
     const minL = 10, maxL = Math.max(10, window.innerWidth - w - 10);
@@ -7565,10 +7580,10 @@
     //
     // 横向：默认居中对齐这个节点；居中会被视口夹住时（节点贴着屏幕左/右边缘）改成和
     // 节点左/右边缘对齐，让整条朝画布空白的那一侧展开。这几个候选位置都算「贴着自己」。
-    const want = nb.left + nb.width / 2 - w / 2;
+    const want = ref.left + ref.width / 2 - w / 2;
     const lefts = [clamp(want, minL, maxL)];
     if (Math.abs(lefts[0] - want) > 1) {
-      lefts.push(clamp(nb.left, minL, maxL), clamp(nb.right - w, minL, maxL));
+      lefts.push(clamp(ref.left, minL, maxL), clamp(ref.right - w, minL, maxL));
     }
     const topBar = document.getElementById('topBar');
     const floor = (topBar ? topBar.offsetHeight : 44) + 6;
@@ -7576,7 +7591,7 @@
     // 给定横向位置，纵向怎么摆：贴在标题上方；压到别人就把整条往上抬，
     // 抬一次可能又撞上更高处的一条，所以循环到不再重叠（最多 3 次，正常一次就结束）。
     const solve = (left) => {
-      let y = Math.max(8, nb.top - h - 8);
+      let y = Math.max(8, ref.top - h - 8);
       let place = 'above';
       for (let i = 0; i < 3; i++) {
         const hit = otherTitleTops(n.id, left, left + w, y, y + h);
@@ -8302,30 +8317,62 @@
     thumb.appendChild(stage);
     thumb.appendChild(sel);
 
-    // ---- 参数条：并进生成面板的一行 ----
-    // 早先是屏幕坐标的浮条（`position: fixed` + 挂 body）：好处是永远不会被顶出视口，
-    // 坏处是**它跟不住节点**——节点在画布右边、条却钉在屏幕左下角，看着像两块东西。
-    // 现在它是面板里的一行：面板本身挂在 `.node` 上（绝对定位 + 跟着画布缩放），
-    // 所以节点动它就动，天然跟随。
+    // ---- 扩图模式下，整个生成面板就只剩这一条 ----
+    // 早先是屏幕坐标的浮条（`position: fixed` + 挂 body）：不会被顶出视口，但**跟不住节点**——
+    // 节点在画布右边、条却钉在屏幕左下角，用户的原话是「无法跟随」。
+    // 现在是面板里的一条：面板挂在 `.node` 上（绝对定位 + 抵消画布缩放），节点动它就动。
     //
-    // 面板底下那行已经有「工作流 / 尺寸 · 张数」了，这里再来一套就是两处显示同一个值。
-    // 所以扩图期间由这条接管：`.gen-panel.op-on` 把 `.wfsel` / `.optsel` 藏掉。
+    // 这一条把扩图要用的东西全装下了：两行，上行是参数，下行是提示词 + 生成。
+    // 面板里原来的「上传 / 画布素材 / 清空 / 风格」、大提示词框、底下那排按钮全部让位
+    // （`.gen-panel.op-on`）——扩图时这些要么用不上，要么和这条重复。
     const bar = document.createElement('div');
     bar.className = 'op-bar';
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', '扩图参数');
-    bar.innerHTML = '<button type="button" class="of-btn" data-of="wf"></button>'
+    bar.innerHTML = '<div class="of-row">'
+      + '<button type="button" class="of-btn" data-of="wf"></button>'
       + '<button type="button" class="of-btn" data-of="size"></button>'
       + '<button type="button" class="of-btn" data-of="res"></button>'
       + '<button type="button" class="of-btn" data-of="batch"></button>'
       + '<span class="of-read"></span>'
-      + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>';
+      + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>'
+      + '</div>'
+      + '<div class="of-row of-prompt">'
+      + '<input type="text" class="of-input" placeholder="提示词：描述扩出来的地方要补什么">'
+      + '</div>';
     const genBar = panel.querySelector('.gen-bar');
     if (genBar) panel.insertBefore(bar, genBar);
     else panel.appendChild(bar);
     panel.classList.add('op-on');
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     if (opSession) opSession.bar = bar;
+
+    // 提示词输入：单行，改的是 n.gen.prompt 本身（收起来之后大提示词框读到的是同一个值）。
+    // 模板很长，单行显示不下——用 title 兜住全文，回车直接生成。
+    const promptInp = bar.querySelector('.of-input');
+    const syncPrompt = () => {
+      const v = String(n.gen.prompt || '');
+      if (promptInp.value !== v) promptInp.value = v;
+      promptInp.title = v;
+    };
+    syncPrompt();
+    promptInp.addEventListener('input', () => {
+      n.gen.prompt = promptInp.value;
+      promptInp.title = promptInp.value;
+      delete n.gen.opPromptSet;     // 用户改过就别再当成「我们填的模板」收回去
+      queueSave();
+    });
+    promptInp.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); generateImage(n); }
+      ev.stopPropagation();          // 别让画布的快捷键（Delete / 空格平移）吃到输入
+    });
+
+    // 生成按钮和状态文字**搬**进这一条（不是复制一个）：`refreshGenPanel` 靠
+    // `.gen-run` / `.gen-status` 这两个选择器在面板里找它们，搬家后照样找得到。
+    const promptRow = bar.querySelector('.of-prompt');
+    [panel.querySelector('.gen-status'), panel.querySelector('.gen-run')].forEach((el2) => {
+      if (el2) promptRow.appendChild(el2);
+    });
 
     const readout = bar.querySelector('.of-read');
     const btnOf = (k) => bar.querySelector(`[data-of="${k}"]`);
@@ -8503,6 +8550,10 @@
       });
       if (dimEl) dimEl.textContent = `${f.nw} × ${f.nh}`;
       syncBar();
+      // 工具条贴的是这块外框：外框一变宽/一挪位，它得跟着重新居中。
+      // 早先只有「换节点 / 平移画布」会重贴，拖锚点不会——拖完之后整条就落在框上方偏左，
+      // 用户截图里那个「悬在框外面」的样子就是这么来的。
+      scheduleFollowBars();
     };
 
     // 锚点：增量除以 k。不用绝对坐标——拖动中途 pad 变了，缩略图的宽高和 k 也跟着变，
