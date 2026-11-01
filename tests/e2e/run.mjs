@@ -1597,7 +1597,7 @@ try {
   // ---- 工作流库并进全局设置：左导航 + 右分格 ----
   // 以前是「设置一条长滚动」+「资产库一整个弹窗」：同一个工作流列表在两处渲染，
   // 「挑一个用」和「管它」被拆成两个地方。现在只有这一个面板，工作流就是第一格。
-  await page.evaluate(`document.querySelector('#projectBar [data-act="workflows"]').click()`);
+  await page.evaluate(`document.querySelector('#bar [data-act="add-wf"]').click()`);
   await page.waitFor(`!!document.getElementById('appSettings')`, 6000);
   await new Promise((r) => setTimeout(r, 400));
 

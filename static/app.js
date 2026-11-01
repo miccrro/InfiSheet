@@ -6272,8 +6272,9 @@
       return;
     }
     if (act === 'home') { showHome(); return; }
-    // 工作流库现在就是设置面板的第一格，不再是单独一个弹窗
-    if (act === 'workflows' || act === 'add-wf') { showCanvas(); openSettingsSheet('wf'); return; }
+    // 工作流库现在就是设置面板的第一格：齿轮落进去就是它，所以顶栏那颗单独的工作流库按钮删了，
+    // 只留底 dock 的 add-wf（那个是「挑一个加到画布」，在画布上顺手）
+    if (act === 'add-wf') { showCanvas(); openSettingsSheet('wf'); return; }
     if (act === 'storyboard') { showCanvas(); addScriptNode(); return; }
     if (act === 'settings') { openSettingsSheet(); return; }
     if (act === 'assets') { showCanvas(); openAssetSheet(); return; }
