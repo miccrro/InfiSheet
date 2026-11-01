@@ -244,15 +244,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   font-size: 12px; font-weight: 500; color: var(--faint);
   margin: 0 0 10px; letter-spacing: 0.4px;
 }
-.quick { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 10px; }
-.quick-card {
-  text-align: left; padding: 12px 14px; border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.07);
-  transition: 0.16s;
-}
-.quick-card:hover { border-color: rgba(110, 168, 254, 0.45); background: rgba(110, 168, 254, 0.07); }
-.quick-card b { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 3px; }
-.quick-card span { font-size: 11px; color: var(--faint); }
 
 .home-foot {
   margin-top: 6px; display: flex; align-items: center; gap: 9px;
@@ -1644,10 +1635,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #appSettings .set-body { gap: 6px; }
 #appSettings .set-sep { margin: 6px 0 2px; }
 #appSettings .set-group { margin-top: 4px; }
-
-/* 首页快捷卡：长标题截断，不要顶到边 */
-.quick-card { min-width: 0; }
-.quick-card b, .quick-card span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* =========================================================
    对齐参考图：顶部栏 / 底部 dock 的尺寸与对齐

@@ -7688,24 +7688,9 @@
   }
 
   async function initHome() {
-    await refreshWorkflows();               // 每次回首页都对一次库，避免显示过期卡片
-    const quick = document.getElementById('quickStart');
-    if (quick) {
-      quick.innerHTML = '';
-      const presets = (state.workflows && state.workflows.presets) || [];
-      const items = (state.workflows && state.workflows.items) || [];
-      const cards = [{ id: '', title: '空白画布', desc: '从零开始，自己搭节点' }]
-        .concat(presets.map((p) => ({ id: `preset:${p.file}`, title: p.title || p.name, desc: `${p.nodes} 个节点 · 内置预设` })))
-        .concat(items.map((p) => ({ id: `lib:${p.name}`, title: p.name, desc: `${p.nodes} 个节点 · 我的工作流库` })));
-      cards.forEach((c) => {
-        const b = document.createElement('button');
-        b.className = 'quick-card';
-        b.innerHTML = `<b>${esc(c.title)}</b><span>${esc(c.desc)}</span>`;
-        b.onclick = () => startNewCanvas(c.id || null);
-        quick.appendChild(b);
-      });
-    }
-
+    // 首页只剩「新建画布」+「最近项目」：以前这里还有一排「快速开始」卡片，直接从预设开画布。
+    // 但那条路和「新建画布 → 生成面板里选工作流」是同一件事，而且没有预设时只留一个空标题，
+    // 所以整排删掉了（工作流的选择统一收在生成面板里）。工作流列表由 boot() 和设置面板各自刷新。
     const row = document.getElementById('recentRow');
     const list = document.getElementById('recentList');
     if (row && list) {
