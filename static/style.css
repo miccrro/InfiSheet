@@ -48,11 +48,6 @@ body {
   width: 17px; height: 17px; fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
-#bar .icon.prime {
-  background: #f2f2f2; color: #141414; border-radius: 8px;
-}
-#bar .icon.prime:hover { background: #ffffff; color: #000000; }
-#bar .icon.prime svg { width: 18px; height: 18px; stroke-width: 1.9; }
 #bar .icon.orb {
   width: 32px; height: 32px; border-radius: 50%;
   background: conic-gradient(from 200deg, #6ea8fe, #a78bfa, #34d399, #6ea8fe);
@@ -63,7 +58,6 @@ body {
   width: 11px; height: 11px; border-radius: 50%;
   background: rgba(20, 20, 20, 0.55); border: 1px solid rgba(255, 255, 255, 0.45);
 }
-#bar .icon.active { background: rgba(110, 168, 254, 0.18); color: var(--accent); }
 #bar .vsep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); margin: 0 2px; }
 
 /* ---------- 顶部：项目栏 + 状态 ---------- */
@@ -82,8 +76,6 @@ body {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
-#projectBar .icon.tiny { width: 26px; height: 26px; border-radius: 7px; color: #cfcfcf; }
-#projectBar .icon.tiny:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; }
 #projectBar .icon.tiny svg {
   width: 16px; height: 16px;
   fill: none; stroke: currentColor; stroke-width: 1.65;
@@ -157,8 +149,6 @@ button {
   font-family: inherit; transition: 0.15s; white-space: nowrap;
 }
 button:hover { background: #2e2e2e; border-color: #404040; }
-button.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
-button.primary:hover { background: #2f74d8; }
 button.danger:hover { border-color: var(--err); color: var(--err); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -264,31 +254,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .quick-card b { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 3px; }
 .quick-card span { font-size: 11px; color: var(--faint); }
 
-.recent-item { display: flex; align-items: stretch; gap: 9px; }
-.recent-del {
-  width: 46px; flex: 0 0 46px; display: grid; place-items: center;
-  border-radius: 13px; background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.07); color: var(--faint);
-}
-.recent-del svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.recent-del:hover { color: var(--err); border-color: rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.08); }
-
-.recent-card {
-  flex: 1; display: flex; align-items: center; gap: 12px;
-  padding: 13px 16px; border-radius: 13px; text-align: left;
-  background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.07);
-}
-.recent-card:hover { border-color: rgba(110, 168, 254, 0.45); background: rgba(110, 168, 254, 0.06); }
-.recent-card .rc-icon {
-  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
-  background: rgba(110, 168, 254, 0.12); color: var(--accent); flex: 0 0 auto;
-}
-.recent-card .rc-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
-.recent-card .rc-main { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.recent-card .rc-main b { font-size: 12.5px; }
-.recent-card .rc-main span { font-size: 11px; color: var(--faint); }
-.recent-card .rc-go { font-size: 11.5px; color: var(--accent); }
-
 .home-foot {
   margin-top: 6px; display: flex; align-items: center; gap: 9px;
   font-size: 11.5px; color: var(--faint);
@@ -320,12 +285,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 #links { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 #links path { fill: none; stroke: rgba(186, 200, 220, 0.55); stroke-width: 1.6; }
-#links path:hover { stroke: var(--accent); }
 #links path.temp { stroke-dasharray: 6 5; opacity: 0.9; }
 #links .link-line { pointer-events: none; }
 #links .link-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 #links .link-hit:hover { stroke: rgba(110, 168, 254, 0.16); stroke-width: 14; }
-#links .link-line.sel { stroke: #f87171; stroke-width: 2.4; }
 #nodes { position: absolute; left: 0; top: 0; }
 
 #queueBadge {
@@ -425,24 +388,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   user-select: none;
 }
 .node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 10px 28px rgba(0, 0, 0, 0.45); }
-.node-head {
-  display: flex; align-items: center; gap: 6px; padding: 7px 10px;
-  border-bottom: 1px solid var(--line); cursor: move;
-  background: linear-gradient(180deg, #262626, #1f1f1f);
-  border-radius: 9px 9px 0 0;
-}
-.node-head .title { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-head .kind {
-  font-size: 10px; color: var(--dim); border: 1px solid var(--line);
-  padding: 1px 6px; border-radius: 20px;
-}
-.node-body { padding: 9px 10px 11px; }
 .node select, .node input, .node textarea {
   width: 100%; background: #141414; color: var(--text);
   border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px;
   font: inherit; font-size: 12px; outline: none;
 }
-.node select:focus, .node input:focus, .node textarea:focus { border-color: var(--accent); }
 /* 原生下拉弹层在部分 Chromium 上不吃 color-scheme，显式给 option 上暗色 */
 select option { background: #1f1f1f; color: var(--text); }
 .node textarea { resize: vertical; min-height: 34px; line-height: 1.45; }
@@ -453,10 +403,6 @@ select option { background: #1f1f1f; color: var(--text); }
   background: #141414; border: 2px solid var(--accent); cursor: crosshair;
   z-index: 3;
 }
-.port:hover { transform: scale(1.25); }
-.port.out { right: -6px; top: calc(50% - 6px); }
-.port.in { left: -6px; }
-.port.linked { background: var(--accent); }
 
 /* 文本节点 */
 .node.text { width: 280px; }
@@ -491,14 +437,6 @@ select option { background: #1f1f1f; color: var(--text); }
   padding: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 .node.selected .gen-panel { display: block; }
-.gen-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--dim); margin-bottom: 7px; }
-.gen-head button { padding: 2px 8px; font-size: 10.5px; }
-/* 旧的 .gen-prompt 样式（56px / 深底 + 描边）已删：与 .node textarea 打架，见 764 行的 .gen-panel .gen-prompt */
-.gen-row { display: grid; grid-template-columns: 1.6fr 0.8fr 0.8fr 0.7fr; gap: 6px; margin-top: 8px; }
-.gen-row select { background: #141414; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 4px 5px; font-size: 11.5px; }
-.gen-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
-.gen-status { flex: 1; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gen-run { padding: 5px 18px; }
 /* ---------- 左下：画布视图控制 ---------- */
 #viewTools {
   position: absolute; left: 8px; bottom: 12px; z-index: 25;
@@ -514,9 +452,7 @@ select option { background: #1f1f1f; color: var(--text); }
   background: transparent; border: none; border-radius: 8px;
   color: #a3a3a3; padding: 0; font-size: 12px;
 }
-#viewTools .vt:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; }
 #viewTools .vt svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-#viewTools .vt.active { color: var(--accent); background: rgba(110, 168, 254, 0.14); }
 #viewTools .vt.zoom { width: auto; min-width: 42px; padding: 0 6px; color: #d4d4d4; font-size: 12px; }
 
 #zoomMenu {
@@ -544,8 +480,6 @@ select option { background: #1f1f1f; color: var(--text); }
   border: none; background: transparent; text-align: left;
   padding: 6px 12px; border-radius: 6px; font-size: 12px; color: var(--text);
 }
-.popmenu button:hover { background: var(--panel-2); }
-.popmenu button.danger:hover { color: var(--err); }
 .popmenu-title {
   padding: 4px 12px 6px; font-size: 10.5px; color: var(--faint);
   border-bottom: 1px solid var(--line); margin-bottom: 3px;
@@ -624,7 +558,6 @@ select option { background: #1f1f1f; color: var(--text); }
 
 /* 图片输出节点 */
 .node.out { width: 300px; }
-.node.out .port.in { top: calc(50% - 6px); }
 .node.out .results { margin-top: 0; }
 .out-empty {
   border: 1px dashed var(--line); border-radius: 7px; background: #141414;
@@ -711,7 +644,6 @@ select option { background: #1f1f1f; color: var(--text); }
   display: flex; align-items: center; gap: 10px; padding: 9px 11px;
   border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); cursor: pointer;
 }
-.card:hover { border-color: var(--accent); }
 .card .info { flex: 1; }
 .card .info b { font-size: 12.5px; font-weight: 600; display: block; }
 .card .info span { font-size: 11px; color: var(--dim); }
@@ -853,10 +785,6 @@ select option { background: #1f1f1f; color: var(--text); }
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
   transition: border-color .15s, box-shadow .15s;
 }
-.node.selected .node-card {
-  border-color: rgba(110, 168, 254, 0.85);
-  box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.55), 0 10px 26px rgba(0, 0, 0, 0.42);
-}
 .node-body { padding: 10px; }
 
 /* 端口：圆环 + 加号，压在卡片左右边沿 */
@@ -902,7 +830,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 
 /* 图片节点：更大的画布区 */
 .node.image { width: 380px; }
-.node.image .node-body { padding: 8px; }
 /* 框的尺寸完全交给图片：JS 把真实比例写进 --ar，框用 aspect-ratio 自己算高。
    宽取 min(可用宽, 高度上限 760px×比例) —— 横图铺满宽度，竖图被 760 封顶后自动收窄，
    两种情况下框和图片都严丝合缝，object-fit 没有多余空间可补（黑边就是这么来的） */
@@ -917,14 +844,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 /* 空态没有图片可依，才需要自己占满并垫高度 */
 .node.image .thumb.is-empty { width: 100%; aspect-ratio: auto; min-height: 200px; }
-/* 右上角：图片原始像素尺寸 */
-.img-dim {
-  position: absolute; top: 6px; right: 6px; z-index: 2;
-  padding: 2px 7px; border-radius: 6px; pointer-events: none;
-  background: rgba(20, 20, 20, 0.66); border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #d4d4d4; font-size: 10.5px; letter-spacing: 0.02em;
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-}
 /* 左上角：查看大图 */
 .img-zoom {
   position: absolute; top: 6px; left: 6px; z-index: 2;
@@ -997,7 +916,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   background: transparent; border: none; color: var(--dim);
   padding: 5px 2px; font-size: 12.5px; text-align: left; border-radius: 6px;
 }
-.thumb-empty .try-item:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
 .thumb-empty .try-item svg {
   width: 15px; height: 15px; fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9;
@@ -1063,7 +981,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   background: rgba(255, 255, 255, 0.13);
 }
 .gen-chips .chip svg { opacity: 0.95; }
-.gen-chips .grow, .gen-bar .grow { flex: 1; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 4px 9px; border-radius: 8px; font-size: 11px;
@@ -1071,9 +988,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border: 1px solid rgba(255, 255, 255, 0.07);
   color: var(--dim);
 }
-.chip:hover { color: var(--text); background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.12); }
 .chip svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.chip.icon-only { padding: 4px 6px; }
 
 /* 生成器面板里的提示词：别被 `.node textarea` 的通用样式接管（min-height:32 / 边框 / 深井底），
    否则会被压成两行、文字裁掉、外面多一圈边框。加 .gen-panel 前缀提高权重。 */
@@ -1195,8 +1110,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   padding-top: 8px; margin-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
-/* 第二行（画幅/尺寸/张数 + 状态 + 生成）：不再挤工作流 */
-.gen-bar-sub { padding-top: 0; margin-top: 6px; border-top: none; }
 .gensel {
   display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; min-width: 0;
   padding: 3px 6px; border-radius: 7px;
@@ -1222,8 +1135,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border-left: 3.5px solid transparent; border-right: 3.5px solid transparent; border-top: 4px solid currentColor;
 }
 .gensel .gm-btn:disabled { cursor: default; opacity: 0.6; }
-.gensel.wfsel { flex: 1 1 100%; min-width: 0; }
-.gensel.wfsel .gm-btn { width: 100%; }
 /* 参数胶囊（画幅 · 清晰度 · 张数）：左边一枚按比例变形的小方框，一眼看出当前是横还是竖 */
 .gensel.optsel { flex: 0 0 auto; }
 .gensel.optsel .gm-btn { gap: 5px; }
@@ -1287,7 +1198,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   padding: 8px 2px 0; border-top: 1px solid var(--line);
   font-size: 10px; color: var(--faint); text-align: center; letter-spacing: 0.3px;
 }
-.popmenu button.active { color: var(--accent); }
 .popmenu button.add { color: var(--accent); }
 .popmenu button.add:hover { background: rgba(110, 168, 254, 0.12); }
 .gen-status {
@@ -1302,7 +1212,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: grid; place-items: center;
 }
 .gen-run svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.gen-run:hover { background: #ffffff; }
 /* 生成中：箭头换成旋转加载环 */
 .gen-run.busy {
   background: transparent; border: 2px solid rgba(255, 255, 255, 0.28);
@@ -1314,7 +1223,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #f2f2f2;
   animation: gen-spin 0.8s linear infinite;
 }
-@keyframes gen-spin { to { transform: rotate(360deg); } }
+@keyframes gen-spin { }
 
 /* 占位/其它节点微调，让新外壳更协调 */
 .node.text .node-body, .node.wf .node-body, .node.out .node-body { padding: 10px; }
@@ -1403,11 +1312,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 #appSettings .sheet { width: 430px; max-width: 92vw; }
 #appSettings .set-body { padding: 14px 16px 16px; display: grid; gap: 12px; }
-#appSettings label { display: grid; gap: 6px; font-size: 12px; color: var(--dim); }
-#appSettings select {
-  background: #141414; color: var(--text); border: 1px solid var(--line);
-  border-radius: 7px; padding: 6px 8px; font: inherit; font-size: 12.5px;
-}
 #appSettings .prime {
   height: 32px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--panel-2); color: var(--text);
@@ -1479,7 +1383,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 #appSettings .set-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #appSettings .set-actions button { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 12px; }
 #appSettings .set-actions button:hover { border-color: var(--accent); color: var(--accent); }
-#appSettings .set-actions button.prime { background: var(--accent); border-color: var(--accent); color: #0b1220; }
 
 /* ---------- 设置 · 工作流 ----------
    一行要放下「名字 / 分类 / 默认 / 删除」四样，430px 的面板挤成两行反而更难读，
@@ -1549,8 +1452,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   --ctl-h: 26px;       /* 控件高度 */
   --ctl-r: 7px;        /* 控件圆角 */
 }
-.node-title { font-size: 13px; }
-.node-title .n-icon svg { width: 14px; height: 14px; }
 .node select, .node input, .node textarea { font-size: var(--fs-ctl); border-radius: var(--ctl-r); }
 .node select, .node input { height: var(--ctl-h); }
 .node textarea { min-height: 32px; }
@@ -1562,16 +1463,11 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .gen-status { font-size: var(--fs-meta); }
 .gen-run { width: 28px; height: 28px; }
 .gen-bar { gap: 6px; }
-.img-dim { font-size: 10.5px; padding: 2px 6px; }
 .popmenu { min-width: 160px; }
 .popmenu button { font-size: var(--fs-ctl); padding: 7px 12px; border-radius: 7px; }
 #addMenu { min-width: 182px; padding: 6px; }
 #addMenu .am-item { font-size: var(--fs-ctl); padding: 8px 10px; border-radius: 7px; }
 #addMenu .am-title { font-size: var(--fs-meta); }
-#bar .icon { width: 34px; height: 34px; }
-#viewTools .vt { width: 30px; height: 30px; }
-#projectBar { height: 34px; }
-#projectBar .icon.tiny { width: 26px; height: 26px; }
 #statusChip { font-size: var(--fs-meta); }
 .set-tip { margin: 2px 0 0; font-size: var(--fs-meta); color: var(--faint); line-height: 1.55; }
 
@@ -1600,35 +1496,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   --glow-accent: 0 0 0 1px rgba(122, 162, 255, 0.55), 0 0 24px rgba(122, 162, 255, 0.18);
 }
 
-/* 画布底：细点阵 + 轻微暗角 */
-#stage {
-  --canvas-bg: #0f1115;
-  --canvas-line: rgba(255, 255, 255, 0.22);
-  --canvas-glow: rgba(122, 162, 255, 0.06);
-  --canvas-vignette: rgba(0, 0, 0, 0.35);
-  background-color: var(--canvas-bg);
-  background-image:
-    radial-gradient(1200px 700px at 50% -10%, var(--canvas-glow), transparent 60%),
-    radial-gradient(circle at 50% 50%, var(--canvas-line) 1.4px, transparent 1.6px),
-    radial-gradient(circle at 50% 50%, transparent 55%, var(--canvas-vignette) 100%);
-  background-size: auto, 20px 20px, auto;
-  transition: background-color 0.25s ease;
-}
-#stage[data-pattern="lines"] {
-  background-image:
-    radial-gradient(1200px 700px at 50% -10%, var(--canvas-glow), transparent 60%),
-    linear-gradient(var(--canvas-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--canvas-line) 1px, transparent 1px),
-    radial-gradient(circle at 50% 50%, transparent 55%, var(--canvas-vignette) 100%);
-  background-size: auto, 24px 24px, 24px 24px, auto;
-}
-#stage[data-pattern="none"] {
-  background-image:
-    radial-gradient(1200px 700px at 50% -10%, var(--canvas-glow), transparent 60%),
-    radial-gradient(circle at 50% 50%, transparent 55%, var(--canvas-vignette) 100%);
-  background-size: auto, auto;
-}
-
 /* 顶栏 / 状态条 */
 #topBar { padding: 10px 12px; }
 #projectBar, #statusChip {
@@ -1638,9 +1505,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   backdrop-filter: blur(18px) saturate(120%);
   -webkit-backdrop-filter: blur(18px) saturate(120%);
 }
-#projectBar { border-radius: 11px; }
 #statusChip { border-radius: 999px; padding: 0 12px; height: 32px; }
-#projectBar .icon.tiny:hover { background: rgba(122, 162, 255, 0.14); color: #fff; }
 
 /* 底部工具条：一块玻璃胶囊 */
 #bar {
@@ -1652,12 +1517,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   -webkit-backdrop-filter: blur(20px) saturate(120%);
   padding: 5px;
 }
-#bar .icon { width: 36px; height: 36px; border-radius: 11px; color: var(--dim); }
-#bar .icon svg { width: 18px; height: 18px; }
-#bar .icon:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-#bar .icon.active { background: rgba(122, 162, 255, 0.16); color: var(--accent); box-shadow: inset 0 0 0 1px rgba(122, 162, 255, 0.28); }
-#bar .icon.prime { background: #f3f5fa; color: #0b0d12; box-shadow: 0 6px 18px rgba(255, 255, 255, 0.12); }
-#bar .icon.prime:hover { background: #fff; }
 
 /* 视图工具 / 小地图 */
 #viewTools, #minimap {
@@ -1668,9 +1527,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
-#viewTools .vt { border-radius: 8px; color: var(--dim); }
 #viewTools .vt:hover { color: #fff; background: rgba(255, 255, 255, 0.07); }
-#viewTools .vt.active { color: var(--accent); background: rgba(122, 162, 255, 0.14); }
 
 /* 节点卡片 */
 .node-card {
@@ -1680,15 +1537,9 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   box-shadow: var(--shadow-1);
   transition: border-color 0.16s, box-shadow 0.16s, transform 0.16s;
 }
-.node:hover .node-card { border-color: rgba(255, 255, 255, 0.14); }
-.node.selected .node-card {
-  border-color: rgba(122, 162, 255, 0.75);
-  box-shadow: var(--shadow-1), 0 0 0 1px rgba(122, 162, 255, 0.35), 0 0 32px rgba(122, 162, 255, 0.14);
-}
 .node.dragging .node-card { transform: scale(0.995); }
 
-/* Alt 按住 = 下一手拖出来的是副本。光标先给出预告，不然没人会发现这个手势。
-   放在覆盖层：`.node-head { cursor: move }` 在上一层，得压住它。 */
+` 在上一层，得压住它。 */
 body.alt-down .node,
 body.alt-down .node-card,
 body.alt-down .node-head,
@@ -1699,9 +1550,7 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
 
 /* 标题栏 */
 .node-title { color: #e6eaf2; }
-.node-title .n-icon { color: var(--faint); }
 .node:hover .node-title .n-icon { color: var(--dim); }
-.node-title .n-btn:hover { color: var(--err); background: rgba(251, 113, 133, 0.12); }
 
 /* 端口：深井 + 类型色描边 */
 .port {
@@ -1709,14 +1558,11 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
   border-width: 1.5px;
   box-shadow: 0 0 0 3px rgba(15, 17, 21, 0.9);
 }
-.port::after { color: var(--dim); }
 .port:hover { border-color: #fff; color: #fff; background: #151922; }
 .port.drop-ok { box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.18), 0 0 18px rgba(122, 162, 255, 0.35); }
 
 /* 连线 */
 #links path { stroke: rgba(160, 176, 200, 0.5); stroke-width: 1.5; }
-#links path:hover { stroke: var(--accent); }
-#links .link-line.sel { stroke: var(--err); stroke-width: 2.4; }
 
 /* 输入 / 下拉 / 控件 */
 .node select, .node input, .node textarea,
@@ -1733,15 +1579,11 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
 }
 .chip:hover { border-color: var(--line-strong); color: #fff; background: #151922; }
 .gen-panel { background: #121419; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 13px; box-shadow: var(--shadow-1); }
-.gen-run { background: #eef1f6; color: #0b0d12; box-shadow: 0 6px 16px rgba(255, 255, 255, 0.12); }
-.gen-run:hover { background: #fff; }
-.gen-status { color: var(--dim); }
 .node-progress { background: #2a2f3a; }
 .node-progress i { background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
 
 /* 图片区 */
 .node.image .thumb { background: #0c0e12; border-radius: 10px; }
-.img-dim { background: rgba(12, 14, 18, 0.78); border-color: rgba(255, 255, 255, 0.16); color: #e6eaf2; }
 .img-zoom { background: rgba(12, 14, 18, 0.82); border-color: rgba(255, 255, 255, 0.14); }
 .thumb-empty .try-label { color: var(--faint); }
 .thumb-empty .try-item { color: var(--dim); }
@@ -1757,7 +1599,6 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
   -webkit-backdrop-filter: blur(20px) saturate(120%);
 }
 #addMenu button, .popmenu button { color: #dfe4ec; border-radius: 8px; }
-#addMenu button:hover, .popmenu button:hover { background: rgba(122, 162, 255, 0.12); color: #fff; }
 .popmenu button.danger:hover { background: rgba(251, 113, 133, 0.14); color: var(--err); }
 .popmenu button.active { color: var(--accent); }
 .popmenu-title { color: var(--faint); }
@@ -1775,13 +1616,6 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
 #modalTabs .tab { color: var(--dim); }
 #modalTabs .tab.active { color: #fff; }   /* 选中态只靠底色 + 左侧白条，不用主题蓝 */
 .card { background: #141414; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 11px; }
-.card:hover { border-color: rgba(255, 255, 255, 0.18); background: #1a1a1a; }
-.card .primary, .set-actions button.prime, #pasteGo, #setOpenLib {
-  background: linear-gradient(180deg, #8fb0ff, #6d95ff);
-  border-color: transparent;
-  color: #0b1020;
-  box-shadow: 0 8px 20px rgba(109, 149, 255, 0.25);
-}
 
 /* 分组 */
 
@@ -1829,7 +1663,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   display: grid; place-items: center; line-height: 1;
 }
 #projectBar .icon.tiny + .icon.tiny { margin-left: 2px; }
-#projectBar .icon.tiny svg { width: 15px; height: 15px; }
 #projectBar .vsep { height: 18px; margin: 0 5px; }
 #projectName {
   width: 118px; height: 30px; font-size: 13.5px; line-height: 1;
@@ -1870,8 +1703,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   width: 34px; height: 34px; border-radius: 9px; padding: 0;
   display: grid; place-items: center; line-height: 1;
 }
-#bar .icon svg { width: 17px; height: 17px; }
-#bar .icon.prime { width: 40px; height: 40px; border-radius: 11px; }
 #bar .icon.prime svg { width: 19px; height: 19px; stroke-width: 1.9; }
 #bar .vsep { height: 22px; margin: 0 4px; }
 #bar .icon.orb { display: none; }
@@ -1896,22 +1727,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* 对齐微调：顶栏间距、dock 图标颜色 */
 #projectBar { gap: 4px; padding: 0 6px; }
 #projectName { width: 126px; }
-#bar .icon { color: #c7cedb; }
-#bar .icon:hover { color: #fff; }
-#bar .icon svg { stroke-width: 1.7; }
 
 /* 参考图对齐：去掉首页按钮边框、图标更细、分割线放时钟后、orb 做成玻璃球 */
 #projectBar .icon.tiny[data-act="home"] {
   border-color: transparent; background: transparent;
 }
 #projectBar .icon.tiny[data-act="home"]:hover { background: rgba(255, 255, 255, 0.06); }
-#bar .icon { color: #c3cad6; }
 #bar .icon svg { width: 16px; height: 16px; stroke-width: 1.65; }
-#bar .icon.active {
-  background: rgba(255, 255, 255, 0.07);
-  color: #fff;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-}
 #dockWrap .dock-orb {
   border-color: rgba(255, 255, 255, 0.22);
   background:
@@ -1962,17 +1784,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* ---------- 主体图标放大（反馈：icon 太小） ---------- */
 #bar { height: 56px; }
-#bar .icon { width: 36px; height: 36px; border-radius: 10px; }
-#bar .icon svg { width: 18px; height: 18px; }
-#bar .icon.prime { width: 42px; height: 42px; border-radius: 12px; }
-#bar .icon.prime svg { width: 20px; height: 20px; }
-#projectBar { height: 40px; }
-#projectBar .icon.tiny { width: 30px; height: 30px; border-radius: 9px; }
-#projectBar .icon.tiny svg { width: 17px; height: 17px; }
-#projectName { height: 32px; }
-#canvasMenuBtn { height: 30px; }
-#viewTools .vt { width: 32px; height: 32px; }
-#viewTools .vt svg { width: 18px; height: 18px; }
 .node-title { font-size: 13.5px; }
 .node-title .n-icon svg { width: 16px; height: 16px; }
 #statusChip { height: 34px; }
@@ -1983,38 +1794,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .node-title .n-del { font-size: 16px; }
 .port { width: 20px; height: 20px; }
 .port::after { font-size: 12px; }
-
-/* ---------- 背景 v3：深色 + 双色柔光 + 细点阵 ---------- */
-#stage {
-  --canvas-bg: #0a0c11;
-  --canvas-line: rgba(255, 255, 255, 0.12);
-  --canvas-glow-a: rgba(96, 132, 255, 0.10);
-  --canvas-glow-b: rgba(150, 100, 255, 0.065);
-  --canvas-vignette: rgba(0, 0, 0, 0.5);
-  background-color: var(--canvas-bg);
-  background-image:
-    radial-gradient(760px 520px at 12% -8%, var(--canvas-glow-a), transparent 62%),
-    radial-gradient(760px 540px at 92% 108%, var(--canvas-glow-b), transparent 64%),
-    radial-gradient(circle at 50% 50%, var(--canvas-line) 1.2px, transparent 1.4px),
-    radial-gradient(circle at 50% 50%, transparent 52%, var(--canvas-vignette) 100%);
-  background-size: auto, auto, 18px 18px, auto;
-}
-#stage[data-pattern="lines"] {
-  background-image:
-    radial-gradient(760px 520px at 12% -8%, var(--canvas-glow-a), transparent 62%),
-    radial-gradient(760px 540px at 92% 108%, var(--canvas-glow-b), transparent 64%),
-    linear-gradient(var(--canvas-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--canvas-line) 1px, transparent 1px),
-    radial-gradient(circle at 50% 50%, transparent 52%, var(--canvas-vignette) 100%);
-  background-size: auto, auto, 24px 24px, 24px 24px, auto;
-}
-#stage[data-pattern="none"] {
-  background-image:
-    radial-gradient(760px 520px at 12% -8%, var(--canvas-glow-a), transparent 62%),
-    radial-gradient(760px 540px at 92% 108%, var(--canvas-glow-b), transparent 64%),
-    radial-gradient(circle at 50% 50%, transparent 52%, var(--canvas-vignette) 100%);
-  background-size: auto, auto, auto;
-}
 
 /* ---------- 图标统一 32×32 ---------- */
 #bar { height: 52px; }
@@ -2031,13 +1810,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #viewTools .vt svg { width: 17px; height: 17px; }
 #dockWrap .dock-orb { width: 48px; height: 48px; }
 
-/* ---------- 背景 v4：#1a1a1a + #474747 点阵，20px ---------- */
+/* ---------- 背景：#1a1a1a + #474747 点阵，20px ---------- */
 #stage {
   --canvas-bg: #1a1a1a;
   --canvas-dot: #474747;
   background-color: var(--canvas-bg);
   background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1px);
   background-size: 20px 20px;
+  transition: background-color 0.25s ease;
 }
 #stage[data-pattern="lines"] {
   background-image:
@@ -2081,8 +1861,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #projectBar .icon.tiny:hover, #bar .icon:hover { background: #ffffff1a; color: #fff; }
 #bar .icon.active, #viewTools .vt.active { background: #ffffff26; color: #fff; box-shadow: none; }
 #projectBar .icon.tiny { border-color: #363636; background: transparent; }
-#bar .icon.prime { background: #ffffffe6; color: #141414; }
-#bar .icon.prime:hover { background: #ffffffb3; }
 #viewTools .vt { color: #ffffffd9; }
 #statusChip { color: #919191; }
 
@@ -2131,7 +1909,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .card { background: #262626; border: 1px solid #363636; }
 .card:hover { background: #2e2e2e; border-color: #525252; }
 .card .primary, #setOpenLib, #pasteGo { background: #ffffffe6; color: #141414; border-color: transparent; box-shadow: none; }
-.card .primary:hover, #setOpenLib:hover, #pasteGo:hover { background: #ffffffb3; }
 
 /* 输入 / 控件 */
 .node select, .node input, .node textarea, .gensel, .chip, .gen-prompt {
@@ -2139,7 +1916,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .chip:hover { background: #ffffff1a; border-color: #525252; }
 .gen-panel { background: #262626; border: 1px solid #363636; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15); }
-.gen-run { background: #ffffffe6; color: #141414; }
 .gen-run:hover { background: #ffffffb3; }
 .gen-status { color: #919191; }
 
@@ -2504,14 +2280,6 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 .node.image:hover .node-card { border: none; }
 
-/* 标题行右侧的像素尺寸（原来是浮在图片右上角的 .img-dim，压画面） */
-.node-title .n-dim {
-  flex: 0 0 auto;
-  color: var(--faint);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-}
 .node-title .n-dim:empty { display: none; }
 .node.selected .node-title .n-dim { color: var(--dim); }
 

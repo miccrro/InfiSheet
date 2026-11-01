@@ -743,14 +743,6 @@
   const SIZES = [['1k', '1K', 1024], ['2k', '2K', 2048], ['4k', '4K', 4096]];
   const OLD_SIZE = { preview: '1k', standard: '1k', hd: '2k' };   // 高清 2K：16:9 下 ~2MP，最接近原来那张图的大小
 
-  function workflowOptions() {
-    const w = state.workflows || { presets: [], items: [] };
-    return [
-      ...w.presets.map((p) => ({ id: `preset:${p.file}`, label: p.title || p.name })),
-      ...w.items.map((p) => ({ id: `lib:${p.name}`, label: `库 · ${p.name}` })),
-    ];
-  }
-
   // 生成器下拉只用内置预设：库工作流是「我的存档」，容易和模板混在一起
   // takes_image 由服务端扫图得出（server.py: graph_takes）：
   // 挑工作流必须看能力，不能看名字里的「图像编辑」——Moss_图像编辑 其实是纯文生图。
@@ -1415,21 +1407,6 @@
     } else {
       r.selectNodeContents(el);
     }
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-  }
-
-  function insertAtCaret(el, node) {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || !el.contains(sel.getRangeAt(0).commonAncestorContainer)) {
-      el.appendChild(node);
-      return;
-    }
-    const r = sel.getRangeAt(0);
-    r.deleteContents();
-    r.insertNode(node);
-    r.setStartAfter(node);
     r.collapse(true);
     sel.removeAllRanges();
     sel.addRange(r);
@@ -9099,14 +9076,6 @@
     span.textContent = hit ? hit.label : (n.gen.wf || '（空）');
     const btn = box.querySelector('.gm-btn');
     if (btn) btn.title = span.textContent;
-  }
-
-  // 换工作流的唯一入口：改值 + 刷按钮 + 存档，三件事别分家
-  function setWf(n, id) {
-    if (!n || !n.gen || !id || n.gen.wf === id) return;
-    n.gen.wf = id;
-    paintWfChip(n);
-    queueSave();
   }
 
   // 工作流必须和「有没有遮罩」对上，两个方向都要对：

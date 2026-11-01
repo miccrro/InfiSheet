@@ -18,7 +18,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 
 ## 服务端 `server.py`
 
-单文件（约 1570 行），基于 `http.server.ThreadingHTTPServer`。
+单文件，基于 `http.server.ThreadingHTTPServer`。
 
 | 层 | 说明 |
 |---|---|
