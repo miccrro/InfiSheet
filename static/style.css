@@ -2772,11 +2772,13 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .crop-btn.primary:active { background: #5b98ef; }
 
 /* ---------- 扩图：边框直接长在节点图上 ---------- */
-/* 舞台就是**新画布**：铺满缩略图（--ar 已经被改成 nw/nh），原图按 ox/oy 摆进去，
-   四条新边标蓝。底色是棋盘格——扩出来的像素此刻还不存在，真实产物里它们也是透明的，
+/* 缩略图是**原图的画框**（--ar = 原图宽高比），舞台才是**新画布**：它比缩略图大多少，
+   就往外真的溢出多少，原图在里面原地不动。这样「扩」才看得见——早先是画布塞满缩略图、
+   原图往里缩，拖锚点看着只是「图被压扁、框没变宽」。
+   底色是棋盘格：扩出来的像素此刻还不存在，真实产物里它们也是透明的，
    棋盘格比纯色更诚实（纯黑会让人以为已经填上了）。 */
-/* overflow 必须放开：锚点挂在框外 6px，缩略图默认 overflow:hidden 会把它们剪掉一半。
-   圆角交给 .op-stage 自己裁。 */
+/* overflow 必须放开：舞台会溢出缩略图，锚点也挂在框外 6px，
+   缩略图默认 overflow:hidden 会把它们剪掉一半。圆角交给 .op-stage 自己裁。 */
 .node.image .thumb.op-mode { overflow: visible; }
 /* 扩图模式下这些都不该露头：图片本体由 .op-stage 里的那份摆，
    缩略图里原有的 img / 遮罩预览 / 大图 / 翻页 / 生成历史全让位 */
@@ -2787,8 +2789,10 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .node.image .thumb.op-mode > .img-nav,
 .node.image .thumb.op-mode > .img-hist,
 .node.image .thumb.op-mode > .gen-overlay { display: none; }
+/* 尺寸和位置由 draw() 按「原图不动、画布往外长」算好写死（left/top 可以是负的） */
 .op-stage {
-  position: absolute; inset: 0; overflow: hidden; border-radius: 8px;
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  overflow: hidden; border-radius: 8px;
   background-color: #101114;
   background-image:
     linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
@@ -2796,8 +2800,8 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   background-size: 16px 16px;
   background-position: 0 0, 8px 8px;
 }
-/* 尺寸由 draw() 按「新画布塞进缩略图」算好写死，原图按同一比例绝对定位，
-   所以不能再吃 .thumb img 的 width:100%（那会把图拉满整个新画布） */
+/* 原图按同一个 k 绝对定位在 (ox·k, oy·k)，所以不能再吃 .thumb img 的 width:100%
+   （那会把图拉满整个新画布） */
 .op-stage img {
   position: absolute; display: block;
   max-width: none; max-height: none; border-radius: 0;
@@ -2809,12 +2813,22 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   position: absolute; pointer-events: none; box-sizing: border-box;
   border: 1px dashed rgba(110, 168, 254, 0.85);
 }
-/* 八个锚点直接复用裁剪那套 .crop-sel .ch（形状、光标都一致），只把位置改成铺满缩略图 */
-.op-sel { inset: 0; cursor: default; touch-action: none; }
+/* 八个锚点直接复用裁剪那套 .crop-sel .ch（形状、光标都一致），
+   尺寸和位置跟舞台一模一样（draw() 一起设），所以锚点永远贴在画布边上 */
+.op-sel {
+  left: 0; top: 0; width: 100%; height: 100%;
+  cursor: default; touch-action: none;
+}
+
+/* 画布溢出缩略图时要压在邻居上面，否则「长出去」的那半边被旁边的节点挡住 */
+.node.op-raised { z-index: 30; }
 
 /* 边框下面那条：比例档 + 尺寸读数 + 完成。
    和生成面板同属这个节点，所以宽度只有节点那么宽，比例档排两行也认了 */
-.op-bar { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+/* 画布往下扩时会压到这条按钮上：给它一个更高的层级，按钮必须点得到 */
+.op-bar { position: relative; z-index: 1; margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+/* 往上扩时画布会盖住节点标题，标题里的「生成」就被挡了：只给扩图中的这个节点提一层 */
+.node.op-raised .node-title { position: relative; z-index: 2; }
 .op-ratios { display: flex; flex-wrap: wrap; gap: 4px; }
 .op-ratios .crop-ratio { height: 22px; padding: 0 8px; font-size: 11px; }
 .op-foot { display: flex; align-items: center; gap: 8px; }

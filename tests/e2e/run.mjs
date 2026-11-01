@@ -3216,7 +3216,8 @@ try {
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
-             stageW: Math.round(st.width),
+             stageW: Math.round(st.width), imgW: Math.round(im.width),
+             thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
              size: el.querySelector('.op-size').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '' };
   })()`);
@@ -3226,7 +3227,8 @@ try {
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
-             stageW: Math.round(st.width),
+             stageW: Math.round(st.width), imgW: Math.round(im.width),
+             thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
              size: el.querySelector('.op-size').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '',
              onChip: [...el.querySelectorAll('.op-ratios .crop-ratio.on')].length };
@@ -3244,6 +3246,13 @@ try {
     !!eastAt && nAfter.r > nBefore.r + 8 && nAfter.l === nBefore.l
       && after.size !== before.size && after.onChip === 0,
     JSON.stringify({ before: nBefore, after: nAfter, size: [before.size, after.size] }));
+  // 这条是用户原话「图片大小固定不变」的直接回归：扩图应该是**画布长出去**，
+  // 不是把画布塞满缩略图、让原图往里缩（那样拖了看着只是「图被压扁」）。
+  check('拖锚点只让画布往外长：原图和缩略图的尺寸一个像素都不变，画布真的比它们宽',
+    after.imgW === before.imgW && after.thumbW === before.thumbW
+      && after.stageW > after.thumbW + 20,
+    JSON.stringify({ imgW: [before.imgW, after.imgW], thumbW: [before.thumbW, after.thumbW],
+      stageW: [before.stageW, after.stageW] }));
   check('拖的同时面板里的尺寸胶囊跟着变（不是等生成完才改）',
     after.opt !== before.opt && /^\d+×\d+ · \d+张$/.test(after.opt),
     JSON.stringify({ before: before.opt, after: after.opt }));

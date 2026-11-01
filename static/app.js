@@ -8153,6 +8153,12 @@
     const readout = bar.querySelector('.op-size');
     const el = thumb.closest('.node');
     const dimEl = el && el.querySelector('.n-dim');
+    // 缩略图始终按**原图**比例：它是原图的画框，不是新画布的画框。
+    // 跟着画布改 --ar 会让节点高度一跳（380×407 塌成 380×208），而且原图被迫缩小——
+    // 那正是「图片大小固定不变」的观感来源。
+    thumb.style.setProperty('--ar', (op0.w / op0.h).toFixed(4));
+    // 画布要溢出缩略图，得压在邻居上面，不然「长出去」的那半边被别的节点挡住
+    if (el) el.classList.add('op-raised');
     const state = { k: 1 };
     const same = (a, b) => ['l', 't', 'r', 'b'].every((k) => Math.abs((a[k] || 0) - (b[k] || 0)) <= 1.5);
 
@@ -8160,11 +8166,41 @@
       const op = outpaintOf(n);
       if (!op) return;
       const f = outpaintFrame(op.w, op.h, op);
-      const tw = thumb.clientWidth, th = thumb.clientHeight;
-      if (!tw || !th) return;
-      // 缩略图的比例就是新画布的比例（下面 --ar 已经改了），所以只要一个 k
-      const k = Math.min(tw / f.nw, th / f.nh);
+      const tw = thumb.clientWidth;
+      if (!tw) return;
+      // 缩略图是**原图的画框**（--ar 是 op.w/op.h），所以原图铺满它：k = tw / op.w。
+      // 画布比原图大多少，就按同一个 k 往右/下**真的长出去**多少。
+      // 早先反着来（画布塞满缩略图、原图往里缩），拖右边时看到的只是「图被压扁、框没变宽」，
+      // 用户的原话就是「图片大小固定不变」——扩出来的部分根本没长出来。
+      const k1 = tw / op.w;
+      // 扩得太大时整体缩回来，别让锚点（和下面的按钮）跑到屏幕外。
+      // 只约束**扩出来的那部分**：原图本来就在视口里，拿整块画布去比会把「节点靠下」
+      // 也算成扩图的错，白白把原图压小一圈。
+      const r = thumb.getBoundingClientRect();
+      const thumbH = thumb.clientHeight;
+      const GAP = 10;
+      const extraL = f.ox, extraT = f.oy;
+      const extraR = Math.max(0, f.nw - f.ox - op.w);
+      const extraB = Math.max(0, f.nh - f.oy - op.h);
+      // 原图自己就已经出界的那一侧不再约束：再怎么缩也救不回来，硬缩只会把图压成小点
+      const kL = extraL > 0 && r.left > GAP ? (r.left - GAP) / extraL : Infinity;
+      const kT = extraT > 0 && r.top > GAP ? (r.top - GAP) / extraT : Infinity;
+      const kR = extraR > 0 && r.left + tw < window.innerWidth - GAP
+        ? (window.innerWidth - GAP - r.left - tw) / extraR : Infinity;
+      const kB = extraB > 0 && r.top + thumbH < window.innerHeight - GAP
+        ? (window.innerHeight - GAP - r.top - thumbH) / extraB : Infinity;
+      // 最多缩到「原图只剩 45%」，再大就让它溢出——总比缩成一个看不清的小点强
+      const k = Math.max(Math.min(k1, kL, kT, kR, kB), k1 * 0.45);
       state.k = k;
+      // 画布（= 舞台）相对缩略图的偏移就是 -ox·k / -oy·k：原图的位置一点不动
+      stage.style.left = `${-f.ox * k}px`;
+      stage.style.top = `${-f.oy * k}px`;
+      stage.style.width = `${f.nw * k}px`;
+      stage.style.height = `${f.nh * k}px`;
+      sel.style.left = stage.style.left;
+      sel.style.top = stage.style.top;
+      sel.style.width = stage.style.width;
+      sel.style.height = stage.style.height;
       im.style.left = `${f.ox * k}px`;
       im.style.top = `${f.oy * k}px`;
       im.style.width = `${op.w * k}px`;
@@ -8182,8 +8218,6 @@
         i.style.height = `${(h / f.nh) * 100}%`;
         bands.appendChild(i);
       });
-      // 框的形状跟着画布走：节点自己就是「扩完之后」那张图的样子
-      thumb.style.setProperty('--ar', (f.nw / f.nh).toFixed(4));
       readout.textContent = `${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
       if (dimEl) dimEl.textContent = `${f.nw} × ${f.nh}`;
       // 比例档高亮按「当前 pad 等于哪一档」反推：拖过锚点之后没有一档成立，就全灭
