@@ -3499,8 +3499,10 @@
           <p class="set-tip" id="setWfTip">按分类自动挑；这里选的那个只要同类就优先用它。</p>
           <div class="set-actions">
             <button type="button" class="prime" id="setImportWf">导入工作流…</button>
-            <button type="button" id="setOpenLib">资产库…</button>
+            <button type="button" id="setOpenLib">浏览资产库…</button>
           </div>
+          <p class="set-tip">工作流只在这一页管：导入 / 改名 / 换分类 / 设默认 / 删除。
+            资产库（顶栏「工作流库」）只负责挑一个加到画布，那边没有管理按钮。</p>
           <div class="wf-list" id="setWfList"></div>
           <div class="set-group">分类</div>
           <div class="wf-cats" id="setCats"></div>
@@ -6077,6 +6079,8 @@
     if (res.ok) await refreshWorkflows();     // 存完立刻出现在下拉/首页/快速开始里
   }
 
+  // 资产库：只浏览 + 挑一个加到画布。导入 / 改名 / 换分类 / 设默认 / 删除全在
+  // 全局设置的工作流区——那套入口预设和库工作流都能管，弹窗里再摆一份就是重复。
   async function openModal() {
     $('#modal').classList.remove('hidden');
     await refreshWorkflows();                 // 打开时重新拉库，别显示开局时的旧列表
@@ -6086,20 +6090,23 @@
     // 而用户多半只是想看看内置预设。改成点开那个标签页才拉（见下面的 tab 点击）。
   }
 
+  // 弹窗里每页顶上的一句话。这里不再摆「新增 / 删除」按钮：那几件事在全局设置的
+  // 工作流区已经有一套（导入、改名、换分类、设默认、删除，预设和库工作流都能管），
+  // 两处各摆一份只会让人不知道点哪个。
+  function modalHint(text) {
+    const bar = document.createElement('div');
+    bar.className = 'pane-bar';
+    const tip = document.createElement('span');
+    tip.className = 'tip';
+    tip.textContent = text;
+    bar.appendChild(tip);
+    return bar;
+  }
+
   function renderPresets(list) {
     const pane = $('#pane-preset');
     pane.innerHTML = '';
-    const bar = document.createElement('div');
-    bar.className = 'pane-bar';
-    const addBtn = document.createElement('button');
-    addBtn.className = 'primary';
-    addBtn.textContent = '＋ 新增预设';
-    addBtn.onclick = () => addPresetMenu(addBtn);
-    const tipEl = document.createElement('span');
-    tipEl.className = 'tip';
-    tipEl.textContent = '预设存到 infisheet/presets/，重开也还在';
-    bar.append(addBtn, tipEl);
-    pane.appendChild(bar);
+    pane.appendChild(modalHint('随程序分发的预设，这里只挑着用。新增 / 改名 / 删除在「设置 → 工作流」。'));
     const box = document.createElement('div');
     box.className = 'list';
     if (!list.length) box.innerHTML = '<p class="tip">presets 目录为空。</p>';
@@ -6119,12 +6126,6 @@
       const card = document.createElement('div');
       card.className = 'card';
       card.innerHTML = `<div class="info"><b>${esc(p.title || p.name)}</b><span>${p.nodes} 个节点 · presets/${esc(p.file)}</span></div><button class="primary">使用</button>`;
-      const delBtn = document.createElement('button');
-      delBtn.className = 'del';
-      delBtn.textContent = '删除';
-      delBtn.title = '删除这个预设';
-      delBtn.onclick = (ev) => { ev.stopPropagation(); deletePreset(p.file, p.title || p.name); };
-      card.appendChild(delBtn);
       card.onclick = async () => {
         const res = await api(`/presets/${encodeURIComponent(p.file)}`);
         await useGraph(res.graph, p.title || p.name);
@@ -6143,87 +6144,10 @@
     pane.appendChild(box);
   }
 
-  function addPresetMenu(anchor) {
-    openPopMenu(anchor, [
-      ['从 JSON 文件导入…', () => { flash('选择一份工作流 JSON（API 或界面格式）'); importPresetFile(); }],
-      ['把当前默认工作流存为预设', () => saveDefaultAsPreset()],
-    ], '新增内置预设');
-  }
-
-  async function savePreset(title, graph, note) {
-    if (!title) return null;
-    const res = await api('/api/presets', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, note: note || '', graph }),
-    });
-    if (!res.ok) {
-      flash(/接口不存在|404/.test(res.error || '') ? '服务端太旧：重启 python server.py 后重试' : (res.error || '保存预设失败'));
-      return null;
-    }
-    await refreshWorkflows();
-    openModal();
-    flash('已新增预设：' + title);
-    return res;
-  }
-
-  function importPresetFile() {
-    const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = '.json,application/json';
-    inp.onchange = async () => {
-      const f = inp.files && inp.files[0];
-      if (!f) return;
-      let data = null;
-      try { data = JSON.parse(await f.text()); } catch { flash('不是有效的 JSON 文件'); return; }
-      if (data && data.version === 2 && Array.isArray(data.nodes)
-        && data.nodes.some((nd) => nd && ['text', 'image', 'wf', 'out'].includes(nd.type))) {
-        flash('这是画布存档，不是工作流：请选 API / 界面格式的工作流 JSON');
-        return;
-      }
-      const graph = extractApiGraph(data) || (data && data.graph) || (data && Array.isArray(data.nodes) ? data : null);
-      if (!graph) { flash('没有识别到工作流（API 图或界面格式都行）'); return; }
-      const defTitle = (data.title || data.name || f.name.replace(/\.json$/i, '')).slice(0, 40);
-      const title = prompt('预设名称', defTitle);
-      if (!title) return;
-      await savePreset(title, graph, data.note || '');
-    };
-    inp.click();
-  }
-
-  async function saveDefaultAsPreset() {
-    const id = defaultWorkflowId();
-    if (!id) { flash('还没有默认工作流，先导入一个'); return; }
-    const graph = await loadGraphById(id);
-    if (!graph) { flash('读取默认工作流失败'); return; }
-    const opt = presetOptions().find((o) => o.id === id);
-    const title = prompt('预设名称', (opt && opt.label) || '新预设');
-    if (!title) return;
-    await savePreset(title, graph, '');
-  }
-
-  async function deletePreset(file, title) {
-    if (!confirm('删除预设「' + (title || file) + '」？此操作不可恢复。')) return;
-    const res = await api('/api/presets/' + encodeURIComponent(file), { method: 'DELETE' });
-    if (!res.ok) { flash(res.error || '删除失败'); return; }
-    try {
-      if (localStorage.getItem('infisheet-default-wf') === 'preset:' + file) {
-        localStorage.removeItem('infisheet-default-wf');
-      }
-    } catch { /* noop */ }
-    await refreshWorkflows();
-    // 正在用这个预设的图片节点回落到第一个可用预设
-    state.nodes.forEach((nd) => {
-      if (nd.gen && nd.gen.wf === 'preset:' + file) {
-        nd.gen.wf = pickWorkflow('txt2img');
-        rerenderNode(nd.id, true);
-      }
-    });
-    openModal();
-    flash('已删除预设：' + (title || file));
-  }
-
   function renderLibrary(items) {
     const pane = $('#pane-library');
     pane.innerHTML = '';
+    pane.appendChild(modalHint('这里只挑着用。改名 / 换分类 / 设默认 / 删除在「设置 → 工作流」。'));
     const box = document.createElement('div');
     box.className = 'list';
     if (!items.length) box.innerHTML = '<p class="tip">还没有保存过工作流。在画布上的工作流节点里点「存入工作流库」，或在设置里「导入工作流…」。</p>';
@@ -6234,14 +6158,8 @@
       card.innerHTML = `<div class="info"><b>${esc(label)}</b>`
         + `<span>${esc(catName(it.group || it.category || 'other'))} · ${it.nodes} 个节点`
         + `${it.saved_at ? ' · ' + esc(it.saved_at) : ''}</span></div>`
-        + '<button class="del">删除</button>';
-      card.onclick = async (ev) => {
-        if (ev.target.classList.contains('del')) {
-          ev.stopPropagation();
-          await api(`/api/library/${encodeURIComponent(it.name)}`, { method: 'DELETE' });
-          await refreshWorkflows();
-          openModal(); return;
-        }
+        + '<button class="primary">使用</button>';
+      card.onclick = async () => {
         const res = await api(`/api/library/${encodeURIComponent(it.name)}`);
         await useGraph(res.graph, label);
       };
@@ -6407,7 +6325,6 @@
     if (act === 'storyboard') { showCanvas(); addScriptNode(); return; }
     if (act === 'settings') { openSettingsSheet(); return; }
     if (act === 'assets') { showCanvas(); openAssetSheet(); return; }
-    if (act === 'add-workflow') { showCanvas(); openModal(); switchModalTab('paste'); return; }
     if (act === 'tutorial') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
     if (act === 'history') { showCanvas(); openModal(); switchModalTab('history'); return; }
     if (act === 'pan-mode') { setTool(true); return; }
@@ -6562,7 +6479,7 @@
       ]],
       ['工作流', [
         ['wf', '打开工作流…', () => openModal()],
-        ['book', '从 JSON 导入…', () => { openModal(); switchModalTab('paste'); }],
+        ['book', '从 JSON 导入…', () => importWorkflowFile()],
       ]],
     ];
     addMenu.innerHTML = '';
@@ -6849,30 +6766,13 @@
   document.querySelectorAll('#modalTabs .tab').forEach((tab) => {
     tab.onclick = () => {
       document.querySelectorAll('#modalTabs .tab').forEach((t) => t.classList.toggle('active', t === tab));
-      ['preset', 'library', 'history', 'paste'].forEach((name) => {
+      ['preset', 'library', 'history'].forEach((name) => {
         $(`#pane-${name}`).classList.toggle('hidden', name !== tab.dataset.tab);
       });
       // 只有真的要看运行记录时才去问 ComfyUI（离线时这一步会 502，没必要在开弹窗时就撞上）
       if (tab.dataset.tab === 'history') renderHistory();
     };
   });
-  $('#pasteGo').onclick = async () => {
-    const raw = $('#pasteBox').value.trim();
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw);
-      const graph = parsed.graph || parsed;
-      await useGraph(graph, `粘贴 ${Object.keys(graph).length} 节点`);
-    } catch (e) { flash(`JSON 解析失败：${e.message}`); }
-  };
-  $('#filePick').onchange = async () => {
-    const f = $('#filePick').files && $('#filePick').files[0];
-    if (!f) return;
-    try {
-      const parsed = JSON.parse(await f.text());
-      await useGraph(parsed.graph || parsed, f.name.replace(/\.json$/i, ''));
-    } catch (e) { flash(`文件解析失败：${e.message}`); }
-  };
 
   /* ---------------- MCP 接入灯 ---------------- */
   // 服务端每收到一次 MCP 的 initialize 就记一笔（mcp_server._CONN），health 顺手带回来。

@@ -1594,10 +1594,10 @@ try {
   check('dock / 视图工具为胶囊、白色加号为正圆',
     shapes.bar === '999px' && shapes.vt === '999px' && shapes.prime === '999px', JSON.stringify(shapes));
 
-  // ---- 工作流弹窗：固定尺寸 + 左导航右内容 ----
-  // 以前是顶部横向 tab + 内容自适应高度：4 个预设把窗口撑到 78vh，切到「添加工作流」内容变少，
+  // ---- 资产库：固定尺寸 + 左导航右内容 ----
+  // 以前是顶部横向 tab + 内容自适应高度：4 个预设把窗口撑到 78vh，切到内容更少的页，
   // 窗口又缩回去。这里盯两件事：尺寸不随 tab 变、导航真的在左边。
-  await page.evaluate(`document.querySelector('#projectBar [data-act="add-workflow"]').click()`);
+  await page.evaluate(`document.querySelector('#projectBar [data-act="workflows"]').click()`);
   await page.waitFor(`!document.querySelector('#modal').classList.contains('hidden')`, 6000);
   await new Promise((r) => setTimeout(r, 350));
 
@@ -1658,23 +1658,41 @@ try {
       && grp.counts.reduce((a, b) => a + b, 0) === grp.cards && grp.cards > 0,
     `${grp.heads.join(' / ')} · 卡片 ${grp.cards}`);
 
-  await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="paste"]').click()`);
+  await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="library"]').click()`);
   await new Promise((r) => setTimeout(r, 300));
-  const mPaste = await modalBox();
+  const mLib = await modalBox();
   check('弹窗标题改成「资产库」',
     (await page.evaluate(`document.querySelector('#modal .sheet header strong').textContent`)) === '资产库');
-  check('工作流弹窗尺寸固定 1200×780：切到内容更少的「添加工作流」不变',
-    mPreset.w === mPaste.w && mPreset.h === mPaste.h
+  check('资产库尺寸固定 1200×780：切到内容更少的「我的工作流库」不变',
+    mPreset.w === mLib.w && mPreset.h === mLib.h
       && Math.abs(mPreset.w - mPreset.expectW) <= 2 && Math.abs(mPreset.h - mPreset.expectH) <= 2,
-    `${mPreset.w}×${mPreset.h} → ${mPaste.w}×${mPaste.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
-  check('工作流弹窗是左右双栏：导航在左、内容在右，导航项不是胶囊',
+    `${mPreset.w}×${mPreset.h} → ${mLib.w}×${mLib.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
+  check('资产库是左右双栏：导航在左、内容在右，导航项不是胶囊',
     mPreset.sideBySide && mPreset.navW >= 180 && mPreset.navW <= 260
       && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
     JSON.stringify(mPreset));
-  check('左侧导航是「图标 + 名称」：4 个 tab 的图标都填上了，文字没被吃掉',
-    mPreset.icons === 4 && mPreset.tabDisplay === 'flex'
-      && mPreset.labels.join('|') === '内置预设|我的工作流库|ComfyUI 运行记录|添加工作流',
+  check('左侧导航是「图标 + 名称」：3 个 tab 的图标都填上了，文字没被吃掉',
+    mPreset.icons === 3 && mPreset.tabDisplay === 'flex'
+      && mPreset.labels.join('|') === '内置预设|我的工作流库|ComfyUI 运行记录',
     JSON.stringify({ icons: mPreset.icons, display: mPreset.tabDisplay, labels: mPreset.labels }));
+  // 资产库退回**纯浏览**：新增 / 删除 / 导入这些管理动作只在全局设置里有一份。
+  // 早先这里也有「＋ 新增预设」和卡片上的「删除」，和设置里的导入 / 删除列表各摆一套。
+  const modalActs = await page.evaluate(`(() => {
+    const texts = [...document.querySelectorAll('#modal button')].map((b) => b.textContent.trim());
+    const tips = [...document.querySelectorAll('#modal .pane-bar .tip')].map((t) => t.textContent);
+    return {
+      texts, tips,
+      del: document.querySelectorAll('#modal .card .del').length,
+      add: document.querySelectorAll('#modal .pane-bar button').length,
+    };
+  })()`);
+  check('资产库只负责「挑一个用」：没有新增 / 删除 / 导入按钮',
+    modalActs.del === 0 && modalActs.add === 0
+      && !modalActs.texts.some((t) => /删除|新增|导入|载入/.test(t)),
+    JSON.stringify(modalActs.texts));
+  check('资产库每页顶上写清了管理入口在「设置 → 工作流」',
+    modalActs.tips.length === 2 && modalActs.tips.every((t) => /设置 → 工作流/.test(t)),
+    JSON.stringify(modalActs.tips));
   // 开弹窗不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
   // 这里只验「没预加载」，不点 history 标签——CI 里没有 ComfyUI，点了反而会真报错。
   const histPreload = await page.evaluate(`document.querySelector('#pane-history').children.length`);

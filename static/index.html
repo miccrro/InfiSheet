@@ -27,9 +27,6 @@
       <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点">
         <span class="ico" data-icon="film" aria-hidden="true"></span>
       </button>
-      <button class="icon tiny" data-act="add-workflow" title="添加工作流（粘贴 API JSON / 选文件）">
-        <span class="ico" data-icon="plus" aria-hidden="true"></span>
-      </button>
       <button class="icon tiny" data-act="settings" title="设置：工作流 / 分类 / 背景 / 连接">
         <span class="ico" data-icon="setting" aria-hidden="true"></span>
       </button>
@@ -113,7 +110,7 @@
     <button class="icon" data-act="pan-mode" title="移动（抓手模式：拖任意位置平移画布）">
       <span class="ico" data-icon="hand" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="add-wf" title="素材库 / 工作流库">
+    <button class="icon" data-act="add-wf" title="工作流库：挑一个加到画布">
       <span class="ico" data-icon="grid4" aria-hidden="true"></span>
     </button>
     <button class="icon" data-act="all-tools" title="全部功能">
@@ -252,7 +249,9 @@
   </div>
 </div>
 
-<!-- 工作流选择弹窗：固定尺寸，左导航 + 右内容 -->
+<!-- 资产库：固定尺寸，左导航 + 右内容。
+     这里只做「挑一个 → 加到画布」。改名 / 换分类 / 设默认 / 删除 / 导入都在
+     全局设置的工作流区，两处不再各摆一套按钮。 -->
 <div id="modal" class="hidden">
   <div class="sheet">
     <header>
@@ -270,22 +269,11 @@
         <button class="tab" data-tab="history">
           <span class="ico" data-icon="time" aria-hidden="true"></span><span>ComfyUI 运行记录</span>
         </button>
-        <button class="tab" data-tab="paste">
-          <span class="ico" data-icon="plus" aria-hidden="true"></span><span>添加工作流</span>
-        </button>
       </nav>
       <div class="modal-panes">
         <div class="pane" id="pane-preset"></div>
         <div class="pane hidden" id="pane-library"></div>
         <div class="pane hidden" id="pane-history"></div>
-        <div class="pane hidden" id="pane-paste">
-          <p class="tip">粘贴 <b>API 格式</b>工作流（ComfyUI 菜单：工作流 → 导出(API)），或选择本地文件。</p>
-          <textarea id="pasteBox" placeholder='{"1": {"class_type": "UNETLoader", "inputs": {…}}}'></textarea>
-          <div class="row">
-            <input type="file" id="filePick" accept=".json,application/json" />
-            <button id="pasteGo" class="primary">载入</button>
-          </div>
-        </div>
       </div>
     </div>
   </div>
