@@ -1481,6 +1481,62 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 #appSettings .set-actions button:hover { border-color: var(--accent); color: var(--accent); }
 #appSettings .set-actions button.prime { background: var(--accent); border-color: var(--accent); color: #0b1220; }
 
+/* ---------- 设置 · 工作流 ----------
+   一行要放下「名字 / 分类 / 默认 / 删除」四样，430px 的面板挤成两行反而更难读，
+   所以设置面板整体放宽到 560px。 */
+#appSettings .sheet { width: 560px; max-width: 92vw; }
+/* 每一行都按内容给高，别让 grid 为了塞进固定高度的面板去压缩某一行——
+   列表被压成半行高、最后一条只剩上半截，就是这么来的（面板自己会滚） */
+#appSettings .set-body { grid-auto-rows: min-content; }
+#appSettings .wf-list {
+  display: grid; gap: 1px; padding: 3px;
+  /* 滚动容器在 grid 里的自动最小尺寸是 0（规范如此），只写 max-height 会被压成一条线：
+     必须给 min-height 兜底，不然列表内容明明在 DOM 里却一个字都看不见。 */
+  min-height: 96px; max-height: 216px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+}
+#appSettings .wf-list .tip { margin: 6px 4px; }
+#appSettings .wf-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 24px 22px;
+  align-items: center; gap: 6px; padding: 2px 4px; border-radius: 7px;
+}
+#appSettings .wf-item:hover { background: rgba(255, 255, 255, 0.05); }
+#appSettings .wf-item.is-default { background: rgba(96, 132, 255, 0.1); }
+#appSettings .wf-item b {
+  min-width: 0; padding: 2px; font-weight: 500; font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text;
+}
+#appSettings .wf-item b:hover { color: var(--accent); }
+#appSettings .wf-cat {
+  max-width: 132px; height: 20px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--dim);
+  font: inherit; font-size: 10.5px; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+#appSettings .wf-cat:hover { border-color: var(--accent); color: var(--accent); }
+#appSettings .wf-star,
+#appSettings .wf-del {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--faint);
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+#appSettings .wf-star:hover { color: #f5c451; background: rgba(245, 196, 81, 0.12); }
+#appSettings .wf-item.is-default .wf-star { color: #f5c451; }
+#appSettings .wf-del:hover { color: var(--err); background: rgba(248, 113, 113, 0.12); }
+
+#appSettings .wf-cats { display: flex; flex-wrap: wrap; gap: 5px; }
+#appSettings .wf-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--text);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+#appSettings .wf-chip em { font-style: normal; font-size: 10px; color: var(--faint); }
+#appSettings .wf-chip:hover { border-color: var(--accent); color: var(--accent); }
+#appSettings .wf-chip.add { border-style: dashed; color: var(--dim); }
+
 /* ---------- 预设页工具条 ---------- */
 .pane-bar { display: flex; align-items: center; gap: 10px; padding: 0 0 10px; }
 .pane-bar .tip { margin: 0; font-size: 11px; color: var(--faint); }
@@ -2137,7 +2193,7 @@ button.primary, .card .primary, #setOpenLib, #pasteGo,
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。
    风格格子和它的关闭键同理：缩略图要方方正正地铺成宫格，圆角 999px 会把图裁成圆圈
    （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn):not(.wf-star):not(.wf-del) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }

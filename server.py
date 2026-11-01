@@ -1391,7 +1391,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_get(self, path: str, query: dict):
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
-                   "features": ["presets", "projects", "canvas_history", "ui_import", "mcp", "comfy_config"]}
+                   "features": ["presets", "projects", "canvas_history", "ui_import", "mcp",
+                                "comfy_config", "wf_categories", "wf_meta"]}
             # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
@@ -1443,17 +1444,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_out({"ok": True, "entries": history_summary(limit)})
 
         if path == "/api/library":
-            LIBRARY.mkdir(parents=True, exist_ok=True)
-            items = []
-            for f in sorted(LIBRARY.glob("*.json")):
-                try:
-                    g = json.loads(f.read_text(encoding="utf-8"))
-                except Exception:  # noqa: BLE001
-                    continue
-                items.append({"name": f.stem, "nodes": len(g.get("graph") or {}),
-                              "saved_at": g.get("saved_at"),
-                              "kinds": graph_kinds(g.get("graph") or {})})
-            return self.json_out({"ok": True, "items": items, "presets": list_presets()})
+            return self.json_out({"ok": True, "items": list_library(),
+                                  "presets": list_presets(),
+                                  "categories": load_categories()})
+
+        if path == "/api/wf/categories":
+            return self.json_out({"ok": True, "categories": load_categories()})
 
         if path.startswith("/api/library/"):
             name = urllib.parse.unquote(path.split("/api/library/", 1)[1])
@@ -1579,8 +1575,34 @@ class Handler(BaseHTTPRequestHandler):
                 f = PRESETS / f"{stem}-{n}.api.json"
                 n += 1
             data = {"title": title, "note": str(payload.get("note") or ""), "graph": graph}
+            group = normalize_group(payload.get("group"))
+            if group:
+                data["group"] = group          # 导入时选好分类就别让它掉回「按能力猜」
             f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            return self.json_out({"ok": True, "file": f.name, "title": title})
+            return self.json_out({"ok": True, "file": f.name, "title": title, "group": group})
+
+        # 工作流的「标题 / 分类」——分类是用户自己的组织方式，随时可改，不用重新导入
+        if path == "/api/wf/meta":
+            payload = self.read_json() or {}
+            patch = {}
+            if "title" in payload:
+                patch["title"] = payload.get("title")
+            if "group" in payload:
+                patch["group"] = payload.get("group")
+            if not patch:
+                return self.fail("没有要改的字段", 400)
+            meta, err = update_wf_meta(payload.get("id"), patch)
+            if err:
+                return self.fail(err, 400 if "非法" in err else 404)
+            return self.json_out({"ok": True, **meta})
+
+        # 分类表整体替换：改名 / 新增 / 删除 / 排序都在前端做，服务端只负责清洗和落盘
+        if path == "/api/wf/categories":
+            payload = self.read_json() or {}
+            items = payload.get("categories")
+            if not isinstance(items, list):
+                return self.fail("categories 必须是数组", 400)
+            return self.json_out({"ok": True, "categories": save_categories(items)})
 
         if path == "/api/analyze":
             payload = self.read_json() or {}
@@ -1764,9 +1786,24 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(graph, dict) or not graph:
             return self.fail("缺少 API 图", 400)
         LIBRARY.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps({"name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                 "graph": graph}, ensure_ascii=False, indent=1), encoding="utf-8")
-        return self.json_out({"ok": True, "name": name})
+        # 覆盖已有条目时保住它的标题 / 分类：从画布「存入工作流库」只带 graph 过来，
+        # 要是整份重写，用户好不容易归好的类就被打回「按能力猜」了。
+        old = {}
+        if f.is_file():
+            try:
+                old = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                old = {}
+        data = {**old, "name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "graph": graph}
+        title = str(payload.get("title") or "").strip()[:40]
+        if title:
+            data["title"] = title
+        group = normalize_group(payload.get("group"))
+        if group:
+            data["group"] = group
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return self.json_out({"ok": True, "name": name, "title": data.get("title") or name,
+                              "group": data.get("group") or ""})
 
     def api_delete(self, path: str):
         if path == "/mcp":
@@ -2030,6 +2067,89 @@ def graph_category(graph: dict, meta: dict | None = None) -> str:
     return "txt2img"
 
 
+# --------------------------------------------------------------------------- #
+# 工作流分类：**用户自己的分类**，和上面那套「能力推断」是两回事
+#
+# CATEGORY_LABELS 是「这个工作流是干什么的」——它决定高清按钮能不能挑到它、
+# 扩图会不会挑到纯文生图，所以**不能**让用户随手改。
+# 分类表是「我想怎么归类」——纯组织层，用户想怎么分就怎么分（改名 / 新增 / 删除 / 排序）。
+# 两者用一个 group 字段连起来：group 缺省就等于 category，用户改过就听 group 的。
+# --------------------------------------------------------------------------- #
+DEFAULT_CATEGORIES = [
+    {"id": "txt2img", "name": "文生图"},
+    {"id": "img2img", "name": "图生图 / 编辑"},
+    {"id": "upscale", "name": "高清放大"},
+    {"id": "video", "name": "视频"},
+    {"id": "audio", "name": "音频"},
+    {"id": "other", "name": "其他"},
+]
+CAT_ID_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fa5]{1,40}$")
+
+
+def categories_file() -> Path:
+    return DATA / "workflow_categories.json"
+
+
+def load_categories() -> list[dict]:
+    """分类表。读不到 / 读坏了都回默认 6 类——一个坏文件不该让工作流全都消失。"""
+    try:
+        raw = json.loads(categories_file().read_text(encoding="utf-8"))
+        items = raw.get("categories") if isinstance(raw, dict) else raw
+        out = []
+        seen = set()
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            cid = str(it.get("id") or "").strip()
+            name = str(it.get("name") or "").strip()[:20]
+            if not cid or not name or not CAT_ID_RE.match(cid) or cid in seen:
+                continue
+            seen.add(cid)
+            out.append({"id": cid, "name": name})
+        if out:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    return [dict(c) for c in DEFAULT_CATEGORIES]
+
+
+def save_categories(items) -> list[dict]:
+    """清洗后落盘：id 唯一、名字非空、最多 24 类。返回真正存下去的那一份。"""
+    out, seen = [], set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        cid = str(it.get("id") or "").strip()
+        name = str(it.get("name") or "").strip()[:20]
+        if not cid or not name or not CAT_ID_RE.match(cid) or cid in seen:
+            continue
+        seen.add(cid)
+        out.append({"id": cid, "name": name})
+        if len(out) >= 24:
+            break
+    if not out:
+        out = [dict(c) for c in DEFAULT_CATEGORIES]
+    DATA.mkdir(parents=True, exist_ok=True)
+    categories_file().write_text(
+        json.dumps({"categories": out}, ensure_ascii=False, indent=1), encoding="utf-8")
+    return out
+
+
+def normalize_group(value: str) -> str:
+    """group 只允许当 id 用；不合法就当没设（前端会回落到能力分类）。"""
+    v = str(value or "").strip()
+    return v if v and CAT_ID_RE.match(v) else ""
+
+
+def wf_meta_of(g: dict, cat: str) -> dict:
+    """从工作流 JSON 顶层读「用户自定义的那部分」（标题 / 分类 / 备注）。"""
+    return {
+        "title": str(g.get("title") or "").strip(),
+        "group": normalize_group(g.get("group")) or cat,
+        "note": str(g.get("note") or ""),
+    }
+
+
 def list_presets() -> list[dict]:
     PRESETS.mkdir(parents=True, exist_ok=True)
     out = []
@@ -2039,12 +2159,72 @@ def list_presets() -> list[dict]:
         except Exception:  # noqa: BLE001
             continue
         cat = graph_category(g.get("graph") or {}, g)
-        out.append({"name": f.stem, "title": g.get("title") or f.stem,
+        meta = wf_meta_of(g, cat)
+        out.append({"name": f.stem, "title": meta["title"] or f.stem,
                     "file": f.name, "nodes": len(g.get("graph") or {}),
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
+                    "group": meta["group"],
                     **graph_takes(g.get("graph") or {})})
     return out
+
+
+def list_library() -> list[dict]:
+    """工作流库（用户自己存的）。和预设**同一套字段**——前端才能把它们摆进同一个列表。"""
+    LIBRARY.mkdir(parents=True, exist_ok=True)
+    out = []
+    for f in sorted(LIBRARY.glob("*.json")):
+        try:
+            g = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        cat = graph_category(g.get("graph") or {}, g)
+        meta = wf_meta_of(g, cat)
+        out.append({"name": f.stem, "title": meta["title"] or f.stem,
+                    "file": f.name, "nodes": len(g.get("graph") or {}),
+                    "saved_at": g.get("saved_at"),
+                    "kinds": graph_kinds(g.get("graph") or {}),
+                    "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
+                    "group": meta["group"],
+                    **graph_takes(g.get("graph") or {})})
+    return out
+
+
+def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
+    """改一个工作流的「标题 / 分类」。id 形如 preset:xxx.json 或 lib:名字。"""
+    wf_id = str(wf_id or "").strip()
+    kind, _, name = wf_id.partition(":")
+    name = urllib.parse.unquote(name)
+    if kind == "preset":
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5 .\-]{1,120}\.json", name):
+            return None, "预设名非法"
+        f = (PRESETS / name).resolve()
+        if PRESETS.resolve() not in f.parents or not f.is_file():
+            return None, "预设不存在"
+    elif kind == "lib":
+        f = safe_library_path(name)
+        if not f or not f.is_file():
+            return None, "工作流不存在"
+    else:
+        return None, "id 非法"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None, "工作流文件读不出来"
+    if not isinstance(data, dict):
+        return None, "工作流文件格式不对"
+    if "title" in patch:
+        title = str(patch.get("title") or "").strip()[:40]
+        if title:
+            data["title"] = title
+    if "group" in patch:
+        group = normalize_group(patch.get("group"))
+        if group:
+            data["group"] = group
+        else:
+            data.pop("group", None)      # 清空 = 回到能力分类
+    f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"id": wf_id, "title": data.get("title") or f.stem, "group": data.get("group") or ""}, ""
 
 
 def job_status(pid: str) -> dict:

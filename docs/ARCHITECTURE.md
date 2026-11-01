@@ -26,7 +26,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
 | 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅 |
-| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json` |
+| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
 几个不显眼但重要的点：
@@ -39,6 +39,33 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 - **keep-alive 下的 body 必须 drain**：404 之前不读完请求体会让下一个请求变成 `body+请求行` → `400 Bad request syntax`。
   `_body_read` 标记在每次 `do_*` 开头重置。
 - **子图**（`definitions.subgraphs`）直接拒绝，提示先展开/导出 API —— 前端不解析子图。
+
+### 工作流的「能力分类」和「我的分类」
+
+一个工作流身上有两个分类字段，别混：
+
+| 字段 | 谁给的 | 干什么 |
+|---|---|---|
+| `category` | `graph_category()` 扫 API 图推断（先看产物是不是视频/音频，再看吃不吃图，最后看有没有放大节点）；预设 JSON 顶层写 `category` 也认 | **能力**。高清按钮只挑 `upscale`、扩图只挑吃图的、纯文生图不会被挑去重绘。不能由用户随手改 |
+| `group` | 用户在设置里选的，写进工作流 JSON 顶层 `group` | **组织**。分组显示、设置里的列表、资产库的分组。缺省等于 `category` |
+
+分类表本身（名字、顺序）存在 `data/workflow_categories.json`，`GET/POST /api/wf/categories`
+整体替换（服务端只做清洗：id 唯一、名字非空、最多 24 类）。默认 6 类就是 `CATEGORY_LABELS`
+那 6 个，所以「没配过」和「配了默认值」长得一模一样。
+
+- **为什么不让用户改 `category`**：它是功能正确性的一部分。用户把「局部重绘」挪进「文生图」分类，
+  只该影响它在哪一组显示，不该让扩图把一张普通图喂给纯文生图流程（那样出图会和原图逐位相同）。
+- **`group` 指向不存在的分类**：`catName()` 回落 `CAT_LABEL[id]`，再回落 `other`；设置的下拉里
+  专门留一组「其他」收孤儿。删分类时**先把该分类下的工作流挪到 `other` 再删表**——反过来的话
+  中途失败会留下一堆指向空分类的孤儿。
+- **预设 + 库合成一份列表**（`presetOptions()`）：`preset:xxx.json` 与 `lib:名字` 两种 id，
+  `loadGraphById()` 分别走 `/presets/` 和 `/api/library/`。早先只有预设进这个列表，自己存进库的
+  工作流永远进不了生成器下拉和节点的选择器——用户的感受就是「工作流被固定死了」。
+- **设置里的工作流区是一处，不是六处**：早先是「打开工作流库 / 管理库工作流 / 新增预设 /
+  管理预设 / 导入工作流 JSON」六个按钮挤成两组，其中三对是同一件事。现在是一个下拉 + 一份列表
+  （`#setWfList`，每行 名字 / 分类 / 默认 / 删除）+ 一排分类胶囊（`#setCats`）。
+  `renderSetWorkflows(box)` 负责重绘，改完一处就调 `refreshSetWf()` 局部重绘——不重建整个面板，
+  滚动位置不会跳回顶上。
 
 ## 前端 `static/`
 

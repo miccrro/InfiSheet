@@ -1702,6 +1702,98 @@ try {
   const settingsClosed = await page.evaluate(`(() => { const el = document.getElementById('appSettings'); return !el || el.classList.contains('hidden'); })()`);
   check('设置弹层开关', settingsOpen && settingsClosed);
 
+  // ---- 设置里的工作流区 ----
+  // 以前是六个按钮挤成两组，其中三对是同一件事（打开库 == 管理库、新增预设 ≈ 导入 JSON、
+  // 管理预设 == 打开库的预设页），而且「默认工作流」下拉里只有内置预设——自己存进库的
+  // 永远选不到，用户的原话就是「工作流被固定死了」。
+  // 现在合成一处：一个下拉 + 一份列表（改名 / 换分类 / 设默认 / 删除）+ 一排可自定义的分类。
+  // 只操作**库**里的条目：presets/ 是真实目录，e2e 改了会污染用户的预设。
+  await page.evaluate(`(async () => {
+    await fetch('/api/library/' + encodeURIComponent('e2e 我的流程'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph: { '1': { class_type: 'KSampler', inputs: {} } }, title: 'e2e 我的流程' }),
+    });
+  })()`);
+  await page.click('#projectBar [data-act="settings"]', { settle: 900 });
+  const wfSet = await page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    const rows = [...box.querySelectorAll('#setWfList .wf-item')];
+    const ids = [...box.querySelectorAll('[id]')].map((b) => b.id);
+    return {
+      dup: ids.filter((id, i) => ids.indexOf(id) !== i),
+      has: ['setDefaultWf', 'setWfList', 'setCats', 'setImportWf', 'setOpenLib']
+        .every((id) => !!box.querySelector('#' + id)),
+      gone: ['setAddPreset', 'setManagePreset', 'setManageLibrary']
+        .filter((id) => !!box.querySelector('#' + id)).length,
+      rows: rows.length,
+      shape: rows.length
+        ? [...rows[0].children].map((c) => c.tagName.toLowerCase() + (c.className ? '.' + c.className : ''))
+        : [],
+      groups: [...box.querySelectorAll('#setDefaultWf optgroup')].map((g) => g.label),
+      stars: rows.filter((r) => r.querySelector('.wf-star').textContent === '★').length,
+      listH: Math.round(box.querySelector('#setWfList').getBoundingClientRect().height),
+      libRow: rows.some((r) => r.dataset.id.indexOf('lib:') === 0),
+    };
+  })()`);
+  check('设置里的工作流区不再重复：一组按钮 + 一份列表，旧的「新增 / 管理预设、管理库工作流」全删了',
+    wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
+    JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
+  check('工作流列表每行是「名字 / 分类 / 默认 / 删除」四件套，且只有一行是默认',
+    wfSet.shape.join('|') === 'b|button.wf-cat|button.wf-star|button.wf-del' && wfSet.stars === 1,
+    JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
+  check('列表按内容撑开（不被 grid 压成一条线），预设和自己存进库的工作流在同一份列表里',
+    wfSet.listH >= 96 && wfSet.libRow && wfSet.rows >= 7,
+    JSON.stringify({ h: wfSet.listH, rows: wfSet.rows, lib: wfSet.libRow }));
+  check('默认工作流下拉按分类分组，第一组还是「文生图」',
+    wfSet.groups[0] === '文生图' && wfSet.groups.length >= 2, wfSet.groups.join(' / '));
+
+  // 分类可以自己加：新建「我的常用」，再把库工作流挪过去
+  await page.evaluate(`window.prompt = () => '我的常用'`);
+  const addChip = await page.center('#appSettings .wf-chip.add');
+  await page.clickAt(addChip.x, addChip.y, { settle: 900 });
+  const catNew = await page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    return [...box.querySelectorAll('.wf-chip span')].map((s) => s.textContent);
+  })()`);
+  check('能新建分类（胶囊里多一个「我的常用」）', catNew.includes('我的常用'), catNew.join(' / '));
+
+  const libCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-cat');
+  await page.clickAt(libCell.x, libCell.y, { settle: 500 });
+  const catMenu = await page.evaluate(
+    `JSON.stringify([...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()))`);
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
+    .find((b) => b.textContent.trim() === '我的常用').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const catMoved = await page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    const row = box.querySelector('#setWfList .wf-item[data-id^="lib:"]');
+    return {
+      cat: row ? row.querySelector('.wf-cat').textContent : '',
+      groups: [...box.querySelectorAll('#setDefaultWf optgroup')].map((g) => g.label),
+      chips: [...box.querySelectorAll('.wf-chip')].map((c) => c.textContent),
+    };
+  })()`);
+  check('给工作流换分类：行里的胶囊跟着变，默认下拉里立刻多出这一组',
+    catMoved.cat === '我的常用' && catMoved.groups.includes('我的常用')
+      && catMoved.chips.includes('我的常用1'),
+    JSON.stringify({ cat: catMoved.cat, groups: catMoved.groups, chips: catMoved.chips }));
+
+  // 存进服务端，不是只记在内存里：关掉重开还在
+  await page.key('Escape', { code: 'Escape', keyCode: 27 });
+  await new Promise((r) => setTimeout(r, 300));
+  await page.click('#projectBar [data-act="settings"]', { settle: 900 });
+  const catKept = await page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    return [...box.querySelectorAll('.wf-chip span')].map((s) => s.textContent);
+  })()`);
+  check('分类表存到了服务端（关掉设置再开还在）', catKept.includes('我的常用'), catKept.join(' / '));
+  await page.evaluate(`delete window.prompt`);
+  await page.evaluate(`(async () => {
+    await fetch('/api/library/' + encodeURIComponent('e2e 我的流程'), { method: 'DELETE' });
+  })()`);
+  await page.key('Escape', { code: 'Escape', keyCode: 27 });
+  await new Promise((r) => setTimeout(r, 300));
+
   // ---- ComfyUI 地址：换一台电脑之后不用改启动脚本 ----
   // 顶栏那一段状态本身就是入口（连不上时点它直接落到输入框），设置里能改、能存。
   await page.click('#projectBar [data-act="settings"]', { settle: 500 });

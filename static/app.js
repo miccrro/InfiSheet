@@ -21,7 +21,7 @@
     projectId: null,
     rev: 0,            // 服务端给的存档版本号：保存时回传，落后就说明有人（MCP）改过
     groups: [],
-    workflows: { presets: [], items: [] },   // boot 时从 /api/library 拉取
+    workflows: { presets: [], items: [], categories: [] },   // boot 时从 /api/library 拉取
     name: '未命名画布',
     snap: false,
     linksHidden: false,
@@ -755,18 +755,41 @@
     video: '视频', audio: '音频', other: '其他',
   };
 
+  // ---- 分类：用户自己的那一套 ----
+  // CAT_ORDER / CAT_LABEL 是**能力**分类（服务端扫图推断，决定高清 / 扩图该挑谁），
+  // 不能随手改；用户能在设置里改名 / 新增 / 删除的是上面那层**组织**分类，
+  // 存在服务端 data/workflow_categories.json，跟着工作流一起跨设备。
+  // 每个工作流的 `group` 指向某个分类 id；没设过就等于它的能力分类。
+  function wfCategories() {
+    const list = (state.workflows && state.workflows.categories) || [];
+    return list.length ? list : CAT_ORDER.map((id) => ({ id, name: CAT_LABEL[id] }));
+  }
+
+  function catName(id) {
+    const hit = wfCategories().find((c) => c.id === id);
+    return hit ? hit.name : (CAT_LABEL[id] || id || '其他');
+  }
+
+  // 预设 + 工作流库**合成一份**：设置里的默认工作流、节点上的工作流选择器、
+  // 自动挑工作流，看到的都该是同一个列表。以前只有预设能选，自己存进库的工作流
+  // 就永远进不了这些下拉——用户的感受就是「工作流被固定死了」。
   function presetOptions() {
     const w = state.workflows || { presets: [], items: [] };
-    return w.presets.map((p) => ({
-      id: `preset:${p.file}`,
-      label: p.title || p.name,
-      image: !!p.takes_image,
+    const norm = (it, id, source) => ({
+      id,
+      label: it.title || it.name,
+      image: !!it.takes_image,
       // 遮罩能力由服务端扫图给出，不看名字：
       // alphaMask = 有人在消费 LoadImage 的 MASK 输出（烘 alpha 路线，唯一主路径）
-      alphaMask: !!p.takes_alpha_mask,
-      category: p.category || 'other',
-      catLabel: p.category_label || CAT_LABEL[p.category] || '其他',
-    }));
+      alphaMask: !!it.takes_alpha_mask,
+      category: it.category || 'other',
+      group: it.group || it.category || 'other',
+      catLabel: catName(it.group || it.category || 'other'),
+      source,
+      nodes: it.nodes || 0,
+    });
+    return (w.presets || []).map((p) => norm(p, `preset:${p.file}`, 'preset'))
+      .concat((w.items || []).map((it) => norm(it, `lib:${it.name}`, 'lib')));
   }
 
   // 按用途挑工作流。need 可以是类别，也可以是按优先级排的数组。
@@ -804,7 +827,11 @@
   async function refreshWorkflows() {
     try {
       const lib = await api('/api/library');
-      state.workflows = { presets: lib.presets || [], items: lib.items || [] };
+      state.workflows = {
+        presets: lib.presets || [],
+        items: lib.items || [],
+        categories: lib.categories || [],
+      };
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
     return state.workflows;
@@ -813,7 +840,30 @@
   async function loadGraphById(id) {
     if (!id) return null;
     if (id.startsWith('preset:')) return (await api(`/presets/${encodeURIComponent(id.slice(7))}`)).graph;
+    if (id.startsWith('lib:')) return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
     return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
+  }
+
+  // 分类表整体存回服务端：改名 / 新增 / 删除 / 排序都走这一条
+  async function saveCategories(list) {
+    const res = await api('/api/wf/categories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories: list }),
+    });
+    if (!res.ok) { flash(res.error || '保存分类失败'); return false; }
+    state.workflows.categories = res.categories || [];
+    return true;
+  }
+
+  // 改一个工作流的标题 / 分类（id 形如 preset:xxx.json 或 lib:名字）
+  async function saveWfMeta(id, patch) {
+    const res = await api('/api/wf/meta', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, ...patch }),
+    });
+    if (!res.ok) { flash(res.error || '保存失败'); return false; }
+    await refreshWorkflows();
+    return true;
   }
 
   // 清晰度档只存一个「长边像素」，两处要用（算画布尺寸、弹层里的小字），别再各写一份字典
@@ -3181,6 +3231,269 @@
     if (txt) txt.textContent = '服务已关闭。';
   }
 
+  // ---------- 设置里的「工作流」区 ----------
+  // 早先这里是六个按钮挤成两组：
+  //   默认工作流 ｜ [打开工作流库] [导入工作流 JSON…]
+  //   预设 / 工作流库 ｜ [新增预设…] [管理预设] [管理库工作流]
+  // 其中三对是同一件事（打开库 == 管理库、新增预设 ≈ 导入 JSON、管理预设 == 打开库的预设页），
+  // 而且那个下拉里**只有内置预设**——自己存进工作流库的永远选不到，用户的原话就是
+  // 「工作流被固定死了」。现在合成一处：一个下拉 + 一份列表 + 一排分类。
+  function renderSetWorkflows(box) {
+    const sel = box.querySelector('#setDefaultWf');
+    const listEl = box.querySelector('#setWfList');
+    const catsEl = box.querySelector('#setCats');
+    if (!sel || !listEl || !catsEl) return;
+    const opts = presetOptions();
+    const cats = wfCategories();
+    const cur = defaultWorkflowId();
+
+    // ---- 默认工作流：按**用户分类**分组，预设和库都在里面 ----
+    sel.innerHTML = '';
+    const bucket = (c) => opts.filter((o) => o.group === c.id);
+    cats.forEach((c) => {
+      const group = bucket(c);
+      if (!group.length) return;
+      const g = document.createElement('optgroup');
+      g.label = c.name;
+      group.forEach((o) => {
+        const op = document.createElement('option');
+        op.value = o.id;
+        op.textContent = o.label;
+        if (o.id === cur) op.selected = true;
+        g.appendChild(op);
+      });
+      sel.appendChild(g);
+    });
+    // 分类被删掉、group 指向不存在的 id：兜到「其他」，别让工作流在下拉里消失
+    const orphans = opts.filter((o) => !cats.some((c) => c.id === o.group));
+    if (orphans.length) {
+      const g = document.createElement('optgroup');
+      g.label = '其他';
+      orphans.forEach((o) => {
+        const op = document.createElement('option');
+        op.value = o.id;
+        op.textContent = o.label;
+        if (o.id === cur) op.selected = true;
+        g.appendChild(op);
+      });
+      sel.appendChild(g);
+    }
+    if (!opts.length) {
+      const op = document.createElement('option');
+      op.value = '';
+      op.textContent = '（还没有工作流）';
+      sel.appendChild(op);
+    }
+    sel.onchange = () => {
+      if (!sel.value) return;
+      try { localStorage.setItem('infisheet-default-wf', sel.value); } catch { /* ignore */ }
+      flash('默认工作流已保存');
+      renderSetWorkflows(box);
+    };
+
+    // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 删除 ----
+    listEl.innerHTML = '';
+    if (!opts.length) {
+      const p = document.createElement('p');
+      p.className = 'tip';
+      p.textContent = '还没有工作流。点上面的「导入工作流…」加一个。';
+      listEl.appendChild(p);
+    }
+    opts.forEach((o) => {
+      const row = document.createElement('div');
+      row.className = 'wf-item' + (o.id === cur ? ' is-default' : '');
+      row.dataset.id = o.id;
+
+      const name = document.createElement('b');
+      name.textContent = o.label;
+      name.title = `${o.label} · ${o.nodes} 个节点（点一下改名）`;
+      name.onclick = () => renameWfItem(o);
+
+      const cat = document.createElement('button');
+      cat.type = 'button';
+      cat.className = 'wf-cat';
+      cat.textContent = o.catLabel;
+      cat.title = '换分类';
+      cat.onclick = () => {
+        const items = wfCategories().map((c) => [
+          (c.id === o.group ? '✓ ' : '') + c.name,
+          () => moveWfItem(o, c.id),
+        ]);
+        items.push(['＋ 新分类…', async () => { const id = await addCategory(); if (id) moveWfItem(o, id); }]);
+        openPopMenu(cat, items, '换分类');
+      };
+
+      const star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'wf-star';
+      star.textContent = o.id === cur ? '★' : '☆';
+      star.title = o.id === cur ? '当前默认' : '设为默认工作流';
+      star.onclick = () => {
+        try { localStorage.setItem('infisheet-default-wf', o.id); } catch { /* ignore */ }
+        flash(`默认工作流：${o.label}`);
+        renderSetWorkflows(box);
+      };
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'wf-del';
+      del.textContent = '×';
+      del.title = '删除这个工作流';
+      del.onclick = () => deleteWfItem(o);
+
+      row.append(name, cat, star, del);
+      listEl.appendChild(row);
+    });
+
+    // ---- 分类：点一下改名 / 删除 ----
+    catsEl.innerHTML = '';
+    cats.forEach((c) => {
+      const n = opts.filter((o) => o.group === c.id).length;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'wf-chip';
+      const s = document.createElement('span');
+      s.textContent = c.name;
+      b.appendChild(s);
+      if (n) {                       // 空的分类不显示那个 0，一排 0 只会让人分心
+        const em = document.createElement('em');
+        em.textContent = String(n);
+        b.appendChild(em);
+      }
+      b.title = `${c.name} · ${n} 个工作流`;
+      b.onclick = () => openPopMenu(b, [
+        ['重命名分类…', () => renameCategory(c)],
+        ['删除分类', () => deleteCategory(c), 'danger'],
+      ], c.name);
+      catsEl.appendChild(b);
+    });
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'wf-chip add';
+    add.textContent = '＋ 新分类';
+    add.onclick = () => addCategory();
+    catsEl.appendChild(add);
+  }
+
+  // 设置面板开着的时候局部刷新（不重建整个面板，滚动位置不会跳回顶上）
+  function refreshSetWf() {
+    const box = document.getElementById('appSettings');
+    if (box) renderSetWorkflows(box);
+  }
+
+  async function renameWfItem(o) {
+    const name = prompt('工作流名称', o.label);
+    if (name == null) return;
+    const v = name.trim().slice(0, 40);
+    if (!v || v === o.label) return;
+    if (await saveWfMeta(o.id, { title: v })) { refreshSetWf(); flash('已改名：' + v); }
+  }
+
+  async function moveWfItem(o, catId) {
+    if (catId === o.group) return;
+    if (await saveWfMeta(o.id, { group: catId })) {
+      refreshSetWf();
+      flash(`已移到「${catName(catId)}」`);
+    }
+  }
+
+  async function deleteWfItem(o) {
+    const extra = o.source === 'preset' ? '\n（这是内置预设，删掉要重新导入）' : '';
+    if (!confirm(`删除工作流「${o.label}」？${extra}`)) return;
+    const url = o.source === 'preset'
+      ? '/api/presets/' + encodeURIComponent(o.file)
+      : '/api/library/' + encodeURIComponent(o.file);
+    const res = await api(url, { method: 'DELETE' });
+    if (!res.ok) { flash(res.error || '删除失败'); return; }
+    try {
+      if (localStorage.getItem('infisheet-default-wf') === o.id) localStorage.removeItem('infisheet-default-wf');
+    } catch { /* noop */ }
+    // 正在用它的节点回落到一个还能用的工作流（别留个删掉的 id 在节点上，生成时才报错）
+    state.nodes.forEach((nd) => {
+      if (nd.gen && nd.gen.wf === o.id) {
+        nd.gen.wf = pickWorkflow('txt2img');
+        rerenderNode(nd.id, true);
+      }
+    });
+    await refreshWorkflows();
+    refreshSetWf();
+    flash('已删除：' + o.label);
+  }
+
+  // 新建分类：返回新 id（导入 / 换分类时可以接着用），取消返回 null
+  async function addCategory() {
+    const name = prompt('新分类名称（例如「我的常用」）');
+    if (name == null) return null;
+    const v = name.trim().slice(0, 20);
+    if (!v) return null;
+    const list = wfCategories();
+    if (list.some((c) => c.name === v)) { flash('已经有同名分类了'); return null; }
+    const id = 'c' + Date.now().toString(36);
+    if (!await saveCategories(list.concat([{ id, name: v }]))) return null;
+    await refreshWorkflows();
+    refreshSetWf();
+    flash('已新增分类：' + v);
+    return id;
+  }
+
+  async function renameCategory(c) {
+    const name = prompt('分类名称', c.name);
+    if (name == null) return;
+    const v = name.trim().slice(0, 20);
+    if (!v || v === c.name) return;
+    const next = wfCategories().map((x) => (x.id === c.id ? { ...x, name: v } : x));
+    if (await saveCategories(next)) { await refreshWorkflows(); refreshSetWf(); flash('已改名：' + v); }
+  }
+
+  async function deleteCategory(c) {
+    const list = wfCategories();
+    if (list.length <= 1) { flash('至少得留一个分类'); return; }
+    const used = presetOptions().filter((o) => o.group === c.id);
+    const tip = used.length ? `\n它下面的 ${used.length} 个工作流会移到「其他」。` : '';
+    if (!confirm(`删除分类「${c.name}」？${tip}`)) return;
+    // 先把工作流挪走再删分类：反过来的话中途失败会留下一堆指向空分类的孤儿
+    for (const o of used) await saveWfMeta(o.id, { group: 'other' });
+    if (await saveCategories(list.filter((x) => x.id !== c.id))) {
+      await refreshWorkflows();
+      refreshSetWf();
+      flash('已删除分类：' + c.name);
+    }
+  }
+
+  // 设置里那个「导入工作流…」：统一存进**工作流库**（我的工作流），
+  // 和随程序分发的内置预设分开。存完就能在默认工作流下拉 / 节点的选择器里选到。
+  function importWorkflowToLibrary() {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.json,application/json';
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      let data = null;
+      try { data = JSON.parse(await f.text()); } catch { flash('不是有效的 JSON 文件'); return; }
+      if (data && data.version === 2 && Array.isArray(data.nodes)
+        && data.nodes.some((nd) => nd && ['text', 'image', 'wf', 'out'].includes(nd.type))) {
+        flash('这是画布存档，不是工作流：请选 API / 界面格式的工作流 JSON');
+        return;
+      }
+      const graph = extractApiGraph(data) || (data && data.graph)
+        || (data && Array.isArray(data.nodes) ? data : null);
+      if (!graph) { flash('没有识别到工作流（API 图或界面格式都行）'); return; }
+      const defTitle = String(data.title || data.name || f.name.replace(/\.json$/i, '')).slice(0, 40);
+      const title = prompt('工作流名称', defTitle);
+      if (title == null) return;
+      const name = title.trim().slice(0, 40) || defTitle;
+      const res = await api(`/api/library/${encodeURIComponent(name)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph, title: name }),
+      });
+      if (!res.ok) { flash(res.error || '导入失败'); return; }
+      await refreshWorkflows();
+      refreshSetWf();
+      flash(`已导入「${name}」——在列表里能换分类、设默认`);
+    };
+    inp.click();
+  }
+
   function openSettingsSheet(focus) {
     closeSettingsSheet();
     const box = document.createElement('div');
@@ -3190,20 +3503,18 @@
         <header><strong>全局设置</strong><button type="button" class="x" title="关闭">×</button></header>
         <div class="set-body">
           <div class="set-group">工作流</div>
-          <label>默认工作流（同类时优先用它；不同功能会按分类自动挑）
+          <label>默认工作流
             <select id="setDefaultWf"></select>
           </label>
+          <p class="set-tip" id="setWfTip">按分类自动挑；这里选的那个只要同类就优先用它。</p>
           <div class="set-actions">
-            <button type="button" class="prime" id="setOpenLib">打开工作流库</button>
-            <button type="button" id="setImportWf">导入工作流 JSON…</button>
+            <button type="button" class="prime" id="setImportWf">导入工作流…</button>
+            <button type="button" id="setOpenLib">资产库…</button>
           </div>
-          <div class="set-sep"></div>
-          <div class="set-group">预设 / 工作流库</div>
-          <div class="set-actions">
-            <button type="button" id="setAddPreset">新增预设…</button>
-            <button type="button" id="setManagePreset">管理预设</button>
-            <button type="button" id="setManageLibrary">管理库工作流</button>
-          </div>
+          <div class="wf-list" id="setWfList"></div>
+          <div class="set-group">分类</div>
+          <div class="wf-cats" id="setCats"></div>
+          <p class="set-tip">点分类可以改名 / 删除；点右边那一栏能给工作流换分类。分类只影响这里的归类，不影响生成时自动挑。</p>
           <div class="set-sep"></div>
           <div class="set-group">背景</div>
           <div class="set-bg">
@@ -3281,28 +3592,10 @@
       b.onclick = () => { saveCanvasBg({ pattern: b.dataset.pattern }); markBg(); };
     });
     markBg();
-    const sel = box.querySelector('#setDefaultWf');
-    const opts = presetOptions();
-    const curDefault = defaultWorkflowId();
-    // 按分类分组：文生图 / 图生图 / 高清 / 视频 / 音频，一眼看出每个工作流是干什么的
-    CAT_ORDER.forEach((cat) => {
-      const group = opts.filter((o) => o.category === cat);
-      if (!group.length) return;
-      const gEl = document.createElement('optgroup');
-      gEl.label = CAT_LABEL[cat] || '其他';
-      group.forEach((o) => {
-        const opt = document.createElement('option');
-        opt.value = o.id;
-        opt.textContent = o.label;
-        if (o.id === curDefault) opt.selected = true;
-        gEl.appendChild(opt);
-      });
-      sel.appendChild(gEl);
-    });
-    sel.onchange = () => {
-      try { localStorage.setItem('infisheet-default-wf', sel.value); } catch { /* ignore */ }
-      flash('默认工作流已保存');
-    };
+    renderSetWorkflows(box);
+    // 先用手里那份渲染，再悄悄拉一次最新的：别让面板空着等网络，
+    // 也别让「刚在资产库里导入的工作流」在设置里看不到
+    refreshWorkflows().then(() => { if (document.body.contains(box)) renderSetWorkflows(box); });
     const snap = box.querySelector('#setSnap');
     const links = box.querySelector('#setLinks');
     const mini = box.querySelector('#setMinimap');
@@ -3332,10 +3625,7 @@
     };
     box.querySelector('.x').onclick = closeSettingsSheet;
     box.querySelector('#setOpenLib').onclick = () => { closeSettingsSheet(); showCanvas(); openModal(); };
-    box.querySelector('#setImportWf').onclick = () => { closeSettingsSheet(); importWorkflowFile(); };
-    box.querySelector('#setAddPreset').onclick = () => { closeSettingsSheet(); importPresetFile(); };
-    box.querySelector('#setManagePreset').onclick = () => { closeSettingsSheet(); openModal(); switchModalTab('preset'); };
-    box.querySelector('#setManageLibrary').onclick = () => { closeSettingsSheet(); openModal(); switchModalTab('library'); };
+    box.querySelector('#setImportWf').onclick = () => importWorkflowToLibrary();
     box.querySelector('#setFit').onclick = () => { closeSettingsSheet(); fitView(); };
     box.querySelector('#setExport').onclick = () => { closeSettingsSheet(); exportCanvas(); };
     box.querySelector('#setImport').onclick = () => { closeSettingsSheet(); importCanvas(); };
@@ -5822,16 +6112,17 @@
     const box = document.createElement('div');
     box.className = 'list';
     if (!list.length) box.innerHTML = '<p class="tip">presets 目录为空。</p>';
-    // 按分类分组：和「自动挑工作流」用的是同一份 category（服务端扫图给的），
-    // 所以这里看到的分类就是各个功能实际会挑的那一类，不是另起一套说法。
+    // 按**用户分类**分组（设置里能改名 / 新增 / 删除的那套）。
+    // 早先这里按服务端推断的能力分类分组，用户改了自己的分类，这里却纹丝不动。
     const groups = new Map();
     list.forEach((p) => {
-      const cat = p.category || 'other';
+      const cat = p.group || p.category || 'other';
       if (!groups.has(cat)) groups.set(cat, []);
       groups.get(cat).push(p);
     });
-    const order = CAT_ORDER.filter((c) => groups.has(c))
-      .concat([...groups.keys()].filter((c) => !CAT_ORDER.includes(c)));
+    const catIds = wfCategories().map((c) => c.id);
+    const order = catIds.filter((c) => groups.has(c))
+      .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
 
     const addCard = (p) => {
       const card = document.createElement('div');
@@ -5854,7 +6145,7 @@
       const items = groups.get(cat) || [];
       const head = document.createElement('div');
       head.className = 'preset-group';
-      head.innerHTML = `<span>${esc(CAT_LABEL[cat] || cat)}</span><em>${items.length}</em>`;
+      head.innerHTML = `<span>${esc(catName(cat))}</span><em>${items.length}</em>`;
       box.appendChild(head);
       items.forEach(addCard);
     });
@@ -5944,21 +6235,43 @@
     pane.innerHTML = '';
     const box = document.createElement('div');
     box.className = 'list';
-    if (!items.length) box.innerHTML = '<p class="tip">还没有保存过工作流。在画布上的工作流节点里点「存入工作流库」。</p>';
-    items.forEach((it) => {
+    if (!items.length) box.innerHTML = '<p class="tip">还没有保存过工作流。在画布上的工作流节点里点「存入工作流库」，或在设置里「导入工作流…」。</p>';
+    const addCard = (it) => {
       const card = document.createElement('div');
       card.className = 'card';
-      card.innerHTML = `<div class="info"><b>${esc(it.name)}</b><span>${it.nodes} 个节点 · ${esc(it.saved_at || '')}</span></div><button class="del">删除</button>`;
+      const label = it.title || it.name;
+      card.innerHTML = `<div class="info"><b>${esc(label)}</b>`
+        + `<span>${esc(catName(it.group || it.category || 'other'))} · ${it.nodes} 个节点`
+        + `${it.saved_at ? ' · ' + esc(it.saved_at) : ''}</span></div>`
+        + '<button class="del">删除</button>';
       card.onclick = async (ev) => {
         if (ev.target.classList.contains('del')) {
           ev.stopPropagation();
           await api(`/api/library/${encodeURIComponent(it.name)}`, { method: 'DELETE' });
+          await refreshWorkflows();
           openModal(); return;
         }
         const res = await api(`/api/library/${encodeURIComponent(it.name)}`);
-        await useGraph(res.graph, it.name);
+        await useGraph(res.graph, label);
       };
       box.appendChild(card);
+    };
+    // 和内置预设同一套分组：用户在设置里怎么分，这里就怎么排
+    const groups = new Map();
+    items.forEach((it) => {
+      const cat = it.group || it.category || 'other';
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(it);
+    });
+    const catIds = wfCategories().map((c) => c.id);
+    const order = catIds.filter((c) => groups.has(c))
+      .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
+    order.forEach((cat) => {
+      const head = document.createElement('div');
+      head.className = 'preset-group';
+      head.innerHTML = `<span>${esc(catName(cat))}</span><em>${(groups.get(cat) || []).length}</em>`;
+      box.appendChild(head);
+      (groups.get(cat) || []).forEach(addCard);
     });
     pane.appendChild(box);
   }

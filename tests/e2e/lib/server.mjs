@@ -37,8 +37,16 @@ export function seedProject(dataDir, fixtureName = 'canvas-basic.json', id = '20
 }
 
 export async function startServer({ port, dataDir, extraArgs = [] }) {
-  const proc = spawn(PY, ['-X', 'utf8', 'server.py', '--port', String(port), '--data', dataDir,
-    '--no-browser', ...extraArgs], {
+  // 预设目录也复制一份到临时 data 里：e2e 会改「工作流分类」（写进预设 JSON 顶层的 group），
+  // 不隔离的话跑一次测试就把用户 presets/ 里的工作流改了类，git 里还会多出一堆 diff。
+  const presetsDir = path.join(dataDir, 'presets');
+  if (!fs.existsSync(presetsDir)) {
+    fs.cpSync(path.join(ROOT, 'presets'), presetsDir, { recursive: true });
+  }
+  const args = ['-X', 'utf8', 'server.py', '--port', String(port), '--data', dataDir,
+    '--no-browser'];
+  if (!extraArgs.includes('--presets')) args.push('--presets', presetsDir);
+  const proc = spawn(PY, [...args, ...extraArgs], {
     cwd: ROOT,
     // MCP 安装会往客户端配置里写条目：指到临时 HOME，别碰用户真的 ~/.workbuddy/mcp.json
     env: { ...process.env, PYTHONIOENCODING: 'utf-8', INFISHEET_MCP_HOME: path.join(dataDir, 'mcp-home') },
