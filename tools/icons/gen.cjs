@@ -93,6 +93,10 @@ const EXTRA = {
   // 橡皮：斜放的橡皮块 + 桌面线
   eraser: '<rect x="11" y="19" width="28" height="15" rx="3" transform="rotate(-40 25 26.5)" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>'
     + '<path d="M12 41h26" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>',
+  // 下载：托盘 + 向下的箭头，是 upload 的镜像（同一套口径，摆在一起才不别扭）
+  download: '<path d="M6 24.0083V42H42V24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '<path d="M33 23L24 32L15 23" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '<path d="M23.9917 32V6" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
 };
 Object.assign(out, EXTRA);
 

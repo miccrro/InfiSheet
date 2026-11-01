@@ -50,7 +50,8 @@
   "crop": "<path d=\"M12 4v32h32\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M4 12h32v32\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
   "rotate": "<path d=\"M24 8a16 16 0 1 1-11.3 4.7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\"/><path d=\"M12 4v10h10\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
   "brush": "<path d=\"M40 8 26 22\" stroke=\"currentColor\" stroke-width=\"6\" stroke-linecap=\"round\"/><path d=\"M25 23l-6 15 15-6z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linejoin=\"round\"/>",
-  "eraser": "<rect x=\"11\" y=\"19\" width=\"28\" height=\"15\" rx=\"3\" transform=\"rotate(-40 25 26.5)\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linejoin=\"round\"/><path d=\"M12 41h26\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\"/>"
+  "eraser": "<rect x=\"11\" y=\"19\" width=\"28\" height=\"15\" rx=\"3\" transform=\"rotate(-40 25 26.5)\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linejoin=\"round\"/><path d=\"M12 41h26\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\"/>",
+  "download": "<path d=\"M6 24.0083V42H42V24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M33 23L24 32L15 23\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M23.9917 32V6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
 };
   function icon(name, cls) {
     var d = P[name];

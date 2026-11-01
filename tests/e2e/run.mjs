@@ -2779,7 +2779,10 @@ try {
       // 分隔线插在哪儿是「分组」这件事本身，光数个数看不出错位
       layout: [...bar.querySelectorAll('.it-btn, .it-sep')]
         .map((el) => (el.classList.contains('it-sep') ? '|' : el.dataset.tool)).join('/'),
-      centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2,
+      // 居中；居中放不下时改成和节点左/右边缘对齐（见 positionImgTools），两种都算「贴着自己」
+      attached: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2
+        || Math.abs(r.left - nb.left) <= 2 || Math.abs(r.right - nb.right) <= 2,
+      w: Math.round(r.width),
       above: r.bottom <= nb.top,
       // 节点贴着屏幕上方时上面放不下（再抬就被顶栏挡住），这时压在自己那张图的上沿。
       // 三种位置都算「贴着自己这个节点」，真正不能接受的是压在**别的**节点标题上（clearsTitles）。
@@ -2802,15 +2805,34 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条贴着它（上方，放不下就压在自己图上）、图标 + 文案齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/旋转/调色/遮罩/擦除/去字/扩图/抠图/高清'
-      && toolBar.centered && toolBar.inView
+      && toolBar.tools.join('/') === '裁剪/旋转/调色/遮罩/擦除/去字/扩图/抠图/高清/下载'
+      && toolBar.attached && toolBar.inView
       && (toolBar.place === 'above' || toolBar.place === 'over')
       && toolBar.pe === 'none' && toolBar.btnPe === 'auto',
     JSON.stringify(toolBar));
-  check('工具条按「本地变换 / 涂抹 / 整图编辑」分三段（两条分隔线，各三颗）',
-    toolBar.seps === 2
-      && toolBar.layout === 'crop/rotate/color/|/mask/erase/detext/|/outpaint/cutout/upscale',
+  check('工具条按「本地变换 / 涂抹 / 整图编辑 / 导出」分四段（三条分隔线，3/3/3/1）',
+    toolBar.seps === 3
+      && toolBar.layout === 'crop/rotate/color/|/mask/erase/detext/|/outpaint/cutout/upscale/|/download',
     toolBar.layout);
+
+  // 下载：把图存成本地文件。headless 里不真落盘（会污染下载目录），只把 <a> 的
+  // click 拦下来，验「文件名取自节点标题、扩展名跟着 MIME 走」这两件真正会错的事。
+  const dl = await page.evaluate(`(async () => {
+    const rec = [];
+    const orig = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () { rec.push(this.download); };
+    const b = document.querySelector('#imgTools [data-tool="download"]');
+    const hasIcon = !!(b && b.querySelector('svg'));
+    if (b) b.click();
+    await new Promise((r) => setTimeout(r, 400));
+    HTMLAnchorElement.prototype.click = orig;
+    const title = (document.querySelector('.node[data-id="${pick.img}"] .n-name') || {}).textContent || '';
+    return { rec, hasIcon, title };
+  })()`);
+  check('点「下载」→ 按节点标题命名、扩展名跟着图片 MIME（不是一律 .png）',
+    dl.hasIcon && dl.rec.length === 1
+      && dl.title && dl.rec[0] === `${dl.title.trim()}.svg`,
+    JSON.stringify(dl));
 
   // 工具条是屏幕坐标：缩放画布后它的大小不该跟着变
   // 用 50%（节点缩到视口装得下）来验：200% 时节点本身比视口还宽，工具条必然被
@@ -2820,13 +2842,15 @@ try {
   const toolZoomed = await page.evaluate(`(() => {
     const r = document.getElementById('imgTools').getBoundingClientRect();
     const nb = document.querySelector('.node[data-id="${pick.img}"]').getBoundingClientRect();
-    return { h: Math.round(r.height), centered: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2,
+    return { h: Math.round(r.height),
+             attached: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2
+               || Math.abs(r.left - nb.left) <= 2 || Math.abs(r.right - nb.right) <= 2,
              place: document.getElementById('imgTools').dataset.place };
   })()`);
   await page.evaluate(`document.querySelector('[data-zoom="fit"]').click()`);
   await new Promise((r) => setTimeout(r, 400));
   check('缩到 50% 后工具条尺寸不变、仍然贴着自己这个节点（屏幕坐标，不吃缩放）',
-    toolZoomed.h === toolBar.h && toolZoomed.centered
+    toolZoomed.h === toolBar.h && toolZoomed.attached
       && (toolZoomed.place === 'above' || toolZoomed.place === 'over'),
     JSON.stringify(toolZoomed));
 
@@ -3161,16 +3185,26 @@ try {
     const sel = el.querySelector('.op-sel');
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
+    const bar = document.querySelector('.op-float');
+    const br = bar ? bar.getBoundingClientRect() : null;
+    const btn = (k) => bar && bar.querySelector('[data-of="' + k + '"]');
     return {
       open: true,
-      // 边框长在节点上：舞台 + 比例档 + 读数都在这个节点里
-      onNode: !!el.querySelector('.op-stage') && !!el.querySelector('.op-bar'),
+      // 边框长在节点上（舞台 + 锚点），参数条是屏幕坐标的浮条（挂在 body 上，不在节点里）
+      onNode: !!el.querySelector('.op-stage') && !el.querySelector('.op-bar'),
+      float: !!bar && !el.contains(bar) && document.body.contains(bar),
+      fixed: bar ? getComputedStyle(bar).position : '',
+      buttons: bar ? [...bar.querySelectorAll('[data-of]')].map((b) => b.dataset.of) : [],
+      labels: bar ? ['wf', 'size', 'res', 'batch', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
+      read: bar ? bar.querySelector('.of-read').textContent.trim() : '',
+      // 「完成」已经取消：收起扩图只走「取消」，烘像素交给「生成」
+      noDone: !(bar && bar.querySelector('[data-op="done"]')),
+      inView: br ? br.left >= 0 && br.right <= window.innerWidth && br.bottom <= window.innerHeight : false,
+      centered: br ? Math.abs((br.left + br.width / 2) - (st.left + st.width / 2)) <= 3 : false,
       anchors: [...sel.querySelectorAll('.ch')].map((c) => c.dataset.anchor).sort(),
       stage: [Math.round(st.width), Math.round(st.height)],
       img: [Math.round(im.width), Math.round(im.height)],
       bands: [...el.querySelectorAll('.op-bands i')].length,
-      ratios: [...el.querySelectorAll('.op-ratios .crop-ratio')].map((b) => b.textContent.trim()),
-      size: (el.querySelector('.op-size') || {}).textContent.trim(),
       // 工具条不再让位：边框就在节点上，不占一层浮层
       toolsShown: !document.getElementById('imgTools').classList.contains('hidden'),
       toolOn: document.querySelector('#imgTools [data-tool="outpaint"]').classList.contains('on'),
@@ -3181,14 +3215,33 @@ try {
     outUi.open && outUi.onNode && outUi.anchors.join('/') === 'e/n/ne/nw/s/se/sw/w'
       && outUi.toolsShown && outUi.toolOn && outUi.noModal,
     JSON.stringify(outUi));
-  check('刚打开时边框和原图一样大（还没扩），比例档 / 尺寸读数 / 完成都在图片下面',
+  check('参数条是浮在画布上的悬浮条（屏幕坐标、挂在 body 上），贴在图片下方居中、在视野里',
+    outUi.float && outUi.fixed === 'fixed' && outUi.inView && outUi.centered,
+    JSON.stringify({ float: outUi.float, fixed: outUi.fixed, inView: outUi.inView, centered: outUi.centered }));
+  check('悬浮条五段：工作流 / 尺寸 / 分辨率 / 数量 / 取消，没有「完成」',
+    outUi.buttons.join('/') === 'wf/size/res/batch/cancel'
+      && outUi.labels[4] === '取消' && outUi.noDone
+      && outUi.labels[0].length > 0 && outUi.labels[2].length > 0 && /^\d+ 张$/.test(outUi.labels[3]),
+    JSON.stringify({ buttons: outUi.buttons, labels: outUi.labels }));
+  check('刚打开时边框和原图一样大（还没扩），尺寸档报「原图」、读数是「原图 → 画布」',
     outUi.stage[0] === outUi.img[0] && outUi.stage[1] === outUi.img[1] && outUi.bands === 0
-      && outUi.ratios.join('/') === '1:1/4:3/3:4/16:9/9:16/四周 +20%'
-      && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.size),
-    JSON.stringify({ stage: outUi.stage, img: outUi.img, ratios: outUi.ratios, size: outUi.size }));
+      && outUi.labels[1] === '原图'
+      && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.read),
+    JSON.stringify({ stage: outUi.stage, img: outUi.img, size: outUi.labels[1], read: outUi.read }));
 
-  const clickChip = (label) => page.evaluate(`[...document.querySelectorAll('.op-ratios .crop-ratio')]
-    .find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`);
+  // 尺寸档现在藏在「尺寸」按钮的下拉里（悬浮条上只显示当前档，不铺一排按钮）
+  const openOf = (k) => page.evaluate(`document.querySelector('.op-float [data-of="${k}"]').click()`);
+  const pickMenu = (label) => page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.popmenu button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  const clickChip = async (label) => {
+    await openOf('size');
+    await new Promise((r) => setTimeout(r, 250));
+    if (!await pickMenu(label)) throw new Error(`尺寸菜单里没有「${label}」`);
+  };
   await clickChip('16:9');
   await new Promise((r) => setTimeout(r, 300));
   const outWide = await page.evaluate(`(() => {
@@ -3198,12 +3251,12 @@ try {
     return { stage: [Math.round(st.width), Math.round(st.height)],
              img: [Math.round(im.width), Math.round(im.height)],
              bands: [...el.querySelectorAll('.op-bands i')].length,
-             size: el.querySelector('.op-size').textContent.trim(),
-             onChip: [...el.querySelectorAll('.op-ratios .crop-ratio.on')].map((b) => b.textContent.trim()) };
+             read: document.querySelector('.op-float .of-read').textContent.trim(),
+             onChip: document.querySelector('.op-float [data-of="size"]').textContent.trim() };
   })()`);
-  check('选 16:9 → 舞台变横（原图只占中间一条），左右两条新边亮出来，比例档亮在这一格',
+  check('选 16:9 → 舞台变横（原图只占中间一条），左右两条新边亮出来，悬浮条上的尺寸档跟着变',
     outWide.stage[0] > outWide.stage[1] && outWide.stage[0] > outWide.img[0]
-      && outWide.bands === 2 && outWide.onChip.join('/') === '16:9',
+      && outWide.bands === 2 && outWide.onChip === '16:9',
     JSON.stringify(outWide));
 
   // 拖右边那个锚点：画布只在右侧变宽，左边那条边纹丝不动（这就是「自定义尺寸」的意义，
@@ -3219,7 +3272,7 @@ try {
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
              stageW: Math.round(st.width), imgW: Math.round(im.width),
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
-             size: el.querySelector('.op-size').textContent.trim(),
+             size: document.querySelector('.op-float .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '' };
   })()`);
   await page.evaluate(`(() => {
@@ -3238,12 +3291,14 @@ try {
     const el = document.querySelector('.node.selected');
     const st = el.querySelector('.op-stage').getBoundingClientRect();
     const im = el.querySelector('.op-stage img').getBoundingClientRect();
+    const br = document.querySelector('.op-float').getBoundingClientRect();
     return { l: Math.round(im.left - st.left), r: Math.round(st.right - im.right),
              stageW: Math.round(st.width), imgW: Math.round(im.width),
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
-             size: el.querySelector('.op-size').textContent.trim(),
+             size: document.querySelector('.op-float .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '',
-             onChip: [...el.querySelectorAll('.op-ratios .crop-ratio.on')].length };
+             onChip: document.querySelector('.op-float [data-of="size"]').textContent.trim(),
+             barInView: br.left >= 0 && br.right <= window.innerWidth && br.bottom <= window.innerHeight };
   })()`);
   // 屏幕像素不能直接比：画布一变宽，同一个「左边几像素」对应的原图像素就变了。
   // 按各自的缩放换算回原图像素，才是「这条边到底动没动」。
@@ -3254,10 +3309,10 @@ try {
     return { l: Math.round(o.l * k), r: Math.round(o.r * k), nw };
   };
   const nBefore = nat(before), nAfter = nat(after);
-  check('拖右边锚点 → 只有右边变宽（左边一个像素都不动），比例档全灭',
+  check('拖右边锚点 → 只有右边变宽（左边一个像素都不动），尺寸档改口叫「自定义」',
     !!eastAt && nAfter.r > nBefore.r + 8 && nAfter.l === nBefore.l
-      && after.size !== before.size && after.onChip === 0,
-    JSON.stringify({ before: nBefore, after: nAfter, size: [before.size, after.size] }));
+      && after.size !== before.size && after.onChip === '自定义',
+    JSON.stringify({ before: nBefore, after: nAfter, size: [before.size, after.size], chip: after.onChip }));
   // 这条是用户原话「图片大小固定不变」的直接回归：扩图应该是**画布长出去**，
   // 不是把画布塞满缩略图、让原图往里缩（那样拖了看着只是「图被压扁」）。
   check('拖锚点只让画布往外长：原图和缩略图的尺寸一个像素都不变，画布真的比它们宽',
@@ -3265,6 +3320,10 @@ try {
       && after.stageW > after.thumbW + 20,
     JSON.stringify({ imgW: [before.imgW, after.imgW], thumbW: [before.thumbW, after.thumbW],
       stageW: [before.stageW, after.stageW] }));
+  // 悬浮条的全部意义就在这条：画布已经溢出视口，按钮还在视野里。
+  // 早先按钮挂在节点里，往下拖时节点底边一直往外走，比例档和「完成」直接被顶出屏幕。
+  check('画布拖到溢出视口，悬浮条还在视野里（按钮挂在节点里时会被顶出屏幕）',
+    after.barInView === true, JSON.stringify({ barInView: after.barInView }));
   check('拖的同时面板里的尺寸胶囊跟着变（不是等生成完才改）',
     after.opt !== before.opt && /^\d+×\d+ · \d+张$/.test(after.opt),
     JSON.stringify({ before: before.opt, after: after.opt }));

@@ -267,6 +267,11 @@
   });
 
   /* ---------------- 视图 ---------------- */
+  // 扩图浮条的重定位钩子：buildOutpaintFrame 挂上、收起时摘掉。
+  // 用 var 不用 let —— applyView 在模块初始化时就会跑，那时下面那句 let 还没执行到，
+  // let 会直接踩 TDZ 抛错，var 只是 undefined，`if` 一下就跳过了。
+  var opFloatPlace = null;
+
   function applyView() {
     const { x, y, k } = state.view;
     const zb = document.getElementById('zoomBtn');
@@ -279,6 +284,7 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
+    if (opFloatPlace) opFloatPlace();      // 扩图浮条贴着画布，视图一动也得跟过去
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
     const cell = clamp(28 * k, 16, 112);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
@@ -7467,8 +7473,9 @@
   /* ---------------- 图片工具条：裁剪 / 高清 ---------------- */
   // 图片节点选中时，在节点标题上方浮出一排后续操作。位置按**屏幕坐标**算（和 #alignBar、
   // #linkDel 同一个路数）：放进 #world 会跟着画布缩放，200% 时工具条比图还大、25% 时点不着。
-  // 九颗按钮分三段：本地变换（不进模型）/ 涂抹类（靠遮罩驱动）/ 整图编辑（整张交给模型）。
-  // 分隔线就按这个分段画，用户一眼能看出「哪些是立刻出结果、哪些要跑工作流」。
+  // 十颗按钮分四段：本地变换（不进模型）/ 涂抹类（靠遮罩驱动）/ 整图编辑（整张交给模型）/
+  // 导出（把结果拿走，和模型无关）。分隔线就按这个分段画，用户一眼能看出
+  // 「哪些是立刻出结果、哪些要跑工作流、哪个只是存文件」。
   const IMG_TOOLS = [
     ['crop', '裁剪', 'crop', '拖一个框，裁出一张新的图片节点'],
     ['rotate', '旋转', 'rotate', '旋转 90° / 180°，或水平 / 垂直翻转'],
@@ -7479,10 +7486,11 @@
     ['outpaint', '扩图', 'expand', '把画布向外扩大，让模型补全画外内容'],
     ['cutout', '抠图', 'magic', '去掉背景，只保留主体'],
     ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
+    ['download', '下载', 'download', '把这张图存到本地（原图分辨率，不压缩）'],
   ];
-  // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型。
-  // 三段各三颗，视觉上就是「不动模型 / 只动涂的地方 / 整张重做」三种代价。
-  const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint']);
+  // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
+  // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
+  const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint', 'download']);
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
   // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
   // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
@@ -7550,36 +7558,52 @@
     const nb = el.getBoundingClientRect();
     const w = bar.offsetWidth || 300;
     const h = bar.offsetHeight || 34;
-    const left = clamp(nb.left + nb.width / 2 - w / 2, 10, window.innerWidth - w - 10);
-    // 贴在标题上方；节点顶到屏幕外时别让工具条跟着飞出视口
-    let y = Math.max(8, nb.top - h - 8);
-    let place = 'above';
-    // 整条带文字之后有 ~575px 宽，横向会盖到旁边节点的标题上——那不只是难看：
+    const minL = 10, maxL = Math.max(10, window.innerWidth - w - 10);
+    // 整条带文字之后有 ~645px 宽，横向难免盖到旁边节点的标题上——那不只是难看：
     // 盖住的那块点下去命中的是工具条（实测点标题点出了「旋转」菜单），用户会以为
-    // 「这个节点点不中」。压到别人就把整条往上抬；抬一次可能又撞上更高处的一条，
-    // 所以循环到不再重叠（最多 3 次，正常情况一次就结束）。
+    // 「这个节点点不中」。所以下面按「先挑横向位置、再挑纵向位置」的顺序找空位。
+    //
+    // 横向：默认居中对齐这个节点；居中会被视口夹住时（节点贴着屏幕左/右边缘）改成和
+    // 节点左/右边缘对齐，让整条朝画布空白的那一侧展开。这几个候选位置都算「贴着自己」。
+    const want = nb.left + nb.width / 2 - w / 2;
+    const lefts = [clamp(want, minL, maxL)];
+    if (Math.abs(lefts[0] - want) > 1) {
+      lefts.push(clamp(nb.left, minL, maxL), clamp(nb.right - w, minL, maxL));
+    }
     const topBar = document.getElementById('topBar');
     const floor = (topBar ? topBar.offsetHeight : 44) + 6;
-    for (let i = 0; i < 3; i++) {
-      const hit = otherTitleTops(n.id, left, left + w, y, y + h);
-      if (hit == null) break;
-      const next = Math.max(floor, Math.min(y, hit - h - 6));
-      if (next === y) break;      // 已经顶到上限，再抬不动了
-      y = next;
-    }
-    // 抬到顶栏底下还是压着人（节点本来就贴着屏幕上方）→ 改为压在自己这张图的上沿。
-    // 翻到节点下方试过：图片节点下面紧跟着生成面板，那条会盖住「上传 / 素材库 / 清空 / 风格」，
-    // 还是「点了没反应」。压在自己图上则谁也挡不着——这张图本来就是选中的那张，
-    // 点它只会重新选中它，不丢任何操作。
-    if (otherTitleTops(n.id, left, left + w, y, y + h) != null) {
-      const title = el.querySelector('.node-title');
-      const tb = title ? title.getBoundingClientRect().bottom : nb.top + 28;
-      y = Math.min(tb + 6, window.innerHeight - h - 8);
+    const title = el.querySelector('.node-title');
+    // 给定横向位置，纵向怎么摆：贴在标题上方；压到别人就把整条往上抬，
+    // 抬一次可能又撞上更高处的一条，所以循环到不再重叠（最多 3 次，正常一次就结束）。
+    const solve = (left) => {
+      let y = Math.max(8, nb.top - h - 8);
+      let place = 'above';
+      for (let i = 0; i < 3; i++) {
+        const hit = otherTitleTops(n.id, left, left + w, y, y + h);
+        if (hit == null) break;
+        const next = Math.max(floor, Math.min(y, hit - h - 6));
+        if (next === y) break;      // 已经顶到上限，再抬不动了
+        y = next;
+      }
+      if (otherTitleTops(n.id, left, left + w, y, y + h) == null) return { left, y, place, clear: true };
+      // 抬到顶栏底下还是压着人（节点本来就贴着屏幕上方）→ 改为压在自己这张图的上沿。
+      // 翻到节点下方试过：图片节点下面紧跟着生成面板，那条会盖住「上传 / 素材库 / 清空 / 风格」，
+      // 还是「点了没反应」。压在自己图上则谁也挡不着——这张图本来就是选中的那张，
+      // 点它只会重新选中它，不丢任何操作。
+      y = Math.min((title ? title.getBoundingClientRect().bottom : nb.top + 28) + 6, window.innerHeight - h - 8);
       place = 'over';
+      return { left, y, place, clear: otherTitleTops(n.id, left, left + w, y, y + h) == null };
+    };
+    // 按候选顺序试，取第一个真的不压别人标题的；都不行就用第一个（宁可压在自己图上）
+    let best = null;
+    for (const left of lefts) {
+      const s = solve(left);
+      if (!best) best = s;
+      if (s.clear) { best = s; break; }
     }
-    bar.dataset.place = place;            // 测试和排查用：这次是贴在上面还是压在自己图上
-    bar.style.left = `${Math.round(left)}px`;
-    bar.style.top = `${Math.round(y)}px`;
+    bar.dataset.place = best.place;       // 测试和排查用：这次是贴在上面还是压在自己图上
+    bar.style.left = `${Math.round(best.left)}px`;
+    bar.style.top = `${Math.round(best.y)}px`;
   }
 
   // 工具条横向范围内，其它节点标题的最高一条顶边；没有重叠返回 null。
@@ -7632,7 +7656,41 @@
     if (kind === 'outpaint') { toggleOutpaint(n); return; }
     if (kind === 'mask') { openMaskEditor(n); return; }
     if (kind === 'erase' || kind === 'detext') { openMaskEditor(n, { intent: kind }); return; }
+    if (kind === 'download') { downloadImage(n); return; }
     createEditNode(n, kind);      // upscale / cutout
+  }
+
+  // 下载 = 把这张图原样存到本地。**不经过 canvas 重编码**：canvas 只能出 PNG，
+  // 而用户贴进来的 JPEG 存成 PNG 会大好几倍；这里直接拿原字节，扩展名跟着 MIME 走。
+  // 文件名取节点标题（清掉路径非法字符），比「未命名-1730...png」有用得多。
+  async function downloadImage(n) {
+    const src = n && n.dataURL;
+    if (!src) { flash('这张图还没加载完，稍等一下再试'); return; }
+    const base = String(n.title || 'image').replace(/[\\/:*?"<>|]/g, '_').trim() || 'image';
+    let href = src, revoke = false, ext = 'png';
+    if (/^data:image\//i.test(src)) {
+      ext = (src.slice(11).split(';')[0] || 'png').replace('jpeg', 'jpg').replace(/\+.*/, '');
+    }
+    try {
+      const r = await fetch(src);
+      if (!r.ok) throw new Error(String(r.status));
+      const b = await r.blob();
+      const sub = String(b.type || '').split('/')[1];
+      if (sub) ext = sub.replace('jpeg', 'jpg').replace(/\+.*/, '');
+      href = URL.createObjectURL(b);
+      revoke = true;
+    } catch {
+      // 跨域图 / 服务端断线：退回让浏览器自己存原地址（data: 也能直接存）。
+      // 不 flash 报错——用户要的是文件，多数情况下原地址这条路是通的。
+    }
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = `${base}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    if (revoke) setTimeout(() => URL.revokeObjectURL(href), 4000);
+    flash(`已下载 ${base}.${ext}`);
   }
 
   // 图像编辑类工具的落地方式：**新建**一个节点，而不是改用户手上这张。
@@ -7945,8 +8003,10 @@
     // 画布不可能比原图还小（snapSide 是四舍五入，98 这种尺寸会被舍到 96）。
     // 不能再写 `w + 16` 兜底：那多出来的一格会全落到**没被拖的那一边**
     // （拖左边 5px，右边凭空长 11px）。拖得不够一格就是没反应，这是取整的必然。
-    const nw = Math.max(w, snapSide(w + l + r));
-    const nh = Math.max(h, snapSide(h + t + b));
+    // 一根轴一边都没扩（l+r=0）时按**原图尺寸**算，不要走 snapSide：原图 700 宽会被
+    // 舍成 704，明明一格没扩、读数却写着「700 → 704」，看着像白扩了 4px。
+    const nw = l + r > 0 ? Math.max(w, snapSide(w + l + r)) : w;
+    const nh = t + b > 0 ? Math.max(h, snapSide(h + t + b)) : h;
     // ox/oy **钉在被拖的那一边**（左/上），snap 的零头全落到右/下。
     // 早先是「零头两边平分」，结果拖右边时画布一跳档，左边也跟着挪了一两像素——
     // 明明只动了一条边，图却整体位移，手感很怪。比例档那边由 fitPad 保证对称，不吃这个亏。
@@ -8007,6 +8067,89 @@
     return f;
   }
 
+  // 「自定义尺寸…」：填的是**最终画布**的宽高（不是每边扩多少），差出来的量居中分到四边。
+  // 和拖锚点是同一份数据（pad），所以填完还能接着拖。
+  function setOutpaintToSize(n, nw, nh) {
+    const op = outpaintOf(n);
+    if (!op) return null;
+    const W = Math.max(op.w, Math.min(OP_MAX_SIDE, snapSide(nw)));
+    const H = Math.max(op.h, Math.min(OP_MAX_SIDE, snapSide(nh)));
+    const l = Math.round((W - op.w) / 2);
+    const t = Math.round((H - op.h) / 2);
+    return setOutpaintPad(n, { l, t, r: W - op.w - l, b: H - op.h - t });
+  }
+
+  // 「分辨率」：按当前画布比例整体缩放到目标长边。四边 pad 一起乘同一个系数，
+  // 所以拖出来的不对称形状（左边多留那种）能原样保住，只变大小。
+  function scaleOutpaintTo(n, long) {
+    const op = outpaintOf(n);
+    if (!op) return null;
+    const f = outpaintFrame(op.w, op.h, op);
+    const s = long / Math.max(f.nw, f.nh);
+    if (!(s > 0)) return null;
+    return setOutpaintPad(n, {
+      l: Math.round(op.l * s), t: Math.round(op.t * s),
+      r: Math.round(op.r * s), b: Math.round(op.b * s),
+    });
+  }
+
+  // 自定义尺寸的小弹层（openPopMenu 只能放按钮，塞不下输入框，这里单独拼一个）
+  function openDimMenu(anchor, n, after) {
+    const op = outpaintOf(n);
+    if (!op) return;
+    const f = outpaintFrame(op.w, op.h, op);
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu of-dim';
+    const title = document.createElement('div');
+    title.className = 'popmenu-title';
+    title.textContent = `画布尺寸（原图 ${op.w} × ${op.h}，自动对齐 16 的倍数）`;
+    menu.appendChild(title);
+    const row = document.createElement('div');
+    row.className = 'go-custom';
+    const mk = (val, label) => {
+      const el = document.createElement('input');
+      el.type = 'number';
+      el.className = 'go-num';
+      el.min = DIM_MIN;
+      el.max = OP_MAX_SIDE;
+      el.step = 16;
+      el.value = val;
+      el.setAttribute('aria-label', label);
+      // 数字框里滚轮改值很容易误伤，而且会把画布缩放吃掉
+      el.addEventListener('wheel', (ev) => ev.stopPropagation(), { passive: true });
+      return el;
+    };
+    const wInp = mk(f.nw, '画布宽度');
+    const hInp = mk(f.nh, '画布高度');
+    const times = document.createElement('i');
+    times.className = 'go-times';
+    times.textContent = '×';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'go-ok';
+    ok.textContent = '应用';
+    row.append(wInp, times, hInp, ok);
+    menu.appendChild(row);
+    const apply = () => {
+      const w = Number(wInp.value), h = Number(hInp.value);
+      if (!(w > 0 && h > 0)) { flash('宽高都要填正数'); return; }
+      setOutpaintToSize(n, w, h);
+      closePopMenu();
+      after();
+    };
+    ok.onclick = apply;
+    [wInp, hInp].forEach((el) => {
+      el.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); apply(); } };
+    });
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+    wInp.focus();
+    wInp.select();
+  }
+
   // 点「扩图」= 开关。开着再点一次就收起（不烘、不改图、把尺寸档还回去）。
   function toggleOutpaint(n) {
     if (outpaintOn(n)) { closeOutpaint(n); return; }
@@ -8031,22 +8174,10 @@
       if (ta) ta.value = OP_PROMPT;
     }
     rerenderNode(n.id, true);
-    // 节点贴着屏幕底边时，画布一往下长就把比例档和「完成」顶出视口——用户找不到出口，
-    // 只能猜 Esc。开框时把视图往上抬一下，保证「图 + 下面那条按钮」整块露出来。
-    ensureOutpaintVisible(n);
+    // 这里不再抬视图：按钮已经搬到屏幕坐标的悬浮条上（placeBar 会自己翻边/贴边），
+    // 画布往下长多少都不会把出口顶出视口，也就没有理由替用户动他的画布位置。
     queueSave();
     flash('拖边框上的八个锚点决定往哪边扩、扩多少，然后点生成');
-  }
-
-  function ensureOutpaintVisible(n) {
-    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    // 64px ≈ 比例档两行 + 读数 + 按钮 + 间距
-    const over = r.bottom + 64 - (window.innerHeight - 12);
-    if (over <= 0) return;
-    state.view.y -= over / (state.view.k || 1);
-    applyView();
   }
 
   function closeOutpaint(n) {
@@ -8126,6 +8257,9 @@
     if (!opSession) return;
     if (id && opSession.id !== id) return;
     try { opSession.ac.abort(); } catch { /* 已经 abort 过 */ }
+    // 浮条挂在 document.body 上，不在节点里：节点重建/收起都不会带走它，得手动摘
+    if (opSession.bar && opSession.bar.isConnected) opSession.bar.remove();
+    opFloatPlace = null;
     opSession = null;
   }
 
@@ -8165,16 +8299,156 @@
     thumb.appendChild(stage);
     thumb.appendChild(sel);
 
+    // ---- 悬浮参数条 ----
+    // 挂在 document.body 上、position: fixed：画布会往外溢出，跟着节点走的话一拖下边
+    // 就把按钮顶出视口（用户找不到出口只能猜 Esc）。屏幕坐标的浮条永远在视野里。
     const bar = document.createElement('div');
-    bar.className = 'op-bar';
-    bar.innerHTML = `<div class="op-ratios">${OP_RATIOS.map(([label], i) => (
-      `<button type="button" class="crop-ratio" data-op="${i}">${label}</button>`
-    )).join('')}<button type="button" class="crop-ratio" data-op="pad">四周 +${OP_PAD_PCT}%</button></div>`
-      + '<div class="op-foot"><span class="op-size"></span><span class="crop-gap"></span>'
-      + '<button type="button" class="crop-btn" data-op="done">完成</button></div>';
-    body.appendChild(bar);
+    bar.className = 'op-float';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', '扩图参数');
+    bar.innerHTML = '<button type="button" class="of-btn" data-of="wf"></button>'
+      + '<button type="button" class="of-btn" data-of="size"></button>'
+      + '<button type="button" class="of-btn" data-of="res"></button>'
+      + '<button type="button" class="of-btn" data-of="batch"></button>'
+      + '<span class="of-read"></span>'
+      + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>';
+    document.body.appendChild(bar);
+    bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    if (opSession) opSession.bar = bar;
 
-    const readout = bar.querySelector('.op-size');
+    const readout = bar.querySelector('.of-read');
+    const btnOf = (k) => bar.querySelector(`[data-of="${k}"]`);
+
+    // 贴画布下方居中；下方放不下就贴到视口底部的安全区（让开底部那排画布控件）
+    const placeBar = () => {
+      const r = stage.getBoundingClientRect();
+      const w = bar.offsetWidth, h = bar.offsetHeight;
+      if (!w) return;
+      const topBarEl = document.getElementById('topBar');
+      const minY = (topBarEl ? topBarEl.offsetHeight : 44) + 6;
+      // 底部那排（缩放 / 对齐 / 小地图）是 26px 高、离底 12px，留 64px 才让得开。
+      // 不让开的话画布一大就被钉在视口最底下，和缩放条叠在一起，两边的字互相糊。
+      const maxY = Math.max(minY, window.innerHeight - h - 64);
+      const left = clamp(r.left + r.width / 2 - w / 2, 10, Math.max(10, window.innerWidth - w - 10));
+      // 首选画布正下方；画布比自己还高（缩放很大 / 往下扩了很多）就只能贴安全区
+      let top = Math.min(r.bottom + 10, maxY);
+      if (top < minY) top = minY;
+      bar.style.left = `${Math.round(left)}px`;
+      bar.style.top = `${Math.round(top)}px`;
+    };
+    opFloatPlace = placeBar;
+
+    // 尺寸档按「当前 pad 等于哪一档」反推：拖过锚点之后没有一档成立，就报「自定义」
+    const sizeTag = (op) => {
+      // 四边都是 0 就是一格没扩：这时候说「自定义」会让人以为动过什么
+      if (!op.l && !op.t && !op.r && !op.b) return '原图';
+      const near = (a, b2) => ['l', 't', 'r', 'b'].every((k) => Math.abs((a[k] || 0) - (b2[k] || 0)) <= 1.5);
+      const hit = OP_RATIOS.find(([, r]) => near(op, outpaintPad(op.w, op.h, r, OP_PAD_PCT)));
+      if (hit) return hit[0];
+      if (near(op, outpaintPad(op.w, op.h, 0, OP_PAD_PCT))) return `四周 +${OP_PAD_PCT}%`;
+      return '自定义';
+    };
+
+    // 分辨率：按画布长边反推最近的档（1024 / 2048 / 4096），对不上就报实际像素
+    const resTag = (f) => {
+      const long = Math.max(f.nw, f.nh);
+      const hit = SIZES.find(([, , px]) => Math.abs(px - long) <= 24);
+      return hit ? hit[1] : `${long}px`;
+    };
+
+    const syncBar = () => {
+      const op = outpaintOf(n);
+      if (!op) return;
+      const f = outpaintFrame(op.w, op.h, op);
+      const wf = presetOptions().find((o) => o.id === n.gen.wf);
+      btnOf('wf').innerHTML = `${icon('wf')}<span>${wf ? wf.label : '选工作流'}</span><i class="of-caret"></i>`;
+      btnOf('wf').title = wf ? `${wf.catLabel} · ${wf.label}` : '还没有可用工作流';
+      btnOf('size').innerHTML = `<span>${sizeTag(op)}</span><i class="of-caret"></i>`;
+      btnOf('size').title = `画布尺寸：${op.w} × ${op.h} → ${f.nw} × ${f.nh}（拖边框上的八个锚点也能改）`;
+      btnOf('res').innerHTML = `<span>${resTag(f)}</span><i class="of-caret"></i>`;
+      btnOf('res').title = '输出分辨率：按当前画布比例缩放到目标长边';
+      btnOf('batch').innerHTML = `<span>${n.gen.batch || 1} 张</span><i class="of-caret"></i>`;
+      readout.textContent = `${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
+    };
+
+    const openWfMenu = () => {
+      const list = presetOptions();
+      if (!list.length) { flash('还没有可用工作流：先在 ComfyUI 里跑一次，再从「工作流库 → 运行记录」导入'); return; }
+      openPopMenu(btnOf('wf'), list.map((o) => [`${o.catLabel} · ${o.label}`, () => {
+        n.gen.wf = o.id;
+        n.gen.wfAuto = false;      // 手选过就别再被「按参考图自动换」覆盖
+        queueSave();
+        commit();
+        syncBar();
+        syncGenOpts(n);
+      }, o.id === n.gen.wf ? 'active' : '']), '工作流');
+    };
+
+    const openSizeMenu = () => {
+      const op = outpaintOf(n);
+      if (!op) return;
+      // 第一项是「原图」：四边归零，回到一格没扩的状态（相当于把拖出来的都收回去）。
+      // 没有这一项的话，拖歪了只能一格一格拖回来，或者收起扩图重来。
+      const items = [['原图（不扩）', () => {
+        setOutpaintPad(n, { l: 0, t: 0, r: 0, b: 0 });
+        draw();
+        syncBar();
+        syncGenOpts(n);
+      }]];
+      OP_RATIOS.forEach(([label, r]) => {
+        items.push([label, () => {
+          setOutpaintPad(n, outpaintPad(op.w, op.h, r, OP_PAD_PCT));
+          draw();
+          syncBar();
+          syncGenOpts(n);
+        }]);
+      });
+      items.push([`四周 +${OP_PAD_PCT}%`, () => {
+        setOutpaintPad(n, outpaintPad(op.w, op.h, 0, OP_PAD_PCT));
+        draw();
+        syncBar();
+        syncGenOpts(n);
+      }]);
+      items.push(['自定义尺寸…', () => openDimMenu(btnOf('size'), n, () => {
+        draw();
+        syncBar();
+        syncGenOpts(n);
+      })]);
+      openPopMenu(btnOf('size'), items, '尺寸');
+    };
+
+    const openResMenu = () => {
+      const op = outpaintOf(n);
+      if (!op) return;
+      const items = SIZES.map(([, label, px]) => [label, () => {
+        scaleOutpaintTo(n, px);
+        draw();
+        syncBar();
+        syncGenOpts(n);
+      }]);
+      openPopMenu(btnOf('res'), items, '分辨率（按当前比例缩放到目标长边）');
+    };
+
+    const openBatchMenu = () => {
+      openPopMenu(btnOf('batch'), [1, 2, 4].map((v) => [`${v} 张`, () => {
+        n.gen.batch = v;
+        queueSave();
+        commit();
+        syncBar();
+        syncGenOpts(n);
+      }, Number(n.gen.batch) === v ? 'active' : '']), '数量');
+    };
+
+    bar.addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-of]');
+      if (!b) return;
+      ev.stopPropagation();
+      if (b.dataset.of === 'cancel') { closeOutpaint(n); return; }
+      if (b.dataset.of === 'wf') openWfMenu();
+      else if (b.dataset.of === 'size') openSizeMenu();
+      else if (b.dataset.of === 'res') openResMenu();
+      else if (b.dataset.of === 'batch') openBatchMenu();
+    }, { signal: ac.signal });
     const el = thumb.closest('.node');
     const dimEl = el && el.querySelector('.n-dim');
     // 缩略图始终按**原图**比例：它是原图的画框，不是新画布的画框。
@@ -8187,7 +8461,6 @@
     // 同名局部变量会把它整个遮住 —— 下面乘 state.view.k 那行就成了 undefined → 1，
     // 拖动换算少乘一次视图缩放，拖 100px 只扩 89px（这个 bug 就是这么来的）。
     let dragK = 1;
-    const same = (a, b) => ['l', 't', 'r', 'b'].every((k) => Math.abs((a[k] || 0) - (b[k] || 0)) <= 1.5);
 
     const draw = () => {
       const op = outpaintOf(n);
@@ -8236,17 +8509,9 @@
         i.style.height = `${(h / f.nh) * 100}%`;
         bands.appendChild(i);
       });
-      readout.textContent = `${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
       if (dimEl) dimEl.textContent = `${f.nw} × ${f.nh}`;
-      // 比例档高亮按「当前 pad 等于哪一档」反推：拖过锚点之后没有一档成立，就全灭
-      bar.querySelectorAll('[data-op]').forEach((b) => {
-        const key = b.dataset.op;
-        if (key === 'done') return;
-        const want = key === 'pad'
-          ? outpaintPad(op.w, op.h, 0, OP_PAD_PCT)
-          : outpaintPad(op.w, op.h, OP_RATIOS[Number(key)][1], OP_PAD_PCT);
-        b.classList.toggle('on', same(op, want));
-      });
+      syncBar();
+      placeBar();
     };
 
     // 锚点：增量除以 k。不用绝对坐标——拖动中途 pad 变了，缩略图的宽高和 k 也跟着变，
@@ -8289,21 +8554,6 @@
     window.addEventListener('pointerup', endDrag, { signal: ac.signal });
     window.addEventListener('pointercancel', endDrag, { signal: ac.signal });
     window.addEventListener('resize', draw, { signal: ac.signal });
-
-    bar.addEventListener('click', (ev) => {
-      const b = ev.target.closest('[data-op]');
-      if (!b) return;
-      ev.stopPropagation();
-      const op = outpaintOf(n);
-      if (!op) return;
-      const key = b.dataset.op;
-      if (key === 'done') { closeOutpaint(n); return; }
-      setOutpaintPad(n, key === 'pad'
-        ? outpaintPad(op.w, op.h, 0, OP_PAD_PCT)
-        : outpaintPad(op.w, op.h, OP_RATIOS[Number(key)][1], OP_PAD_PCT));
-      draw();
-      syncGenOpts(n);
-    }, { signal: ac.signal });
 
     // 图可能还没解码：先排一帧，等 load 回来再画一次
     im.addEventListener('load', draw);

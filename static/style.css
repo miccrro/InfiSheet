@@ -2618,10 +2618,10 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 #imgTools.hidden { display: none; }
 #imgTools .it-btn {
   position: relative;
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 8px; border: none; border-radius: 8px;
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 6px; border: none; border-radius: 8px;
   background: transparent; color: #cfcfcf;
-  font-size: 11.5px; line-height: 1; white-space: nowrap; cursor: pointer;
+  font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 #imgTools .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
@@ -2629,13 +2629,13 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 /* 「扩图」是开关：开着的时候按钮亮着，提示「再点一次收起」 */
 #imgTools .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
 #imgTools .it-btn .oi { width: 15px; height: 15px; }
-/* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，九个图标里有五个是「涂抹 / 编辑」类，
-   猜不出来。整条因此宽到 ~590px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
-   整条往上抬，不靠缩窄来回避。 */
+/* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，十个图标里有五个是「涂抹 / 编辑」类，
+   猜不出来。整条因此宽到 ~560px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
+   整条往上抬、再不行改成和节点边缘对齐，不靠缩窄来回避。 */
 #imgTools .it-btn span { display: inline; }
-/* 本地变换 / 涂抹类 / 整图编辑 三段之间的分隔线 */
+/* 本地变换 / 涂抹类 / 整图编辑 / 导出 四段之间的分隔线 */
 #imgTools .it-sep {
-  width: 1px; height: 16px; margin: 0 3px;
+  width: 1px; height: 16px; margin: 0 2px;
   background: rgba(255, 255, 255, 0.16);
 }
 
@@ -2818,33 +2818,81 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .op-sel {
   left: 0; top: 0; width: 100%; height: 100%;
   cursor: default; touch-action: none;
-  /* 比 .op-bar 高一层：画布往下扩时，下面那条按钮会盖住底边的锚点，
-     结果「下边拖不动」——锚点只有 8 个，压在按钮上也不影响点按钮 */
+  /* 压在舞台之上：画布往外长时，底边那两个锚点不能被自己的遮罩/带子盖住 */
   z-index: 2;
 }
 
 /* 画布溢出缩略图时要压在邻居上面，否则「长出去」的那半边被旁边的节点挡住 */
 .node.op-raised { z-index: 30; }
 
-/* 边框下面那条：比例档 + 尺寸读数 + 完成。
-   和生成面板同属这个节点，所以宽度只有节点那么宽，比例档排两行也认了 */
-/* 画布往下扩时会压到这条按钮上：给它一个更高的层级 + 自己的底，
-   否则比例档和读数直接叠在棋盘格上，灰字根本看不清（按钮倒是点得到，但像 bug） */
-.op-bar {
-  position: relative; z-index: 1; margin-top: 6px;
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 6px 8px; border-radius: 8px;
-  background: rgba(18, 18, 21, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-}
 /* 往上扩时画布会盖住节点标题，标题里的「生成」就被挡了：只给扩图中的这个节点提一层 */
 .node.op-raised .node-title { position: relative; z-index: 2; }
-.op-ratios { display: flex; flex-wrap: wrap; gap: 4px; }
-.op-ratios .crop-ratio { height: 22px; padding: 0 8px; font-size: 11px; }
-.op-foot { display: flex; align-items: center; gap: 8px; }
-.op-size { font-size: 11px; color: #8f8f8f; font-variant-numeric: tabular-nums; }
-.op-foot .crop-btn { height: 24px; padding: 0 10px; font-size: 11px; }
+
+/* ---------- 扩图参数悬浮条 ----------
+   工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消。
+   **屏幕坐标（fixed）挂在 body 上**，不跟节点走：画布是往外长的，往下拖时
+   节点自己的底边一直在动，按钮挂在节点里就会被顶出视口——用户找不到出口，只能猜 Esc。
+   位置由 placeBar() 每次 draw / 视图变化时重算：贴画布下方居中，放不下就翻到内侧。 */
+.op-float {
+  position: fixed; z-index: 46;          /* 和 #imgTools 同层：都在弹出层(60/80)下面 */
+  display: flex; align-items: center; gap: 2px; padding: 4px;
+  background: rgba(38, 38, 38, 0.96);
+  border: 0.5px solid #3a3a3a; border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  /* 只有按钮吃点击：浮条难免压到旁边的节点，压住标题时至少还能点中标题 */
+  pointer-events: none;
+}
+.op-float .of-btn { pointer-events: auto; }
+.of-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 8px; border: none; border-radius: 8px;
+  background: transparent; color: #cfcfcf;
+  font-size: 11.5px; line-height: 1; white-space: nowrap; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.15s, color 0.15s;
+}
+.of-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.of-btn:active { background: rgba(255, 255, 255, 0.2); }
+.of-btn:focus-visible { outline: 2px solid #6ea8fe; outline-offset: 1px; }
+.of-btn .oi { width: 14px; height: 14px; flex: 0 0 auto; }
+/* 下拉指示：和按钮文字一个色阶，比文字再淡一点，免得抢读 */
+.of-caret {
+  width: 0; height: 0; margin-left: 1px;
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor; opacity: 0.5;
+}
+/* 「取消」= 收起扩图（不烘、不改图）。和前面四个参数按钮隔开，免得误点 */
+.of-btn.ghost { color: #9a9a9a; margin-left: 2px; border-left: 1px solid rgba(255, 255, 255, 0.12); border-radius: 0 8px 8px 0; padding-left: 10px; }
+.of-btn.ghost:hover { background: rgba(255, 90, 90, 0.18); color: #ffd7d7; }
+/* 「原图 → 画布」读数：只读，不占点击 */
+.of-read {
+  padding: 0 8px; font-size: 10.5px; color: #8f8f8f;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* 「自定义尺寸…」弹层：两个数字框 + 应用。
+   .go-num 的样式原来只在 .gen-opts 下面定义（生成面板那颗胶囊），这里得自带一份 */
+.of-dim { min-width: 284px; }
+.of-dim .go-custom { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.of-dim .go-num {
+  width: 74px; height: 26px; padding: 0 7px; border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid #4a4a4d; color: var(--text);
+  font: inherit; font-size: 12px; line-height: 1; font-variant-numeric: tabular-nums;
+}
+.of-dim .go-num:hover { background: rgba(255, 255, 255, 0.06); }
+.of-dim .go-num:focus { outline: none; border-color: rgba(255, 255, 255, 0.38); background: rgba(255, 255, 255, 0.08); }
+.of-dim .go-num::-webkit-outer-spin-button,
+.of-dim .go-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.of-dim .go-times { flex: 0 0 auto; font-style: normal; font-size: 10px; color: var(--faint); }
+.of-dim .go-ok {
+  height: 26px; padding: 0 12px; margin-left: auto; border-radius: 7px; cursor: pointer;
+  background: #6ea8fe; border: 1px solid #6ea8fe; color: #08111f;
+  font: inherit; font-size: 11.5px; font-weight: 600; line-height: 1;
+}
+.of-dim .go-ok:hover { background: #8bbcfd; border-color: #8bbcfd; }
+.of-dim .go-ok:active { background: #5b98ef; }
 
 /* 纯图片节点标题上的「生成」药丸：这里不挂生成面板，点它才展开。
    灰底（表示「没开」）而不是蓝底，免得和左边的尺寸标签抢眼 */
