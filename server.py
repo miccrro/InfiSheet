@@ -982,13 +982,13 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
     now = time.time()
     if (not force) and ASSET_CACHE["items"] and now - ASSET_CACHE["at"] < ASSET_TTL \
             and ASSET_CACHE["limit"] >= limit:
-        return {"ok": True, "items": ASSET_CACHE["items"][:limit], "comfy": ASSET_CACHE["comfy"],
-                "cached": True, "error": ASSET_CACHE["error"]}
+        return _assets_with_lib(ASSET_CACHE["items"], limit, cached=True,
+                                comfy=ASSET_CACHE["comfy"], error=ASSET_CACHE["error"])
     try:
         hist = comfy_json(f"/history?max_items={max(limit, 100)}", timeout=30)
     except Exception as exc:  # noqa: BLE001
         ASSET_CACHE = {"at": now, "limit": limit, "items": [], "comfy": False, "error": str(exc)}
-        return {"ok": True, "items": [], "comfy": False, "cached": False, "error": str(exc)}
+        return _assets_with_lib([], limit, cached=False, comfy=False, error=str(exc))
 
     if not isinstance(hist, dict):
         hist = {}
@@ -1033,7 +1033,219 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
                 push(entry, source="input", filename=name, subfolder="", atype="input")
 
     ASSET_CACHE = {"at": now, "limit": limit, "items": items, "comfy": True, "error": None}
-    return {"ok": True, "items": items[:limit], "comfy": True, "cached": False, "error": None}
+    return _assets_with_lib(items, limit, cached=False, comfy=True, error=None)
+
+
+# --------------------------------------------------------------------------- #
+# 资产库：分组、归属、移除——这三样 ComfyUI 一概不知道，是本项目自己的用户数据
+#
+# 存 DATA/asset-lib.json，结构就两个字典：
+#   {"groups": [{"id": "g1", "name": "人像"}],
+#    "items":  {"output:/a.png": {"group": "g1", "hidden": true}}}
+#
+# 为什么不并进 workflow_categories.json：那是「工作流的分类」，删一个分类得先把工作流
+# 挪到「其他」；资产分组是纯标签，两者生命周期不同，混一个文件迟早互相牵连。
+#
+# 键（key）怎么来：asset_key() 生成。远端图是 "source:subfolder/filename"（source 取
+# output / input），画布上的图由前端按同一套规则拼 "canvas:项目:节点:序号"。
+# 为什么用键而不是文件名：ComfyUI 的 output/ 和 input/ 里可以有同名文件，只按文件名
+# 会把两张完全不同的图认成一张，删一张连另一张一起消失。
+# 这个规则一改，所有人攒的分组就全丢——前端 assetKeyOf() 那边有一份对应的实现，别只改一边。
+# --------------------------------------------------------------------------- #
+ASSET_LIB_MAX_GROUPS = 40
+ASSET_LIB_MAX_KEYS = 500          # 一次最多改 500 张：防手滑传个几十万条的数组
+
+
+def asset_lib_file() -> Path:
+    return DATA / "asset-lib.json"
+
+
+def asset_key(source: str, subfolder: str, filename: str) -> str:
+    """一张图在资产库里的唯一键。规则见上面那段注释，改了等于清空所有人的分组。"""
+    return f"{source}:{subfolder or ''}/{filename or ''}"
+
+
+def _clean_asset_lib(raw) -> dict:
+    """把读进来 / 传进来的东西洗成能用的样子。某一条不合法就丢那一条，不整份作废。"""
+    if not isinstance(raw, dict):
+        return {"groups": [], "items": {}}
+    groups, seen = [], set()
+    for it in raw.get("groups") or []:
+        if not isinstance(it, dict):
+            continue
+        gid = str(it.get("id") or "").strip()
+        name = str(it.get("name") or "").strip()[:20]
+        if not gid or not name or not CAT_ID_RE.match(gid) or gid in seen:
+            continue
+        seen.add(gid)
+        groups.append({"id": gid, "name": name})
+        if len(groups) >= ASSET_LIB_MAX_GROUPS:
+            break
+    items: dict = {}
+    for k, v in (raw.get("items") or {}).items() if isinstance(raw.get("items"), dict) else []:
+        key = str(k or "")[:300]
+        if not key or not isinstance(v, dict):
+            continue
+        gid = str(v.get("group") or "")
+        if gid not in seen:
+            gid = ""                  # 分组被删了：回「未分组」，不留指向空分组的孤儿
+        hidden = bool(v.get("hidden"))
+        if gid or hidden:             # 既没分组也没隐藏的条目没有信息量，不占文件
+            items[key] = {"group": gid, "hidden": hidden}
+    return {"groups": groups, "items": items}
+
+
+def load_asset_lib() -> dict:
+    """读资产库。文件坏了**不覆盖**：先改名留档（.bad-时间戳），再从空库开始。
+
+    直接覆盖等于把用户攒的分组一次抹掉，而这个文件手改不回来。留个坏文件在那儿，
+    至少还能从里面抄回几个名字。
+    """
+    f = asset_lib_file()
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {"groups": [], "items": {}}
+    except Exception:  # noqa: BLE001
+        try:
+            f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
+            print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空库开始")
+        except OSError:
+            pass
+        return {"groups": [], "items": {}}
+    return _clean_asset_lib(raw)
+
+
+def save_asset_lib(data: dict) -> dict:
+    """原子写：临时文件 + os.replace。写到一半断电也不会留下半个 JSON。"""
+    clean = _clean_asset_lib(data)
+    DATA.mkdir(parents=True, exist_ok=True)
+    f = asset_lib_file()
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, f)
+    return clean
+
+
+def _assets_with_lib(items: list[dict], limit: int, *, cached: bool,
+                     comfy: bool, error) -> dict:
+    """把 ComfyUI 那边的结果和本地资产库贴在一起返回。
+
+    分组 / 隐藏是本地文件，随时会被改，所以每次请求都重新贴一遍，不进 ASSET_CACHE
+    ——缓存里存的应该只是 ComfyUI 的历史，不是用户的分组。
+    画布上的图由前端合并，它拿不到服务端贴的字段，所以额外把整张 meta 表一起返回。
+    """
+    lib = load_asset_lib()
+    out = []
+    for it in items[:limit]:
+        key = asset_key(it.get("source", ""), it.get("subfolder", ""), it.get("filename", ""))
+        meta = lib["items"].get(key) or {}
+        out.append({**it, "key": key, "group": meta.get("group") or "",
+                    "hidden": bool(meta.get("hidden"))})
+    return {"ok": True, "items": out, "groups": lib["groups"], "meta": lib["items"],
+            "comfy": comfy, "cached": cached, "error": error}
+
+
+def asset_lib_apply(payload: dict) -> dict:
+    """资产库的写操作。全部走一个入口，op 决定动作：
+
+        group-add    {name}           → 新建分组，返回新 id
+        group-rename {id, name}       → 分组改名
+        group-remove {id}             → 删分组，组内资产回「未分组」（资产本身不动）
+        assign       {keys, group}    → 批量移动，group 空串 = 未分组
+        hide         {keys, hidden}   → 批量从资产库移除 / 恢复
+
+    「移除」只写 hidden 标记，不删磁盘上的文件——资产是 ComfyUI 的产物，删文件是不可逆的，
+    而用户点「删除」时想的多半只是「别在这儿烦我」。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是对象")
+    op = str(payload.get("op") or "")
+    lib = load_asset_lib()
+    groups, items = lib["groups"], lib["items"]
+
+    def keys_of() -> list[str]:
+        raw = payload.get("keys")
+        if not isinstance(raw, list):
+            raise ValueError("keys 必须是数组")
+        out = []
+        for k in raw:
+            s = str(k or "")[:300]
+            if s and s not in out:
+                out.append(s)
+        if not out:
+            raise ValueError("没有选中任何资产")
+        if len(out) > ASSET_LIB_MAX_KEYS:
+            raise ValueError(f"一次最多改 {ASSET_LIB_MAX_KEYS} 张")
+        return out
+
+    def done(extra: dict | None = None) -> dict:
+        saved = save_asset_lib({"groups": groups, "items": items})
+        return {"ok": True, "groups": saved["groups"], "meta": saved["items"], **(extra or {})}
+
+    if op == "group-add":
+        name = str(payload.get("name") or "").strip()[:20]
+        if not name:
+            raise ValueError("分组名不能为空")
+        if any(g["name"] == name for g in groups):
+            raise ValueError("已经有同名分组了")
+        if len(groups) >= ASSET_LIB_MAX_GROUPS:
+            raise ValueError(f"最多 {ASSET_LIB_MAX_GROUPS} 个分组")
+        gid = "g" + format(int(time.time() * 1000), "x")
+        while any(g["id"] == gid for g in groups):      # 同一毫秒连点两次
+            gid += "x"
+        groups.append({"id": gid, "name": name})
+        return done({"id": gid, "name": name})
+
+    if op == "group-rename":
+        gid = str(payload.get("id") or "").strip()
+        name = str(payload.get("name") or "").strip()[:20]
+        target = next((g for g in groups if g["id"] == gid), None)
+        if not target:
+            raise ValueError("分组不存在")
+        if not name:
+            raise ValueError("分组名不能为空")
+        if any(g["name"] == name and g["id"] != gid for g in groups):
+            raise ValueError("已经有同名分组了")
+        target["name"] = name
+        return done()
+
+    if op == "group-remove":
+        gid = str(payload.get("id") or "").strip()
+        if not any(g["id"] == gid for g in groups):
+            raise ValueError("分组不存在")
+        groups = [g for g in groups if g["id"] != gid]
+        for key, meta in list(items.items()):
+            if meta.get("group") == gid:
+                meta["group"] = ""
+                if not meta.get("hidden"):
+                    items.pop(key)          # 回未分组、也没隐藏 → 这条没信息量了
+        return done()
+
+    if op == "assign":
+        gid = str(payload.get("group") or "").strip()
+        if gid and not any(g["id"] == gid for g in groups):
+            raise ValueError("分组不存在")
+        keys = keys_of()
+        for key in keys:
+            meta = items.setdefault(key, {"group": "", "hidden": False})
+            meta["group"] = gid
+            if not gid and not meta.get("hidden"):
+                items.pop(key)
+        name = next((g["name"] for g in groups if g["id"] == gid), "")
+        return done({"moved": len(keys), "group": gid, "name": name})
+
+    if op == "hide":
+        hidden = bool(payload.get("hidden"))
+        keys = keys_of()
+        for key in keys:
+            meta = items.setdefault(key, {"group": "", "hidden": False})
+            meta["hidden"] = hidden
+            if not hidden and not meta.get("group"):
+                items.pop(key)
+        return done({"changed": len(keys), "hidden": hidden})
+
+    raise ValueError(f"不认识的操作：{op or '（空）'}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1637,6 +1849,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/shutdown":
             return self.api_shutdown()
+
+        # 资产库的分组 / 归属 / 移除。一个入口靠 op 分发，见 asset_lib_apply()
+        if path == "/api/assets/lib":
+            payload = self.read_json() or {}
+            try:
+                return self.json_out(asset_lib_apply(payload))
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         if path == "/api/mcp/install":
             # 替用户把配置写进客户端文件。白名单客户端 + 备份 + 原子写，见 mcp_install()

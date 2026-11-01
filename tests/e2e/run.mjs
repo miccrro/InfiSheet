@@ -2770,6 +2770,107 @@ try {
   check('点「＋」把资产放进画布：多一个图片节点，且就是那一张',
     addRes.n === beforeAdd + 1 && addRes.src === pickSrc, `${beforeAdd} → ${addRes.n} same=${addRes.src === pickSrc}`);
 
+  // ---- 资产库：改名 / 分组 / 多选 / 移动 / 移除 ----
+  // 分组和「移除」都是本项目自己的用户数据（data/asset-lib.json），不依赖 ComfyUI，
+  // 所以这一段在 CI 里能完整跑。最要紧的一条：移除只写 hidden 标记，绝不删磁盘文件——
+  // 断言查的是「列表里少了」，不是「文件没了」。
+  const paneTitle = await page.evaluate(`document.querySelector('#assetPane header strong').textContent`);
+  check('面板叫「资产库」，不再只是「资产」', paneTitle === '资产库', paneTitle);
+
+  // prompt / confirm 是原生弹窗，无头下点不了：在页面里换掉
+  await page.evaluate(`(() => {
+    window.__answer = null;
+    window.prompt = () => window.__answer;
+    window.confirm = () => true;
+    return true;
+  })()`);
+  await page.evaluate(`window.__answer = '人像'; document.querySelector('#assetPane .asset-g-add').click()`);
+  await new Promise((r) => setTimeout(r, 800));
+  const gPills = await page.evaluate(`[...document.querySelectorAll('#assetPane .asset-groups button')].map((b) => b.textContent)`);
+  check('新建分组：胶囊排在「全部 / 未分组」之后',
+    gPills[0] === '全部' && gPills[1] === '未分组' && gPills.includes('人像'), gPills.join('/'));
+
+  // 多选：进选择态，点两格
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[1].click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const pickState = await page.evaluate(`({
+    label: (document.querySelector('#assetPane .asset-sel') || {}).textContent,
+    on: document.querySelectorAll('#assetPane .asset-cell.on').length,
+    hintHidden: document.querySelector('#assetPane .asset-hint').classList.contains('hidden'),
+  })`);
+  check('多选：点两格 → 「已选 2 项」，提示行让位给动作条',
+    pickState.label === '已选 2 项' && pickState.on === 2 && pickState.hintHidden === true,
+    JSON.stringify(pickState));
+
+  // 移动到「人像」
+  await page.evaluate(`(() => {
+    const s = document.querySelector('#assetPane .asset-move');
+    s.value = [...s.options].find((o) => o.textContent === '人像').value;
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  await page.evaluate(`[...document.querySelectorAll('#assetPane .asset-groups button')].find((b) => b.textContent === '人像').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const inGroup = await page.evaluate(`({
+    n: document.querySelectorAll('#assetPane .asset-cell').length,
+    ops: [...document.querySelectorAll('#assetPane .asset-g-ops button')].map((b) => b.textContent),
+  })`);
+  check('移动：两张进了「人像」，筛该分组只剩这两张（并且露出改名/删除）',
+    inGroup.n === 2 && inGroup.ops.join('/') === '改名/删除', JSON.stringify(inGroup));
+
+  // 移除：还在多选态，选一张删掉
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await page.evaluate(`document.querySelector('#assetPane .asset-del').click()`);
+  await new Promise((r) => setTimeout(r, 1000));
+  const afterDel = await page.evaluate(`({
+    cells: document.querySelectorAll('#assetPane .asset-cell').length,
+    restore: document.querySelector('#assetPane .asset-restore').textContent,
+  })`);
+  check('移除：从资产库消失，底部留一个「已移除 1 项」的找回入口',
+    afterDel.cells === 1 && afterDel.restore === '已移除 1 项', JSON.stringify(afterDel));
+
+  // 找回：退回原分组（分组归属还在，不会被顺手清掉）
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evaluate(`document.querySelector('#assetPane .asset-restore').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const afterRestore = await page.evaluate(`({
+    cells: document.querySelectorAll('#assetPane .asset-cell').length,
+    restoreHidden: document.querySelector('#assetPane .asset-restore').classList.contains('hidden'),
+  })`);
+  check('找回：点「已移除 N 项」放回原分组，入口自己消失',
+    afterRestore.cells === 2 && afterRestore.restoreHidden === true, JSON.stringify(afterRestore));
+
+  // 分组改名
+  await page.evaluate(`window.__answer = '人物'; document.querySelector('#assetPane .asset-g-ops button').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const gRenamed = await page.evaluate(`[...document.querySelectorAll('#assetPane .asset-groups button')].map((b) => b.textContent)`);
+  check('分组改名', gRenamed.includes('人物') && !gRenamed.includes('人像'), gRenamed.join('/'));
+
+  // 删分组：组内资产回「未分组」，图本身不丢
+  const cellsInGroup = (label) => page.evaluate(`(() => {
+    [...document.querySelectorAll('#assetPane .asset-groups button')].find((b) => b.textContent === '${label}').click();
+    return document.querySelectorAll('#assetPane .asset-cell').length;
+  })()`);
+  const u0 = await cellsInGroup('未分组');
+  await cellsInGroup('人物');
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evaluate(`[...document.querySelectorAll('#assetPane .asset-g-ops button')].find((b) => b.textContent === '删除').click()`);
+  await new Promise((r) => setTimeout(r, 1000));
+  const afterRm = await page.evaluate(`[...document.querySelectorAll('#assetPane .asset-groups button')].map((b) => b.textContent)`);
+  const u1 = await cellsInGroup('未分组');
+  check('删分组：组内 2 张回到「未分组」，图本身不丢',
+    !afterRm.includes('人物') && u1 === u0 + 2, `未分组 ${u0} → ${u1}；${afterRm.join('/')}`);
+
+  // 收尾：回到「全部」、退出多选，后面的 Esc 才是关抽屉
+  await cellsInGroup('全部');
+  await new Promise((r) => setTimeout(r, 300));
+
   await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 300));
   check('再按 Esc 关掉抽屉', await page.evaluate(`!document.querySelector('#assetPane')`));
@@ -4440,10 +4541,20 @@ try {
   }
   check('重新有心跳后灯又绿了（不用重新握手）', back.startsWith('MCP 已连接'), back);
 
-  const consoleErrors = page.errors.filter((e) => !/favicon/.test(e.text || ''));
+  // ComfyUI 的 /history 会一直留着「图已经被删掉」的记录（清过 output/ 就会这样），
+  // 资产库照着 /history 列出来，缩略图必然 404。这不是我们的 bug——我们只是请求了它自己报的
+  // 文件名——所以这里把它排除，否则本机清过一次输出目录，这条断言就永远红着，
+  // 真正该抓的 JS 报错反而被淹没。除「/api/view 的 404」之外的一切照旧。
+  // 注意 URL 在 e.url 里，不在 e.text 里（text 只有「Failed to load resource…」）。
+  const consoleErrors = page.errors.filter((e) => {
+    const s = `${e.text || ''} ${e.url || ''}`;
+    if (/favicon/.test(s)) return false;
+    return !(/\/api\/view\?/.test(s) && /404/.test(s));
+  });
   // 只打 text 的话永远只看到「Uncaught」——把 detail / 位置也带上，否则报错了也查不出是哪一行
   const errText = (e) => [e.text, e.detail, e.url && `${e.url}:${e.line}`].filter(Boolean).join(' ');
-  check('控制台无报错', consoleErrors.length === 0, consoleErrors.map(errText).join(' | '));
+  check('控制台无报错（ComfyUI 里已删文件的 /api/view 404 不算）',
+    consoleErrors.length === 0, consoleErrors.map(errText).join(' | '));
 
   const shotDir = path.join(TMP, 'shots');
   await page.screenshot(path.join(shotDir, 'e2e-canvas.png'));

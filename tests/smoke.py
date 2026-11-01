@@ -280,6 +280,82 @@ def main() -> int:
         status, _ = request(base, "/api/mcp/install", "POST", {"client": "nope"})
         check("不认识的客户端回 400", status == 400, f"HTTP {status}")
 
+        # ---- 资产库：分组 / 移动 / 移除 ----
+        # 这三样是纯本地用户数据（DATA/asset-lib.json），不碰 ComfyUI，所以 CI 里也能验。
+        # 最要紧的一条：移除只写 hidden 标记，绝不删磁盘文件——资产是 ComfyUI 的产物，
+        # 删了不可恢复，而用户点「删除」时想的多半只是「别在资产库里烦我」。
+        status, raw = request(base, "/api/assets?limit=5")
+        a0 = json.loads(raw or b"{}")
+        check("资产接口带上分组表与归属表（前端合并画布图时要靠它查）",
+              status == 200 and isinstance(a0.get("groups"), list) and isinstance(a0.get("meta"), dict),
+              f"groups={len(a0.get('groups') or [])} comfy={a0.get('comfy')}")
+
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "group-add", "name": "人像"})
+        added = json.loads(raw or b"{}")
+        gid = added.get("id") or ""
+        check("新建分组", status == 200 and added.get("ok") is True
+              and [g["name"] for g in (added.get("groups") or [])] == ["人像"], f"{gid}")
+
+        status, _ = request(base, "/api/assets/lib", "POST", {"op": "group-add", "name": "人像"})
+        check("同名分组拒绝（不然下拉里两个「人像」谁也分不清）", status == 400, f"HTTP {status}")
+
+        # 键故意用两张不同来源的图：output 和 input 里可以有同名文件，
+        # 只按文件名归组会把两张完全不同的图认成一张。
+        k1, k2 = "output:/a.png", "input:/b.png"
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "assign", "keys": [k1, k2], "group": gid})
+        moved = json.loads(raw or b"{}")
+        meta = moved.get("meta") or {}
+        check("批量移动：两张都归到新分组",
+              status == 200 and meta.get(k1, {}).get("group") == gid
+              and meta.get(k2, {}).get("group") == gid,
+              json.dumps(meta, ensure_ascii=False))
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "hide", "keys": [k1], "hidden": True})
+        hid = json.loads(raw or b"{}")
+        check("移除只写 hidden 标记，分组还留着（恢复时能回到原位）",
+              status == 200 and (hid.get("meta") or {}).get(k1) == {"group": gid, "hidden": True},
+              json.dumps((hid.get("meta") or {}).get(k1), ensure_ascii=False))
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "assign", "keys": [k1], "group": ""})
+        ungroup = json.loads(raw or b"{}")
+        check("移回未分组但仍是隐藏态（顺手把它复活是个坑）",
+              (ungroup.get("meta") or {}).get(k1) == {"group": "", "hidden": True},
+              json.dumps((ungroup.get("meta") or {}).get(k1), ensure_ascii=False))
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "group-rename", "id": gid, "name": "人物"})
+        renamed = json.loads(raw or b"{}")
+        check("分组改名", status == 200
+              and [g["name"] for g in (renamed.get("groups") or [])] == ["人物"], "")
+
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "group-remove", "id": gid})
+        gone = json.loads(raw or b"{}")
+        gmeta = gone.get("meta") or {}
+        check("删分组：组内资产回「未分组」，资产本身不丢",
+              status == 200 and gone.get("groups") == [] and gmeta.get(k1, {}).get("group") == "",
+              json.dumps(gmeta, ensure_ascii=False))
+        check("既没分组也没隐藏的条目不留残渣（文件不会越用越大）", k2 not in gmeta, ",".join(gmeta))
+
+        libfile = data_dir / "asset-lib.json"
+        check("落盘到 asset-lib.json，且没留下 .tmp（原子写的副产物必须清掉）",
+              libfile.is_file() and not (data_dir / "asset-lib.json.tmp").exists(), str(libfile))
+
+        status, _ = request(base, "/api/assets/lib", "POST", {"op": "nope"})
+        check("不认识的 op 回 400", status == 400, f"HTTP {status}")
+        status, _ = request(base, "/api/assets/lib", "POST", {"op": "assign", "keys": [], "group": ""})
+        check("空 keys 回 400（「没选中」不能被当成「全部」）", status == 400, f"HTTP {status}")
+
+        # 文件坏了：留档后从空库开始，绝不覆盖——这个文件手改不回来
+        libfile.write_text("{ broken", encoding="utf-8")
+        status, raw = request(base, "/api/assets?limit=1")
+        broken = json.loads(raw or b"{}")
+        check("资产库文件坏了：留档 .bad-* 并空库启动，原文件不覆盖",
+              status == 200 and broken.get("groups") == []
+              and bool(list(data_dir.glob("asset-lib.json.bad-*"))), str(libfile))
+
         # ---- 插槽排序（纯函数，不连 ComfyUI）----
         # 前端取 texts[0] 当正向提示词。Qwen-image-2.1 编辑流的编码器同时有
         # prompt 与 negative_prompt，字母序前者在后，排错就把用户文案写进负面词了。

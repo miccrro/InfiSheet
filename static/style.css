@@ -2118,13 +2118,38 @@ button.primary:hover,
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12.5px;
 }
 #assetPane .asset-q:focus { outline: none; border-color: var(--accent); }
+#assetPane .asset-row { display: flex; align-items: center; gap: 6px; }
 #assetPane .asset-tabs { display: flex; gap: 6px; }
-#assetPane .asset-tabs button, #assetPane .asset-reload {
+#assetPane .asset-tabs button, #assetPane .asset-reload, #assetPane .asset-pick {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
   border-radius: 999px; padding: 4px 11px; font-size: 11.5px; cursor: pointer;
 }
 #assetPane .asset-tabs button.on { color: #0d0d0d; background: var(--accent); border-color: var(--accent); }
 #assetPane .asset-reload { margin-left: auto; }
+/* 「选择」是开关，不是一次性动作：开着的时候整格变浅、点击改判勾选。
+   用描边而不是填充，和来源页签的实心 .on 区分开——两者会同时亮。 */
+#assetPane .asset-pick.on { color: var(--accent); border-color: var(--accent); }
+
+/* 分组那一行。分组是用户自己建的、数量不定，所以横向滚动而不是换行——
+   换行会把下面的宫格挤矮，而这个抽屉的高度是固定的。 */
+#assetPane .asset-groups {
+  display: flex; align-items: center; gap: 6px;
+  overflow-x: auto; overflow-y: hidden; padding-bottom: 2px;
+  scrollbar-width: none;
+}
+#assetPane .asset-groups::-webkit-scrollbar { display: none; }
+#assetPane .asset-groups button {
+  flex: 0 0 auto; white-space: nowrap;
+  border: 1px solid var(--line); background: transparent; color: var(--faint);
+  border-radius: 999px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+}
+#assetPane .asset-groups button:hover { color: var(--text); }
+/* 分组选中用描边，来源页签用实心：两行同时有选中项，全实心分不清谁是谁 */
+#assetPane .asset-groups button.on { color: var(--text); border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
+#assetPane .asset-groups .asset-g-add { color: var(--accent); padding: 3px 8px; }
+#assetPane .asset-groups .asset-g-ops { margin-left: auto; display: flex; gap: 2px; flex: 0 0 auto; }
+#assetPane .asset-groups .asset-g-ops button { border-color: transparent; padding: 3px 6px; }
+#assetPane .asset-groups .asset-g-ops button:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 #assetPane .asset-grid {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
@@ -2136,6 +2161,8 @@ button.primary:hover,
   background: #141414; overflow: hidden; cursor: pointer;
 }
 #assetPane .asset-cell:hover { border-color: var(--accent); }
+/* 勾选态用内阴影描边：border 已经占着位置，改 border 会让格子抖一下 */
+#assetPane .asset-cell.on { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
 /* 正方形格子用 height:0 + padding-bottom:100% 顶，别用 aspect-ratio：
    grid 算行高时 img 的 width:100% 还没有确定宽度，aspect-ratio 也就算不出高度，
    行高会塌成 28px（名字那行的高度），117px 的图直接糊到相邻行上。
@@ -2166,11 +2193,47 @@ button.primary:hover,
 }
 #assetPane .asset-cell:hover .asset-add { opacity: 1; }
 #assetPane .asset-cell .asset-add:hover { background: var(--accent); color: #0d0d0d; }
+/* 勾选框只在多选态出现，并且顶掉左上角的来源徽章——那个位置只容得下一个东西 */
+#assetPane .asset-cell .asset-tick {
+  position: absolute; top: 5px; left: 5px; width: 16px; height: 16px;
+  display: none; place-items: center; border-radius: 5px;
+  border: 1.5px solid rgba(255, 255, 255, 0.6); background: rgba(18, 18, 18, 0.72);
+  font-size: 11px; line-height: 1; color: #0d0d0d;
+}
+#assetPane .asset-cell.pick .asset-tick { display: grid; }
+#assetPane .asset-cell.pick .asset-badge, #assetPane .asset-cell.pick .asset-add { display: none; }
+#assetPane .asset-cell.on .asset-tick { background: var(--accent); border-color: var(--accent); }
+#assetPane .asset-cell.on .asset-tick::after { content: '✓'; }
+
+/* 底部动作条：只在多选态出现，占掉原来那行提示的位置（两者不同时显示）。
+   两行而不是一行：抽屉宽 392px，五个控件排一行每个只剩两个字宽，选个分组都看不清。 */
+#assetPane .asset-actions { display: none; }
+#assetPane .asset-actions.on {
+  display: grid; gap: 6px;
+  padding: 9px 12px; border-top: 1px solid var(--line);
+}
+#assetPane .asset-arow { display: flex; align-items: center; gap: 6px; }
+#assetPane .asset-actions .asset-sel { flex: 1; font-size: 11px; color: var(--dim); }
+#assetPane .asset-actions button, #assetPane .asset-actions select {
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 11.5px; cursor: pointer;
+}
+#assetPane .asset-actions .asset-move { flex: 1; min-width: 0; }
+#assetPane .asset-actions button:disabled, #assetPane .asset-actions select:disabled { opacity: 0.4; cursor: default; }
+#assetPane .asset-actions .asset-del { color: #ff9a9a; border-color: rgba(255, 120, 120, 0.4); }
+#assetPane .asset-actions .asset-del:not(:disabled):hover { background: rgba(255, 90, 90, 0.16); color: #fff; }
 #assetPane .asset-tip { padding: 6px 2px; font-size: 11.5px; color: var(--faint); line-height: 1.6; grid-column: 1 / -1; }
 #assetPane .asset-hint {
   margin: 0; padding: 9px 14px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px;
   font-size: 10.5px; color: var(--faint);
 }
+#assetPane .asset-hint .asset-hint-t { flex: 1; }
+#assetPane .asset-hint .asset-restore {
+  flex: 0 0 auto; border: none; background: transparent; color: var(--dim);
+  font: inherit; text-decoration: underline; cursor: pointer; padding: 0;
+}
+#assetPane .asset-hint .asset-restore:hover { color: var(--text); }
 
 /* ---------- 生成队列（顶栏入口 + 面板） ---------- */
 /* 画布上每个节点各跑各的 prompt，ComfyUI 那边却是一条 FIFO 队列——用户看不见它。

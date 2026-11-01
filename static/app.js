@@ -2931,31 +2931,52 @@
       body.appendChild(row);
     });
   }
-  /* ---------------- 资产管理 ----------------
+  /* ---------------- 资产库 ----------------
    * 「用过的图」以前散在三处：画布节点上、生成器节点的 gallery 里、ComfyUI 的 output/ 里。
    * 换个画布就再也找不回来。这里把它们汇到一块：当前画布上的图 + ComfyUI 历史里
    * 的生成结果 + 历史上传过的素材（LoadImage 引用过的）。
    * 只做索引，不复制文件——本地一个 4096 的 png 就 10MB 起，复制等于把磁盘翻倍。
+   *
+   * 分组 / 归属 / 移除是**本项目自己的用户数据**，落在服务端的 data/asset-lib.json
+   * （见 server.py 的 asset_lib_apply）。画布上的图服务端根本看不见，所以它的键得在前端拼，
+   * 规则必须和服务端 asset_key() 对得上：canvas:项目:节点:序号。
    */
   let assetItems = null;          // null=还没拉过；数组=已加载
-  let assetTab = 'all';
+  let assetTab = 'all';           // 来源：all / output / canvas / input
   let assetQuery = '';
+  let assetGroup = 'all';         // 分组：all / none（未分组）/ <gid>
+  let assetGroups = [];           // [{id,name}]，服务端那份分组表
+  let assetMeta = {};             // key -> {group, hidden}
+  let assetPicking = false;       // 是否在多选态
+  let assetPicked = new Set();    // 多选态里勾上的 key
+  let assetLastIdx = -1;          // Shift 连选的锚点（当前筛选结果里的下标）
 
   function closeAssetSheet() {
     const el = document.getElementById('assetPane');
     if (el) el.remove();
   }
 
+  // 一张图在资产库里的唯一键。远端图服务端已经给好了 key，画布图得自己拼。
+  function assetKeyOf(item) {
+    return item.key || `${item.source}:${item.subfolder || ''}/${item.filename || ''}`;
+  }
+
   // 当前画布上的图：节点的图 + 生成器节点的整组结果（其余几张也要能找回来）
   function canvasAssets() {
     const out = [];
     const seen = new Set();
+    const pid = state.projectId || 'local';
     state.nodes.forEach((n) => {
       if (n.type !== 'image') return;
+      let i = 0;
       const put = (url, filename) => {
+        const idx = i++;
         if (!url || seen.has(url)) return;
         seen.add(url);
-        out.push({ url, filename: filename || n.title || '画布图片', source: 'canvas', subfolder: '', type: '', node: n.id });
+        out.push({
+          url, filename: filename || n.title || '画布图片', source: 'canvas', subfolder: '', type: '',
+          node: n.id, key: `canvas:${pid}:${n.id}:${idx}`,
+        });
       };
       ((n.gen && n.gen.gallery) || []).forEach((g) => put(g.url, g.filename));
       put(n.dataURL, n.title);
@@ -2963,21 +2984,49 @@
     return out;
   }
 
+  // 服务端返回的分组表 / 归属表：写操作的回包也带这两样，所以一次往返就能刷完
+  function applyAssetLib(res) {
+    if (!res) return;
+    if (Array.isArray(res.groups)) assetGroups = res.groups;
+    if (res.meta && typeof res.meta === 'object') assetMeta = res.meta;
+  }
+
   async function loadAssets(force) {
     if (assetItems && !force) return assetItems;
     const res = await api('/api/assets?limit=400' + (force ? '&refresh=1' : '')).catch(() => null);
-    const remote = (res && res.items) || [];
-    assetItems = [...canvasAssets(), ...remote];
+    applyAssetLib(res);
+    assetItems = [...canvasAssets(), ...((res && res.items) || [])];
+    // 分组在别处被删了就别死守它，否则会卡在一个永远筛不出东西的组上
+    if (assetGroup !== 'all' && assetGroup !== 'none' && !assetGroups.some((g) => g.id === assetGroup)) {
+      assetGroup = 'all';
+    }
     return assetItems;
   }
 
   function assetFiltered() {
     const q = assetQuery.trim().toLowerCase();
     return (assetItems || []).filter((it) => {
+      const meta = assetMeta[assetKeyOf(it)] || {};
+      if (meta.hidden) return false;              // 「移除」= 从资产库藏起来，磁盘文件还在
       if (assetTab !== 'all' && it.source !== assetTab) return false;
+      const g = meta.group || '';
+      if (assetGroup === 'none' && g) return false;
+      if (assetGroup !== 'all' && assetGroup !== 'none' && g !== assetGroup) return false;
       if (q && !String(it.filename || '').toLowerCase().includes(q)) return false;
       return true;
     });
+  }
+
+  // 被「移除」的张数：底部那颗「已移除 N 项」就是唯一的找回入口，不显示等于删了就没了
+  function assetHiddenKeys() {
+    return (assetItems || []).filter((it) => (assetMeta[assetKeyOf(it)] || {}).hidden).map(assetKeyOf);
+  }
+
+  async function assetLibPost(payload) {
+    const res = await postJson('/api/assets/lib', payload);
+    if (!res || !res.ok) { flash((res && res.error) || '操作失败'); return null; }
+    applyAssetLib(res);
+    return res;
   }
 
   function putAssetOnCanvas(item) {
@@ -2996,27 +3045,40 @@
 
   async function openAssetSheet() {
     if (document.getElementById('assetPane')) { closeAssetSheet(); return; }
+    // 每次打开都从「不在多选态」开始：关掉抽屉时留着的勾选没有意义，
+    // 再打开却还挂着「已选 3 项」，一按删除就把看不见的三张删了。
+    assetPicking = false;
+    assetPicked = new Set();
+    assetLastIdx = -1;
     const box = document.createElement('div');
     box.id = 'assetPane';
     box.innerHTML = `
-      <aside class="asset-pane" role="dialog" aria-label="资产">
+      <aside class="asset-pane" role="dialog" aria-label="资产库">
         <header>
-          <strong>资产</strong>
+          <strong>资产库</strong>
           <span class="asset-n"></span>
           <button type="button" class="x" title="关闭（Esc）">×</button>
         </header>
         <div class="asset-bar">
           <input class="asset-q" placeholder="搜索文件名…" spellcheck="false" />
-          <div class="asset-tabs">
-            <button type="button" data-k="all" class="on">全部</button>
-            <button type="button" data-k="output">生成</button>
-            <button type="button" data-k="canvas">画布</button>
-            <button type="button" data-k="input">上传</button>
+          <div class="asset-row">
+            <div class="asset-tabs">
+              <button type="button" data-k="all" class="on">全部</button>
+              <button type="button" data-k="output">生成</button>
+              <button type="button" data-k="canvas">画布</button>
+              <button type="button" data-k="input">上传</button>
+            </div>
+            <button type="button" class="asset-pick" title="多选：移动分组 / 从资产库移除">选择</button>
+            <button type="button" class="asset-reload" title="重新读取 ComfyUI 的历史">刷新</button>
           </div>
-          <button type="button" class="asset-reload" title="重新读取 ComfyUI 的历史">刷新</button>
+          <div class="asset-groups"></div>
         </div>
         <div class="asset-grid"><p class="asset-tip">读取中…</p></div>
-        <p class="asset-hint">单击看大图（可翻页） · 双击或点右上「＋」放入画布</p>
+        <div class="asset-actions"></div>
+        <p class="asset-hint">
+          <span class="asset-hint-t">单击看大图（可翻页） · 双击或点右上「＋」放入画布</span>
+          <button type="button" class="asset-restore"></button>
+        </p>
       </aside>`;
     document.body.appendChild(box);
     box.querySelector('.x').onclick = closeAssetSheet;
@@ -3024,24 +3086,226 @@
     const grid = box.querySelector('.asset-grid');
     const nEl = box.querySelector('.asset-n');
     const q = box.querySelector('.asset-q');
+    const groupBar = box.querySelector('.asset-groups');
+    const actions = box.querySelector('.asset-actions');
+    const hintEl = box.querySelector('.asset-hint');
+    const hintT = box.querySelector('.asset-hint-t');
+    const restoreBtn = box.querySelector('.asset-restore');
+    const pickBtn = box.querySelector('.asset-pick');
 
+    const groupName = (id) => (assetGroups.find((g) => g.id === id) || {}).name || '未分组';
+
+    /* ---------- 分组 ---------- */
+    // 自定义分组挂在来源页签下面一行：来源是「这张图哪来的」，分组是「我把它放哪」，
+    // 两者是 AND 关系（筛「生成」+「人像」= 人像组里的生成结果）。
+    const paintGroups = () => {
+      groupBar.innerHTML = '';
+      const pill = (label, key, cls) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        if (cls) b.className = cls;
+        b.classList.toggle('on', key === assetGroup);
+        b.onclick = () => { assetGroup = key; paintGroups(); paint(); };
+        groupBar.appendChild(b);
+        return b;
+      };
+      pill('全部', 'all');
+      pill('未分组', 'none');
+      assetGroups.forEach((g) => pill(g.name, g.id));
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'asset-g-add';
+      add.title = '新建分组';
+      add.textContent = '＋';
+      add.onclick = () => newAssetGroup();
+      groupBar.appendChild(add);
+      // 只有选中自定义分组时才露出「改名 / 删除」：没选中就没什么可改的，
+      // 常驻两颗按钮会把这一行挤爆（分组多了要横向滚动）。
+      if (assetGroup !== 'all' && assetGroup !== 'none') {
+        const ops = document.createElement('span');
+        ops.className = 'asset-g-ops';
+        const rn = document.createElement('button');
+        rn.type = 'button';
+        rn.textContent = '改名';
+        rn.onclick = () => renameAssetGroup();
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.textContent = '删除';
+        rm.onclick = () => removeAssetGroup();
+        ops.append(rn, rm);
+        groupBar.appendChild(ops);
+      }
+    };
+
+    const newAssetGroup = async (thenAssign) => {
+      const name = prompt('新分组名称（例如「人像参考」）');
+      if (name == null) return null;
+      const v = name.trim().slice(0, 20);
+      if (!v) return null;
+      const res = await assetLibPost({ op: 'group-add', name: v });
+      if (!res) return null;
+      // 新建后**不**跳进新分组：那是个空组，跳进去既没有图可选，也没有图可移，
+      // 只能再手动切回来。留在原地，用户选好图用「移动到」放进去就行。
+      if (thenAssign) await assignTo(res.id);
+      paintGroups();
+      paint();
+      flash('已新建分组：' + v);
+      return res.id;
+    };
+
+    const renameAssetGroup = async () => {
+      const g = assetGroups.find((x) => x.id === assetGroup);
+      if (!g) return;
+      const name = prompt('分组名称', g.name);
+      if (name == null) return;
+      const v = name.trim().slice(0, 20);
+      if (!v || v === g.name) return;
+      if (!await assetLibPost({ op: 'group-rename', id: g.id, name: v })) return;
+      paintGroups();
+      paint();
+      flash('已改名：' + v);
+    };
+
+    const removeAssetGroup = async () => {
+      const g = assetGroups.find((x) => x.id === assetGroup);
+      if (!g) return;
+      const n = (assetItems || []).filter((it) => (assetMeta[assetKeyOf(it)] || {}).group === g.id).length;
+      const tip = n ? `\n组里 ${n} 张图会回到「未分组」，图片本身不动。` : '';
+      if (!confirm(`删除分组「${g.name}」？${tip}`)) return;
+      if (!await assetLibPost({ op: 'group-remove', id: g.id })) return;
+      assetGroup = 'all';
+      paintGroups();
+      paint();
+      flash('已删除分组：' + g.name);
+    };
+
+    /* ---------- 多选 ---------- */
+    const assignTo = async (gid) => {
+      const keys = [...assetPicked];
+      if (!keys.length) { flash('先选几张'); return; }
+      if (!await assetLibPost({ op: 'assign', keys, group: gid })) return;
+      assetPicked.clear();
+      paintGroups();
+      paint();
+      flash(`已移动 ${keys.length} 张到「${groupName(gid)}」`);
+    };
+
+    const removePicked = async () => {
+      const keys = [...assetPicked];
+      if (!keys.length) return;
+      // 说清楚「只是从资产库移除」——否则用户会以为 ComfyUI 里的文件被删了
+      if (!confirm(`从资产库移除这 ${keys.length} 项？\n\n`
+        + '只是不再列在这里，ComfyUI 磁盘上的文件不动。\n之后能在底部「已移除 N 项」里找回来。')) return;
+      if (!await assetLibPost({ op: 'hide', keys, hidden: true })) return;
+      assetPicked.clear();
+      paintGroups();
+      paint();
+      flash(`已移除 ${keys.length} 项（文件还在）`);
+    };
+
+    const setPicking = (on) => {
+      assetPicking = on;
+      assetPicked.clear();
+      assetLastIdx = -1;
+      pickBtn.classList.toggle('on', on);
+      pickBtn.textContent = on ? '完成' : '选择';
+      paint();
+    };
+
+    const paintActions = () => {
+      actions.innerHTML = '';
+      actions.classList.toggle('on', assetPicking);
+      hintEl.classList.toggle('hidden', assetPicking);
+      if (!assetPicking) return;
+      const n = assetPicked.size;
+      // 分两行：抽屉只有 392px，五个控件挤一行会被挤成两个字的宽度。
+      // 上行说「选了几张 + 全选」，下行是「对它们做什么」。
+      const row1 = document.createElement('div');
+      row1.className = 'asset-arow';
+      const sel = document.createElement('span');
+      sel.className = 'asset-sel';
+      sel.textContent = `已选 ${n} 项`;
+      const all = document.createElement('button');
+      all.type = 'button';
+      all.textContent = '全选';
+      all.onclick = () => {
+        const list = assetFiltered();
+        const every = list.length > 0 && list.every((it) => assetPicked.has(assetKeyOf(it)));
+        assetPicked = new Set(every ? [] : list.map(assetKeyOf));
+        paint();
+      };
+      row1.append(sel, all);
+
+      const row2 = document.createElement('div');
+      row2.className = 'asset-arow';
+      const move = document.createElement('select');
+      move.className = 'asset-move';
+      move.title = '把选中的移到分组';
+      const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; };
+      move.append(opt('', '移动到…'), opt('__none__', '未分组'));
+      assetGroups.forEach((g) => move.append(opt(g.id, g.name)));
+      move.append(opt('__new__', '＋ 新建分组…'));
+      move.value = '';
+      move.disabled = !n;
+      move.onchange = async () => {
+        const v = move.value;
+        move.value = '';
+        if (!v) return;
+        if (v === '__new__') await newAssetGroup(true);
+        else await assignTo(v === '__none__' ? '' : v);
+      };
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'asset-del';
+      del.textContent = '删除';
+      del.disabled = !n;
+      del.onclick = () => removePicked();
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = '取消';
+      cancel.onclick = () => setPicking(false);
+      row2.append(move, del, cancel);
+      actions.append(row1, row2);
+    };
+
+    /* ---------- 宫格 ---------- */
     const paint = () => {
       const list = assetFiltered();
-      const total = (assetItems || []).length;
+      const hiddenN = assetHiddenKeys().length;
+      const total = (assetItems || []).length - hiddenN;
+      // 勾上的图一旦被筛掉就作废：看不见的东西不该被「删除」顺手带走
+      const alive = new Set(list.map(assetKeyOf));
+      [...assetPicked].forEach((k) => { if (!alive.has(k)) assetPicked.delete(k); });
+
       nEl.textContent = list.length === total ? `${total} 项` : `${list.length} / ${total} 项`;
+      restoreBtn.textContent = hiddenN ? `已移除 ${hiddenN} 项` : '';
+      restoreBtn.classList.toggle('hidden', !hiddenN);
+      hintT.textContent = '单击看大图（可翻页） · 双击或点右上「＋」放入画布';
+
       grid.innerHTML = '';
       if (!list.length) {
-        grid.innerHTML = `<p class="asset-tip">${assetQuery ? '没有匹配的文件' : '还没有资产：生成一张图、或上传一张图就会出现在这里'}</p>`;
+        const why = assetQuery ? '没有匹配的文件'
+          : assetGroup !== 'all' && assetGroup !== 'none' ? '这个分组还是空的：回「全部」选几张，再用「移动到」放进来'
+            : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
+              : '还没有资产：生成一张图、或上传一张图就会出现在这里';
+        grid.innerHTML = `<p class="asset-tip">${why}</p>`;
+        paintActions();
         return;
       }
       list.forEach((item, i) => {
+        const key = assetKeyOf(item);
         // 用 div 而不是 button：格子尺寸靠 CSS 的 height:0 + padding-bottom:100% 撑正方形，
         // button 在 Chromium 里是表单控件（内部强制 flow-root），这套撑高法不可靠。
         const cell = document.createElement('div');
-        cell.className = 'asset-cell';
+        cell.className = 'asset-cell'
+          + (assetPicking ? ' pick' : '')
+          + (assetPicked.has(key) ? ' on' : '');
         cell.setAttribute('role', 'button');
         cell.tabIndex = 0;
-        cell.title = `${item.filename}\n${item.source === 'canvas' ? '画布上的图' : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）'}`;
+        const where = item.source === 'canvas' ? '画布上的图'
+          : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
+        cell.title = `${item.filename}\n${where}\n分组：${groupName((assetMeta[key] || {}).group || '')}`;
         const img = document.createElement('img');
         img.src = item.url;
         img.alt = '';
@@ -3057,20 +3321,45 @@
         add.title = '放入画布';
         add.textContent = '＋';
         add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
-        cell.append(img, badge, name, add);
-        // 单击看大图（列表就是当前筛选结果，翻页能一直翻下去）
-        cell.onclick = () => openLightbox(item.url, list, i, assetImageInfo(item));
-        cell.ondblclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
+        const tick = document.createElement('span');
+        tick.className = 'asset-tick';
+        cell.append(img, badge, name, add, tick);
+
+        cell.onclick = (ev) => {
+          // 多选态下点击 = 勾选，不再是看大图（否则永远选不中）
+          if (!assetPicking) { openLightbox(item.url, list, i, assetImageInfo(item)); return; }
+          if (ev.shiftKey && assetLastIdx >= 0) {
+            // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
+            const [a, b] = [assetLastIdx, i].sort((x, y) => x - y);
+            const on = !assetPicked.has(key);
+            for (let j = a; j <= b; j++) {
+              const k = assetKeyOf(list[j]);
+              if (on) assetPicked.add(k); else assetPicked.delete(k);
+            }
+          } else if (assetPicked.has(key)) assetPicked.delete(key);
+          else assetPicked.add(key);
+          assetLastIdx = i;
+          paint();
+        };
+        cell.ondblclick = (ev) => {
+          ev.stopPropagation();
+          if (!assetPicking) putAssetOnCanvas(item);
+        };
         cell.onkeydown = (ev) => {
-          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); putAssetOnCanvas(item); }
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          if (assetPicking) cell.onclick({ shiftKey: false });
+          else putAssetOnCanvas(item);
         };
         grid.appendChild(cell);
       });
+      paintActions();
     };
 
     const reload = async (force) => {
       grid.innerHTML = '<p class="asset-tip">读取中…</p>';
       await loadAssets(force);
+      paintGroups();
       paint();
     };
 
@@ -3083,7 +3372,15 @@
         paint();
       };
     });
+    pickBtn.onclick = () => setPicking(!assetPicking);
     box.querySelector('.asset-reload').onclick = () => reload(true);
+    restoreBtn.onclick = async () => {
+      const keys = assetHiddenKeys();
+      if (!keys.length) return;
+      if (!await assetLibPost({ op: 'hide', keys, hidden: false })) return;
+      paint();
+      flash(`已恢复 ${keys.length} 项`);
+    };
 
     await reload(false);
   }
