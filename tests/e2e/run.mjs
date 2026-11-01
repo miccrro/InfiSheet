@@ -1643,37 +1643,59 @@ try {
   })()`);
   const mPreset = await modalBox();
 
-  // 预设按分类分组：组头（文生图 / 图生图 / 高清放大）与卡片数必须对得上，
+  // 工作流按分类分组：组头（文生图 / 图生图 / 高清放大）与卡片数必须对得上，
   // 否则就是「分了组但漏了卡片」——列表少一条比不分组更糟。
   const grp = await page.evaluate(`(() => {
-    const pane = document.getElementById('pane-preset');
+    const pane = document.getElementById('pane-wf');
     return {
       heads: [...pane.querySelectorAll('.preset-group span')].map((s) => s.textContent.trim()),
       counts: [...pane.querySelectorAll('.preset-group em')].map((s) => Number(s.textContent)),
       cards: pane.querySelectorAll('.card').length,
+      srcs: [...pane.querySelectorAll('.card .info b .src')].map((e) => e.textContent),
     };
   })()`);
-  check('内置预设按分类分组：组头与卡片数对得上、文生图排在最前',
+  check('工作流按分类分组：组头与卡片数对得上、文生图排在最前',
     grp.heads.length > 0 && grp.heads[0] === '文生图'
       && grp.counts.reduce((a, b) => a + b, 0) === grp.cards && grp.cards > 0,
     `${grp.heads.join(' / ')} · 卡片 ${grp.cards}`);
+  // 预设和库工作流合成一份列表，靠角标区分来源（以前是两个页签，同一批东西渲染两遍）
+  check('预设和库工作流在同一份列表里，靠「内置 / 我的」角标区分',
+    grp.srcs.length === grp.cards && grp.srcs.every((s) => s === '内置' || s === '我的'),
+    JSON.stringify(grp.srcs.slice(0, 8)));
 
-  await page.evaluate(`document.querySelector('#modalTabs .tab[data-tab="library"]').click()`);
+  // 尺寸不随内容变：把搜索框填成匹配不到的词，内容从一屏卡片塌成一句「没有匹配」
+  await page.evaluate(`(() => {
+    const i = document.querySelector('#pane-wf .wf-search input');
+    i.value = 'zzz-没有这个工作流';
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
   await new Promise((r) => setTimeout(r, 300));
-  const mLib = await modalBox();
+  const mEmpty = await modalBox();
+  const emptyHit = await page.evaluate(`(() => ({
+    cards: document.querySelectorAll('#pane-wf .card').length,
+    tip: (document.querySelector('#pane-wf .list .tip') || {}).textContent || '',
+  }))()`);
+  check('搜索能过滤：一个词把列表收到「没有匹配」',
+    emptyHit.cards === 0 && /没有匹配/.test(emptyHit.tip), JSON.stringify(emptyHit));
   check('弹窗标题改成「资产库」',
     (await page.evaluate(`document.querySelector('#modal .sheet header strong').textContent`)) === '资产库');
-  check('资产库尺寸固定 1200×780：切到内容更少的「我的工作流库」不变',
-    mPreset.w === mLib.w && mPreset.h === mLib.h
+  check('资产库尺寸固定 1200×780：内容从一屏卡片塌成一句「没有匹配」也不变',
+    mPreset.w === mEmpty.w && mPreset.h === mEmpty.h
       && Math.abs(mPreset.w - mPreset.expectW) <= 2 && Math.abs(mPreset.h - mPreset.expectH) <= 2,
-    `${mPreset.w}×${mPreset.h} → ${mLib.w}×${mLib.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
+    `${mPreset.w}×${mPreset.h} → ${mEmpty.w}×${mEmpty.h}（期望 ${mPreset.expectW}×${mPreset.expectH}）`);
+  await page.evaluate(`(() => {
+    const i = document.querySelector('#pane-wf .wf-search input');
+    i.value = '';
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
   check('资产库是左右双栏：导航在左、内容在右，导航项不是胶囊',
     mPreset.sideBySide && mPreset.navW >= 180 && mPreset.navW <= 260
       && mPreset.panesW > mPreset.navW * 2 && mPreset.tabRadius <= 12,
     JSON.stringify(mPreset));
-  check('左侧导航是「图标 + 名称」：3 个 tab 的图标都填上了，文字没被吃掉',
-    mPreset.icons === 3 && mPreset.tabDisplay === 'flex'
-      && mPreset.labels.join('|') === '内置预设|我的工作流库|ComfyUI 运行记录',
+  check('左侧导航是「图标 + 名称」：2 个 tab 的图标都填上了，文字没被吃掉',
+    mPreset.icons === 2 && mPreset.tabDisplay === 'flex'
+      && mPreset.labels.join('|') === '工作流|ComfyUI 运行记录',
     JSON.stringify({ icons: mPreset.icons, display: mPreset.tabDisplay, labels: mPreset.labels }));
   // 资产库退回**纯浏览**：新增 / 删除 / 导入这些管理动作只在全局设置里有一份。
   // 早先这里也有「＋ 新增预设」和卡片上的「删除」，和设置里的导入 / 删除列表各摆一套。
@@ -1690,8 +1712,8 @@ try {
     modalActs.del === 0 && modalActs.add === 0
       && !modalActs.texts.some((t) => /删除|新增|导入|载入/.test(t)),
     JSON.stringify(modalActs.texts));
-  check('资产库每页顶上写清了管理入口在「设置 → 工作流」',
-    modalActs.tips.length === 2 && modalActs.tips.every((t) => /设置 → 工作流/.test(t)),
+  check('资产库顶上写清了管理入口在「设置 → 工作流」',
+    modalActs.tips.length === 1 && /设置 → 工作流/.test(modalActs.tips[0]),
     JSON.stringify(modalActs.tips));
   // 开弹窗不该顺手去拉 ComfyUI 的运行记录（离线时那是 502，控制台先红一条）。
   // 这里只验「没预加载」，不点 history 标签——CI 里没有 ComfyUI，点了反而会真报错。
@@ -1769,7 +1791,7 @@ try {
   await new Promise((r) => setTimeout(r, 900));
   const homeLib = await page.evaluate(`(() => ({
     modal: !document.getElementById('modal').classList.contains('hidden'),
-    cards: document.querySelectorAll('#pane-preset .card').length,
+    cards: document.querySelectorAll('#pane-wf .card').length,
     onHome: !document.getElementById('home').classList.contains('hidden'),
     hash: location.hash,
   }))()`);
@@ -1874,9 +1896,23 @@ try {
   })()`);
   check('分类表存到了服务端（关掉设置再开还在）', catKept.includes('我的常用'), catKept.join(' / '));
   await page.evaluate(`delete window.prompt`);
-  await page.evaluate(`(async () => {
-    await fetch('/api/library/' + encodeURIComponent('e2e 我的流程'), { method: 'DELETE' });
+  // 删除也走设置里那个 ×（预设和库工作流都认）。这条曾经是坏的：presetOptions() 没带 file，
+  // deleteWfItem 拿到的是 undefined → 请求 /api/library/undefined → 404，界面只会说「删除失败」。
+  // 顺带把夹具工作流清掉，别留给后面的用例。
+  await page.evaluate(`window.confirm = () => true`);
+  const delCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-del');
+  await page.clickAt(delCell.x, delCell.y, { settle: 900 });
+  const delGone = await page.evaluate(`(async () => {
+    const box = document.getElementById('appSettings');
+    const rows = [...box.querySelectorAll('#setWfList .wf-item')].map((r) => r.dataset.id);
+    // 查列表而不是 GET 那个已删的名字：那一下必然 404，会把最后的「控制台无报错」拖红
+    const r = await (await fetch('/api/library')).json();
+    return { rows, names: (r.items || []).map((it) => it.name) };
   })()`);
+  check('设置里的 × 真能删掉库工作流（曾经请求成 /api/library/undefined）',
+    delGone.rows.every((id) => id.indexOf('lib:') !== 0) && !delGone.names.includes('e2e 我的流程'),
+    JSON.stringify(delGone));
+  await page.evaluate(`delete window.confirm`);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
   await new Promise((r) => setTimeout(r, 300));
 

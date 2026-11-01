@@ -786,6 +786,9 @@
       catLabel: catName(it.group || it.category || 'other'),
       source,
       nodes: it.nodes || 0,
+      // 删除时要用真实文件名（presets/ 下的 xxx.api.json）或库名，id 里带着前缀不能直接用。
+      // 以前这里没给 file，deleteWfItem 拿到的永远是 undefined，删预设必然 400「预设名非法」。
+      file: source === 'preset' ? it.file : it.name,
     });
     return (w.presets || []).map((p) => norm(p, `preset:${p.file}`, 'preset'))
       .concat((w.items || []).map((it) => norm(it, `lib:${it.name}`, 'lib')));
@@ -6094,13 +6097,14 @@
 
   // 资产库：只浏览 + 挑一个加到画布。导入 / 改名 / 换分类 / 设默认 / 删除全在
   // 全局设置的工作流区——那套入口预设和库工作流都能管，弹窗里再摆一份就是重复。
+  let wfQuery = '';
   async function openModal() {
     $('#modal').classList.remove('hidden');
+    wfQuery = '';                             // 每次打开都从完整列表开始，别留着上次的搜索词
     await refreshWorkflows();                 // 打开时重新拉库，别显示开局时的旧列表
-    renderPresets(state.workflows.presets);
-    renderLibrary(state.workflows.items);
+    renderWorkflows();
     // 运行记录要打 ComfyUI 的 /history：离线时是 502。以前一开弹窗就拉，控制台先红一条，
-    // 而用户多半只是想看看内置预设。改成点开那个标签页才拉（见下面的 tab 点击）。
+    // 而用户多半只是想看看工作流。改成点开那个标签页才拉（见下面的 tab 点击）。
   }
 
   // 弹窗里每页顶上的一句话。这里不再摆「新增 / 删除」按钮：那几件事在全局设置的
@@ -6116,86 +6120,80 @@
     return bar;
   }
 
-  function renderPresets(list) {
-    const pane = $('#pane-preset');
+  // 资产库里的工作流：**一份列表**，预设和库合成（和设置里那份同一个数据源 presetOptions），
+  // 每张卡标「内置 / 我的」。以前分「内置预设」「我的工作流库」两页——同一批东西渲染两遍，
+  // 而"预设 vs 库"本来就是实现细节（随包分发的 presets/ 目录 vs 你自己的 data/library/），
+  // 用户不该为了找一个工作流在两页之间来回切。
+  function renderWorkflows() {
+    const pane = $('#pane-wf');
     pane.innerHTML = '';
-    pane.appendChild(modalHint('随程序分发的预设，这里只挑着用。新增 / 改名 / 删除在「设置 → 工作流」。'));
-    const box = document.createElement('div');
-    box.className = 'list';
-    if (!list.length) box.innerHTML = '<p class="tip">presets 目录为空。</p>';
-    // 按**用户分类**分组（设置里能改名 / 新增 / 删除的那套）。
-    // 早先这里按服务端推断的能力分类分组，用户改了自己的分类，这里却纹丝不动。
-    const groups = new Map();
-    list.forEach((p) => {
-      const cat = p.group || p.category || 'other';
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat).push(p);
-    });
-    const catIds = wfCategories().map((c) => c.id);
-    const order = catIds.filter((c) => groups.has(c))
-      .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
+    pane.appendChild(modalHint('挑一个加到画布。改名 / 换分类 / 设默认 / 删除在「设置 → 工作流」。'));
 
-    const addCard = (p) => {
+    const search = document.createElement('div');
+    search.className = 'wf-search';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.spellcheck = false;
+    inp.autocomplete = 'off';
+    inp.placeholder = '搜名字或分类…';
+    inp.value = wfQuery;
+    search.appendChild(inp);
+    const list = document.createElement('div');
+    list.className = 'list';
+    pane.append(search, list);
+
+    const addCard = (o, showCat) => {
       const card = document.createElement('div');
       card.className = 'card';
-      card.innerHTML = `<div class="info"><b>${esc(p.title || p.name)}</b><span>${p.nodes} 个节点 · presets/${esc(p.file)}</span></div><button class="primary">使用</button>`;
+      // 分组视图里不再重复分类名（组头已经写了）；搜索结果是扁平的，才需要它
+      card.innerHTML = `<div class="info"><b>${esc(o.label)}<em class="src">${o.source === 'preset' ? '内置' : '我的'}</em></b>`
+        + `<span>${o.nodes} 个节点${showCat ? ' · ' + esc(o.catLabel) : ''}</span></div>`
+        + '<button class="primary">加到画布</button>';
       card.onclick = async () => {
-        const res = await api(`/presets/${encodeURIComponent(p.file)}`);
-        await useGraph(res.graph, p.title || p.name);
+        const graph = await loadGraphById(o.id);
+        if (!graph) { flash('读不到这份工作流'); return; }
+        await useGraph(graph, o.label);
       };
-      box.appendChild(card);
+      list.appendChild(card);
     };
 
-    order.forEach((cat) => {
-      const items = groups.get(cat) || [];
-      const head = document.createElement('div');
-      head.className = 'preset-group';
-      head.innerHTML = `<span>${esc(catName(cat))}</span><em>${items.length}</em>`;
-      box.appendChild(head);
-      items.forEach(addCard);
-    });
-    pane.appendChild(box);
-  }
-
-  function renderLibrary(items) {
-    const pane = $('#pane-library');
-    pane.innerHTML = '';
-    pane.appendChild(modalHint('这里只挑着用。改名 / 换分类 / 设默认 / 删除在「设置 → 工作流」。'));
-    const box = document.createElement('div');
-    box.className = 'list';
-    if (!items.length) box.innerHTML = '<p class="tip">还没有保存过工作流。在画布上的工作流节点里点「存入工作流库」，或在设置里「导入工作流…」。</p>';
-    const addCard = (it) => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      const label = it.title || it.name;
-      card.innerHTML = `<div class="info"><b>${esc(label)}</b>`
-        + `<span>${esc(catName(it.group || it.category || 'other'))} · ${it.nodes} 个节点`
-        + `${it.saved_at ? ' · ' + esc(it.saved_at) : ''}</span></div>`
-        + '<button class="primary">使用</button>';
-      card.onclick = async () => {
-        const res = await api(`/api/library/${encodeURIComponent(it.name)}`);
-        await useGraph(res.graph, label);
-      };
-      box.appendChild(card);
+    const paint = () => {
+      const all = presetOptions();
+      const q = wfQuery.trim().toLowerCase();
+      const hits = q ? all.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : all;
+      list.innerHTML = '';
+      if (!all.length) {
+        list.innerHTML = '<p class="tip">还没有工作流。在「设置 → 工作流」里点「导入工作流…」加一个。</p>';
+        return;
+      }
+      if (!hits.length) {
+        list.innerHTML = `<p class="tip">没有匹配「${esc(wfQuery.trim())}」的工作流。</p>`;
+        return;
+      }
+      // 搜索结果是扁平的：几条命中摊在几个分类标题下反而更难扫
+      if (q) { hits.forEach((o) => addCard(o, true)); return; }
+      // 不搜索时按**用户分类**分组（设置里能改名 / 新增 / 删除的那套）。
+      // 早先这里按服务端推断的能力分类分组，用户改了自己的分类，这里却纹丝不动。
+      const groups = new Map();
+      hits.forEach((o) => {
+        if (!groups.has(o.group)) groups.set(o.group, []);
+        groups.get(o.group).push(o);
+      });
+      const catIds = wfCategories().map((c) => c.id);
+      const order = catIds.filter((c) => groups.has(c))
+        .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
+      order.forEach((cat) => {
+        const items = groups.get(cat) || [];
+        const head = document.createElement('div');
+        head.className = 'preset-group';
+        head.innerHTML = `<span>${esc(catName(cat))}</span><em>${items.length}</em>`;
+        list.appendChild(head);
+        items.forEach((o) => addCard(o, false));
+      });
     };
-    // 和内置预设同一套分组：用户在设置里怎么分，这里就怎么排
-    const groups = new Map();
-    items.forEach((it) => {
-      const cat = it.group || it.category || 'other';
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat).push(it);
-    });
-    const catIds = wfCategories().map((c) => c.id);
-    const order = catIds.filter((c) => groups.has(c))
-      .concat([...groups.keys()].filter((c) => !catIds.includes(c)));
-    order.forEach((cat) => {
-      const head = document.createElement('div');
-      head.className = 'preset-group';
-      head.innerHTML = `<span>${esc(catName(cat))}</span><em>${(groups.get(cat) || []).length}</em>`;
-      box.appendChild(head);
-      (groups.get(cat) || []).forEach(addCard);
-    });
-    pane.appendChild(box);
+
+    inp.oninput = () => { wfQuery = inp.value; paint(); };
+    paint();
   }
 
   // 从一次运行记录里挖出人看得懂的东西：提示词 + 采样参数 + 尺寸。
@@ -6781,7 +6779,7 @@
   document.querySelectorAll('#modalTabs .tab').forEach((tab) => {
     tab.onclick = () => {
       document.querySelectorAll('#modalTabs .tab').forEach((t) => t.classList.toggle('active', t === tab));
-      ['preset', 'library', 'history'].forEach((name) => {
+      ['wf', 'history'].forEach((name) => {
         $(`#pane-${name}`).classList.toggle('hidden', name !== tab.dataset.tab);
       });
       // 只有真的要看运行记录时才去问 ComfyUI（离线时这一步会 502，没必要在开弹窗时就撞上）

@@ -1455,6 +1455,20 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 /* ---------- 资产库每页顶上的那句指路 ---------- */
 .pane-bar { display: flex; align-items: center; gap: 10px; padding: 0 0 10px; }
 .pane-bar .tip { margin: 0; font-size: 11px; color: var(--faint); }
+/* 工作流页：搜索框 + 每张卡的「内置 / 我的」角标 */
+.wf-search { padding: 0 0 10px; }
+.wf-search input {
+  width: 100%; box-sizing: border-box;
+  background: #141414; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); font-size: 11.5px; padding: 7px 9px;
+}
+.wf-search input:focus { outline: none; border-color: #5a5a5a; }
+.card .info b .src {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 9.5px; font-style: normal; font-weight: 500; line-height: 1.6;
+  color: var(--faint); border: 1px solid var(--line); border-radius: 4px;
+  vertical-align: 1px;
+}
 
 /* ---------- 画布 UI 统一尺寸 ---------- */
 :root {
