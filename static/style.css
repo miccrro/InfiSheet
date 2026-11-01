@@ -2829,7 +2829,7 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .node.op-raised .node-title { position: relative; z-index: 2; }
 
 /* ---------- 扩图参数条 ----------
-   工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消，**生成面板里的一行**。
+   提示词 + （工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消 / 生成），**生成面板里的两行**。
    曾经是屏幕坐标的浮条（fixed + 挂 body）：不会被顶出视口，但它跟不住节点——
    节点在画布右边、条钉在屏幕左下角，用户的原话就是「无法跟随」。面板本身挂在
    `.node` 上（绝对定位 + 抵消画布缩放），并进来就天然跟随。 */
@@ -2840,24 +2840,31 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   background: rgba(255, 255, 255, 0.045);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
-/* 上行：参数（工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消）。
-   允许换行只是兜底——工作流名字长到放不下时宁可多占一行，也别画到条外面去 */
+/* 上行：提示词。它自己就是那一行，不跟别人挤（多行框占满整条宽度） */
 .of-row { display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
-/* 下行：提示词 + 状态 + 生成。这一行不换行，输入框吃掉剩下的宽度 */
 .of-prompt { flex-wrap: nowrap; gap: 6px; padding: 0 2px; }
-.of-input {
-  flex: 1 1 auto; min-width: 0; height: 26px;
-  padding: 0 9px; border-radius: 7px;
+/* 多行输入：按内容长高（fitPrompt 写 height），到顶了自己滚。
+   `resize: none` —— 面板宽度是算出来的，让用户拖出个 300px 的宽框只会破坏版面。
+   选择器必须带 `.node`：上面 `.node textarea { resize: vertical }` 是 (0,1,1)，
+   光写 `.of-input` 的 (0,1,0) 压不住，右下角那颗拖拽手柄会一直露着。 */
+.node .of-input {
+  flex: 1 1 auto; min-width: 0; width: 100%;
+  padding: 5px 9px; border-radius: 7px;
   background: rgba(0, 0, 0, 0.26);
   border: 1px solid rgba(255, 255, 255, 0.09);
-  color: var(--text); font: inherit; font-size: 11.5px; line-height: 1;
+  color: var(--text); font: inherit; font-size: 11.5px; line-height: 1.45;
+  resize: none; overflow-y: auto; display: block;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.of-input::placeholder { color: var(--faint); }
-.of-input:hover { background: rgba(0, 0, 0, 0.32); }
-.of-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.32); background: rgba(0, 0, 0, 0.38); }
-/* 状态文字是从 `.gen-bar` 搬过来的：这里不许它抢输入框的地方 */
-.of-prompt .gen-status { flex: 0 1 auto; max-width: 40%; }
-.of-prompt .gen-run { flex: 0 0 32px; }
+.node .of-input::placeholder { color: var(--faint); }
+.node .of-input:hover { background: rgba(0, 0, 0, 0.32); }
+.node .of-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.32); background: rgba(0, 0, 0, 0.38); }
+/* 下行：参数 + 取消 + 状态 + 生成。取消靠右站，别和左边那串参数挤在一起 */
+.of-params { gap: 2px; }
+.of-params .of-btn.ghost { margin-left: auto; }
+/* 状态文字是从 `.gen-bar` 搬过来的：这里不许它抢参数的位置 */
+.of-params .gen-status { flex: 0 1 auto; max-width: 40%; padding: 0 4px; }
+.of-params .gen-run { flex: 0 0 32px; }
 
 /* 扩图期间整个面板只剩这一条：上传/素材/清空/风格、大提示词框、底下那排全部让位。
    扩图时这些要么用不上（图已经定了），要么和这条重复（工作流 / 尺寸 / 张数）。
@@ -2867,6 +2874,14 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 .gen-panel.op-on .gen-refs,
 .gen-panel.op-on .gen-prompt,
 .gen-panel.op-on .gen-bar { display: none; }
+
+/* 扩图时面板跟着**画布外框**走，和工具条一个逻辑（它在外框上方，面板在外框下方）：
+   --op-pb = 外框底边比缩略图多出来的高度，--op-dx = 外框中线相对缩略图中线的偏移。
+   两个值都由 buildOutpaintFrame 的 draw() 按当前 pad 写进来，默认 0 就等于原来的位置。 */
+.gen-panel.op-on[data-side="bottom"] {
+  top: calc(100% + var(--gp-gap) + var(--op-pb, 0px));
+  left: calc(50% + var(--op-dx, 0px));
+}
 .of-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 8px; border: none; border-radius: 8px;

@@ -90,6 +90,9 @@
   /* ---------------- 复制 / 粘贴节点 ---------------- */
   let clipboard = null;
   let pointerWorld = null;
+  // 扩图会话（框 + 参数条 + 重贴面板的钩子）。放在这里是为了让 applyView 能直接用：
+  // 面板虽然跟着节点走（世界坐标），但「别顶出屏幕」这件事是屏幕坐标的，平移缩放之后得重算。
+  let opSession = null;
 
   function cloneNode(src, id) {
     const copy = JSON.parse(JSON.stringify(src));
@@ -279,6 +282,8 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
+    // 扩图时面板贴在画布外框上：外框是世界坐标，但「别顶出屏幕」是屏幕坐标，视图一动就得重算
+    if (opSession && opSession.place) opSession.place();
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
     const cell = clamp(28 * k, 16, 112);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
@@ -8270,7 +8275,7 @@
 
   // 边框的事件（拖锚点、比例档、完成）挂在 window 上，节点一重建就得摘掉，
   // 否则旧监听会接着改同一个节点的 pad，拖一下动两倍。
-  let opSession = null;
+  // `opSession` 本身声明在文件上方的模块状态里（applyView 也要用）。
   function closeOpSession(id) {
     if (!opSession) return;
     if (id && opSession.id !== id) return;
@@ -8322,23 +8327,25 @@
     // 节点在画布右边、条却钉在屏幕左下角，用户的原话是「无法跟随」。
     // 现在是面板里的一条：面板挂在 `.node` 上（绝对定位 + 抵消画布缩放），节点动它就动。
     //
-    // 这一条把扩图要用的东西全装下了：两行，上行是参数，下行是提示词 + 生成。
+    // 这一条把扩图要用的东西全装下了，两行：**上面是提示词，下面是参数 + 生成**。
+    // 顺序是照着「写什么 → 怎么跑 → 发出去」排的：先看到自己在写什么，再是选项和那颗按钮。
     // 面板里原来的「上传 / 画布素材 / 清空 / 风格」、大提示词框、底下那排按钮全部让位
     // （`.gen-panel.op-on`）——扩图时这些要么用不上，要么和这条重复。
     const bar = document.createElement('div');
     bar.className = 'op-bar';
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', '扩图参数');
-    bar.innerHTML = '<div class="of-row">'
+    bar.innerHTML = '<div class="of-row of-prompt">'
+      + '<textarea class="of-input" rows="2" spellcheck="false"'
+      + ' placeholder="提示词：描述扩出来的地方要补什么（Enter 生成，Shift+Enter 换行）"></textarea>'
+      + '</div>'
+      + '<div class="of-row of-params">'
       + '<button type="button" class="of-btn" data-of="wf"></button>'
       + '<button type="button" class="of-btn" data-of="size"></button>'
       + '<button type="button" class="of-btn" data-of="res"></button>'
       + '<button type="button" class="of-btn" data-of="batch"></button>'
       + '<span class="of-read"></span>'
       + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>'
-      + '</div>'
-      + '<div class="of-row of-prompt">'
-      + '<input type="text" class="of-input" placeholder="提示词：描述扩出来的地方要补什么">'
       + '</div>';
     const genBar = panel.querySelector('.gen-bar');
     if (genBar) panel.insertBefore(bar, genBar);
@@ -8347,31 +8354,48 @@
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     if (opSession) opSession.bar = bar;
 
-    // 提示词输入：单行，改的是 n.gen.prompt 本身（收起来之后大提示词框读到的是同一个值）。
-    // 模板很长，单行显示不下——用 title 兜住全文，回车直接生成。
+    // 提示词：多行，改的是 n.gen.prompt 本身（收起来之后大提示词框读到的是同一个值）。
+    // 扩图模板本来就有两行字，单行输入框把它截成「…主体」那种看不全的样子——用户截图里
+    // 那半句话就是这个原因。所以这里用 textarea + 按内容长高（到 6 行封顶，再多自己滚）。
     const promptInp = bar.querySelector('.of-input');
+    const OF_MAX_H = 132;                 // ≈ 6 行；再长就滚动，别把面板撑到屏幕外
+    const fitPrompt = () => {
+      // 先清掉高度让浏览器按内容量（`height:auto`）。量到 0 说明还没挂进 DOM——
+      // buildGenPanel 是在节点插进 #nodes **之前**跑的，这时候 scrollHeight 恒为 0，
+      // 直接写 height 会把框压成一条线。这种情况交回 CSS（rows=2）兜着。
+      promptInp.style.height = '';
+      const sh = promptInp.scrollHeight;
+      if (!sh) return;
+      promptInp.style.height = `${Math.min(sh, OF_MAX_H)}px`;
+      placePanel();      // 面板跟着长高，得重贴一次（否则长出来的那截会掉到屏幕外面）
+    };
     const syncPrompt = () => {
       const v = String(n.gen.prompt || '');
       if (promptInp.value !== v) promptInp.value = v;
       promptInp.title = v;
+      fitPrompt();
     };
     syncPrompt();
+    // 挂进 DOM 之后重量一次：上面那次是在离屏状态跑的，量不到 scrollHeight
+    requestAnimationFrame(fitPrompt);
     promptInp.addEventListener('input', () => {
       n.gen.prompt = promptInp.value;
       promptInp.title = promptInp.value;
       delete n.gen.opPromptSet;     // 用户改过就别再当成「我们填的模板」收回去
+      fitPrompt();
       queueSave();
     });
     promptInp.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') { ev.preventDefault(); generateImage(n); }
+      // Enter 生成、Shift+Enter 换行：多行框里这两个键最容易点错，先把约定写死在这里
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); generateImage(n); }
       ev.stopPropagation();          // 别让画布的快捷键（Delete / 空格平移）吃到输入
     });
 
-    // 生成按钮和状态文字**搬**进这一条（不是复制一个）：`refreshGenPanel` 靠
+    // 状态文字和生成按钮**搬**到参数行末尾（不是复制一个）：`refreshGenPanel` 靠
     // `.gen-run` / `.gen-status` 这两个选择器在面板里找它们，搬家后照样找得到。
-    const promptRow = bar.querySelector('.of-prompt');
+    const paramRow = bar.querySelector('.of-params');
     [panel.querySelector('.gen-status'), panel.querySelector('.gen-run')].forEach((el2) => {
-      if (el2) promptRow.appendChild(el2);
+      if (el2) paramRow.appendChild(el2);
     });
 
     const readout = bar.querySelector('.of-read');
@@ -8501,6 +8525,48 @@
     // 拖动换算少乘一次视图缩放，拖 100px 只扩 89px（这个 bug 就是这么来的）。
     let dragK = 1;
 
+    // 面板跟工具条一个逻辑：**贴着画布外框**，不是贴着缩略图。
+    // 横向对着外框中线（只往右拖时会偏出去），纵向退到外框下沿外面——
+    // 否则外框往下长多少，面板就压住多少新扩出来的地方（用户截图里那条黄框就是这样）。
+    // 两个偏移都按屏幕像素给（外面还套着一层画布缩放，面板自己又被 --gp-k 反缩回去）。
+    //
+    // 单独抽出来是因为它有两类调用方：draw()（pad 变了）和 applyView()（平移/缩放）。
+    // 「别顶出屏幕」是屏幕坐标的事，视图一动就得重算——面板本身是世界坐标的。
+    // 用函数声明（不是 const 箭头）：fitPrompt 在面板还没挂进 DOM 时就会调到它，
+    // 那时 `el` 还没赋值，靠第一行的 isConnected 提前返回（声明提升，const 会撞 TDZ）。
+    function placePanel() {
+      const op = outpaintOf(n);
+      if (!op || !panel.isConnected) return;
+      const f = outpaintFrame(op.w, op.h, op);
+      const tw = thumb.clientWidth;
+      if (!tw) return;
+      const k = tw / op.w;
+      const vk = (state.view && state.view.k) || 1;
+      // 面板的 `top: 100%` 是**节点盒子**的底，缩略图底下还留着一截边距——
+      // 不减掉这一截，面板会被白白推开 20px，跟工具条那 8px 的贴边对不上。
+      const slack = el
+        ? (el.getBoundingClientRect().bottom - thumb.getBoundingClientRect().bottom) / vk
+        : 0;
+      const wantPb = (f.nh - f.oy - op.h) * k - slack;          // 外框底边超出缩略图多少（世界像素）
+      const wantDx = (f.nw / 2 - f.ox - op.w / 2) * k;          // 外框中线相对缩略图中线的偏移
+      panel.style.setProperty('--op-pb', `${wantPb}px`);
+      panel.style.setProperty('--op-dx', `${wantDx}px`);
+      // 外框比屏幕还高/还宽时，「贴着外框」就是把面板顶出屏幕——「生成」就点不着了。
+      // 顶到视口边缘就停住（下面给工具条留 64px、上面给顶栏留 8px）：宁可压住一点画面，
+      // 也不能让按钮跑出屏幕。和工具条「居中 → 被夹住就贴边」是同一套退让。
+      const r = panel.getBoundingClientRect();
+      let dy = 0;
+      const overY = r.bottom - (window.innerHeight - 64);
+      if (overY > 0) dy = -overY;
+      if (r.top + dy < 8) dy = 8 - r.top;
+      if (dy) panel.style.setProperty('--op-pb', `${wantPb + dy / vk}px`);
+      const overL = 12 - r.left;
+      const overR = r.right - (window.innerWidth - 12);
+      if (overL > 0) panel.style.setProperty('--op-dx', `${wantDx + overL / vk}px`);
+      else if (overR > 0) panel.style.setProperty('--op-dx', `${wantDx - overR / vk}px`);
+    }
+    if (opSession) opSession.place = placePanel;
+
     const draw = () => {
       const op = outpaintOf(n);
       if (!op) return;
@@ -8550,6 +8616,8 @@
       });
       if (dimEl) dimEl.textContent = `${f.nw} × ${f.nh}`;
       syncBar();
+      // 面板贴着这块外框（细节见 placePanel）
+      placePanel();
       // 工具条贴的是这块外框：外框一变宽/一挪位，它得跟着重新居中。
       // 早先只有「换节点 / 平移画布」会重贴，拖锚点不会——拖完之后整条就落在框上方偏左，
       // 用户截图里那个「悬在框外面」的样子就是这么来的。

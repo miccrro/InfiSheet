@@ -3206,7 +3206,12 @@ try {
       // 第二行：提示词输入框 + 生成（状态文字也搬进来了，不然它和输入框抢地方）
       rows: bar ? [...bar.children].map((c) => c.className) : [],
       hasInput: !!bar && !!bar.querySelector('.of-input'),
+      inputTag: bar && bar.querySelector('.of-input') ? bar.querySelector('.of-input').tagName : '',
       inputVal: bar && bar.querySelector('.of-input') ? bar.querySelector('.of-input').value : '',
+      // 面板贴着**画布外框**（和工具条一个逻辑，只是它在下方）：不能压住新扩出来的地方
+      frameGap: panel ? Math.round(panel.getBoundingClientRect().top - st.bottom) : null,
+      frameDx: panel ? Math.round((panel.getBoundingClientRect().left + panel.getBoundingClientRect().width / 2)
+        - (st.left + st.width / 2)) : null,
       // 面板里那个大提示词框（这时被藏着）存的是同一条节点的提示词：两边必须一样，
       // 说明单行输入框是**编辑同一个字段**，不是给扩图另开一份
       panelPrompt: panel && panel.querySelector('.gen-prompt')
@@ -3240,13 +3245,17 @@ try {
       && outUi.labels[4] === '取消' && outUi.noDone
       && outUi.labels[0].length > 0 && outUi.labels[2].length > 0 && /^\d+ 张$/.test(outUi.labels[3]),
     JSON.stringify({ buttons: outUi.buttons, labels: outUi.labels }));
-  check('参数条是两行：上行参数，下行是提示词输入框 + 生成（状态文字也在这一行里）',
-    outUi.rows.join('|') === 'of-row|of-row of-prompt'
-      && outUi.hasInput && outUi.inputVal === outUi.panelPrompt
+  check('参数条两行：提示词（多行）在上，参数 + 取消 + 生成在下',
+    outUi.rows.join('|') === 'of-row of-prompt|of-row of-params'
+      && outUi.hasInput && outUi.inputTag === 'TEXTAREA'
+      && outUi.inputVal === outUi.panelPrompt
       && outUi.runInBar && outUi.statusInBar,
-    JSON.stringify({ rows: outUi.rows, input: outUi.inputVal.slice(0, 18),
+    JSON.stringify({ rows: outUi.rows, tag: outUi.inputTag, input: outUi.inputVal.slice(0, 18),
       panel: String(outUi.panelPrompt).slice(0, 18),
       run: outUi.runInBar, status: outUi.statusInBar }));
+  check('面板退到画布外框下沿外面（不压住新扩出来的地方），横向对着外框中线',
+    outUi.frameGap >= 8 && Math.abs(outUi.frameDx) <= 2,
+    JSON.stringify({ gap: outUi.frameGap, dx: outUi.frameDx }));
   check('刚打开时边框和原图一样大（还没扩），尺寸档报「原图」、读数是「原图 → 画布」',
     outUi.stage[0] === outUi.img[0] && outUi.stage[1] === outUi.img[1] && outUi.bands === 0
       && outUi.labels[1] === '原图'
@@ -3330,6 +3339,10 @@ try {
              toolsGap: Math.round(st.top - tb.bottom),
              toolsPlace: document.getElementById('imgTools').dataset.place,
              toolsClamped: tb.left <= 11 || tb.right >= window.innerWidth - 11,
+             // 面板也贴着这块外框：外框往下长多少，面板就往下退多少
+             frameGap: Math.round(pr.top - st.bottom),
+             frameDx: Math.round((pr.left + pr.width / 2) - (st.left + st.width / 2)),
+             panelClamped: pr.bottom >= window.innerHeight - 65,
              // 参数条还在自己这个面板里（不是跑到屏幕角落去了）
              barInPanel: br.top >= pr.top - 1 && br.bottom <= pr.bottom + 1
                && br.left >= pr.left - 1 && br.right <= pr.right + 1 };
@@ -3365,6 +3378,11 @@ try {
     Math.abs(after.toolsDx) <= 2 || after.toolsClamped,
     JSON.stringify({ dx: after.toolsDx, gap: after.toolsGap, place: after.toolsPlace,
       clamped: after.toolsClamped, stageW: after.stageW, thumbW: after.thumbW }));
+  // 和工具条同一条规矩：外框长出去了，面板也要跟着退（不是钉在节点下沿）
+  check('拖完锚点，面板仍贴在外框下沿外面、并对着外框中线（放不下才被视口夹住）',
+    (after.frameGap >= 8 || after.panelClamped) && Math.abs(after.frameDx) <= 2,
+    JSON.stringify({ gap: after.frameGap, dx: after.frameDx, clamped: after.panelClamped }));
+
   // 「无法跟随」的直接回归：画布一平移，参数条要和节点一起走（相对位置不变）。
   // 之前它是屏幕坐标的浮条，节点拖到哪儿它都钉在原地，用户的原话就是「无法跟随」。
   // 用中键拖（button 1）平移画布，不用拖节点：拖节点会往撤销栈里压一条，
@@ -3411,7 +3429,7 @@ try {
   const promptIn = await page.evaluate(`(() => {
     const inp = document.querySelector('.node.selected .op-bar .of-input');
     if (!inp) return null;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
     setter.call(inp, ${JSON.stringify(OP_PROMPT_E2E)});
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     return { value: inp.value, title: inp.title };
