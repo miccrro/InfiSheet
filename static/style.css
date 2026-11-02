@@ -2103,7 +2103,7 @@ button.primary:hover,
   box-shadow: -18px 0 48px rgba(0, 0, 0, 0.55);
 }
 #assetPane header {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
   padding: 12px 14px; border-bottom: 1px solid var(--line);
 }
 #assetPane header strong { font-size: 13px; }
@@ -2112,20 +2112,31 @@ button.primary:hover,
   border: none; background: transparent; color: var(--dim);
   font-size: 16px; line-height: 1; padding: 2px 4px; cursor: pointer;
 }
-#assetPane .asset-bar { display: grid; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+/* 刷新挪到标题栏当图标：来源页签从 4 个涨到 5 个，那一行放不下第二颗按钮了 */
+#assetPane header .asset-reload {
+  width: 22px; height: 22px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--line); background: transparent; color: var(--dim);
+  border-radius: 7px; font-size: 12px; line-height: 1; cursor: pointer;
+}
+#assetPane header .asset-reload:hover { color: var(--text); border-color: var(--accent); }
+/* 上面这几块都不许被压扁：宫格是 flex:1 + min-height:0 自己收，
+   其余几行一旦被 flex 压缩就会把字切掉（底部提示曾经被裁掉半行）。 */
+#assetPane .asset-bar { display: grid; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 #assetPane .asset-q {
   width: 100%; box-sizing: border-box; background: #141414; color: var(--text);
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12.5px;
 }
 #assetPane .asset-q:focus { outline: none; border-color: var(--accent); }
 #assetPane .asset-row { display: flex; align-items: center; gap: 6px; }
-#assetPane .asset-tabs { display: flex; gap: 6px; }
-#assetPane .asset-tabs button, #assetPane .asset-reload, #assetPane .asset-pick {
+#assetPane .asset-row .asset-q { flex: 1; min-width: 0; }
+#assetPane .asset-tabs { display: flex; gap: 5px; }
+#assetPane .asset-tabs button, #assetPane .asset-pick {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
-  border-radius: 999px; padding: 4px 11px; font-size: 11.5px; cursor: pointer;
+  border-radius: 999px; padding: 4px 9px; font-size: 11.5px; cursor: pointer;
 }
+#assetPane .asset-tabs button { flex: 1 1 0; min-width: 0; padding: 4px 0; text-align: center; }
 #assetPane .asset-tabs button.on { color: #0d0d0d; background: var(--accent); border-color: var(--accent); }
-#assetPane .asset-reload { margin-left: auto; }
+#assetPane .asset-pick { flex: 0 0 auto; }
 /* 「选择」是开关，不是一次性动作：开着的时候整格变浅、点击改判勾选。
    用描边而不是填充，和来源页签的实心 .on 区分开——两者会同时亮。 */
 #assetPane .asset-pick.on { color: var(--accent); border-color: var(--accent); }
@@ -2184,6 +2195,8 @@ button.primary:hover,
 }
 #assetPane .asset-cell .asset-badge.canvas { color: #9ad0ff; }
 #assetPane .asset-cell .asset-badge.input { color: #ffd48a; }
+/* 「库」= 存放在资产目录里的文件，能改名、能删。和上面三种只读来源区分开 */
+#assetPane .asset-cell .asset-badge.lib { color: #8fe3c0; }
 #assetPane .asset-cell .asset-add {
   position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
   display: grid; place-items: center; border-radius: 7px;
@@ -2193,6 +2206,8 @@ button.primary:hover,
 }
 #assetPane .asset-cell:hover .asset-add { opacity: 1; }
 #assetPane .asset-cell .asset-add:hover { background: var(--accent); color: #0d0d0d; }
+/* 库内文件多一颗「改名」，挂在 ＋ 左边一格（右边 4px 是 ＋ 的位置） */
+#assetPane .asset-cell .asset-rn { right: 30px; font-size: 11px; }
 /* 勾选框只在多选态出现，并且顶掉左上角的来源徽章——那个位置只容得下一个东西 */
 #assetPane .asset-cell .asset-tick {
   position: absolute; top: 5px; left: 5px; width: 16px; height: 16px;
@@ -2209,7 +2224,7 @@ button.primary:hover,
    两行而不是一行：抽屉宽 392px，五个控件排一行每个只剩两个字宽，选个分组都看不清。 */
 #assetPane .asset-actions { display: none; }
 #assetPane .asset-actions.on {
-  display: grid; gap: 6px;
+  display: grid; gap: 6px; flex: 0 0 auto;
   padding: 9px 12px; border-top: 1px solid var(--line);
 }
 #assetPane .asset-arow { display: flex; align-items: center; gap: 6px; }
@@ -2220,11 +2235,36 @@ button.primary:hover,
 }
 #assetPane .asset-actions .asset-move { flex: 1; min-width: 0; }
 #assetPane .asset-actions button:disabled, #assetPane .asset-actions select:disabled { opacity: 0.4; cursor: default; }
+#assetPane .asset-actions .asset-imp { color: var(--accent); border-color: rgba(255, 255, 255, 0.22); }
+#assetPane .asset-actions .asset-imp:not(:disabled):hover { background: rgba(255, 255, 255, 0.08); }
 #assetPane .asset-actions .asset-del { color: #ff9a9a; border-color: rgba(255, 120, 120, 0.4); }
 #assetPane .asset-actions .asset-del:not(:disabled):hover { background: rgba(255, 90, 90, 0.16); color: #fff; }
 #assetPane .asset-tip { padding: 6px 2px; font-size: 11.5px; color: var(--faint); line-height: 1.6; grid-column: 1 / -1; }
+/* 抽屉最底下两行：存放路径 + 操作提示。路径常驻——文件到底落在哪儿，
+   是「改了名 / 删了图，去哪儿找」的唯一答案。 */
+#assetPane .asset-foot { border-top: 1px solid var(--line); flex: 0 0 auto; }
+#assetPane .asset-path {
+  display: flex; align-items: center; gap: 8px; min-height: 18px;
+  padding: 7px 14px; font-size: 10.5px; color: var(--faint);
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.07);
+}
+#assetPane .asset-path-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#assetPane .asset-path button {
+  flex: 0 0 auto; border: 1px solid var(--line); background: transparent; color: var(--dim);
+  border-radius: 7px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer;
+}
+#assetPane .asset-path button:hover { color: var(--text); border-color: var(--accent); }
+#assetPane .asset-path button.prime { background: var(--accent); border-color: var(--accent); color: #0d0d0d; }
+#assetPane .asset-path-in {
+  flex: 1; min-width: 0; background: #141414; color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 3px 8px;
+  font: inherit; font-size: 11px;
+}
+#assetPane .asset-path-in:focus { outline: none; border-color: var(--accent); }
+/* 多选态下把路径行收起来：动作条要占两行，再留着它宫格就只剩三行了 */
+#assetPane .asset-foot.picking .asset-path { display: none; }
 #assetPane .asset-hint {
-  margin: 0; padding: 9px 14px; border-top: 1px solid var(--line);
+  margin: 0; padding: 9px 14px;
   display: flex; align-items: center; gap: 10px;
   font-size: 10.5px; color: var(--faint);
 }

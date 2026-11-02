@@ -2867,7 +2867,77 @@ try {
   check('删分组：组内 2 张回到「未分组」，图本身不丢',
     !afterRm.includes('人物') && u1 === u0 + 2, `未分组 ${u0} → ${u1}；${afterRm.join('/')}`);
 
+  // ---- 资产库的目录：收进库 / 改名 / 删除 / 改路径 ----
+  // 上一段验的是「列表里的分组」，这一段验的是**磁盘**：库内文件真的是目录里的文件，
+  // 收进库是复制，改名是改文件名，删除是移进 .trash 而不是 unlink。
+  // 所以断言直接读 dataDir 下的文件系统——列表对了但文件没动，等于没做。
+  const assetDir = path.join(dataDir, 'assets');
+  const diskFiles = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => !f.startsWith('.')) : []);
+  const norm = (p) => String(p || '').replace(/\\/g, '/');
+
+  const rootTitle = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').title`);
+  check('抽屉底部写明存放目录（完整路径挂在 title 上，一眼知道文件在哪）',
+    norm(rootTitle).endsWith('/assets'), rootTitle);
+
+  await hit('canvas');
+  await new Promise((r) => setTimeout(r, 350));
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[1].click()`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-imp').click()`);
+  await new Promise((r) => setTimeout(r, 2200));
+  const imported = diskFiles(assetDir);
+  await hit('lib');
+  await new Promise((r) => setTimeout(r, 450));
+  const libView = await paneState();
+  check('收进库：两张复制进资产目录（磁盘上真有文件），来源变成「库」',
+    imported.length === 2 && libView.n === 2 && libView.badges.join() === '库',
+    `磁盘 ${imported.join(',')} · 列表 ${libView.n} 张 ${libView.badges.join('/')}`);
+
+  // 改名只对库内文件开放：库外的是 ComfyUI 的产物，改完下次读 /history 又变回去
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const rnBtn = await page.evaluate(`!!document.querySelector('#assetPane .asset-cell .asset-rn')`);
+  await page.evaluate(`window.__answer = '封面'; document.querySelector('#assetPane .asset-cell .asset-rn').click()`);
+  await new Promise((r) => setTimeout(r, 1400));
+  check('改名：库内格子有「改名」入口，且磁盘上的文件名真的跟着变',
+    rnBtn === true && diskFiles(assetDir).includes('封面.svg'), diskFiles(assetDir).join(','));
+
+  // 删除：进 .trash，原地址立刻 404（不是只从列表里消失）
+  const delSrc = await page.evaluate(`document.querySelector('#assetPane .asset-cell img').getAttribute('src')`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-del').click()`);
+  await new Promise((r) => setTimeout(r, 1600));
+  const trash = diskFiles(path.join(assetDir, '.trash'));
+  // 从 Node 这边探，不在页面里 fetch：页面里打一个 404 会进控制台，
+  // 末尾那条「控制台无报错」就被自己弄红了，真正该抓的 JS 报错反而被淹。
+  const goneStatus = await fetch(server.base.replace(/\/$/, '') + delSrc).then((r) => r.status);
+  check('删除库内文件：移进 .trash（不 unlink），原地址立刻 404',
+    trash.length === 1 && goneStatus === 404, `回收站 ${trash.join(',')} · 旧地址 ${goneStatus}`);
+
+  // 改存放路径：文件跟着搬，抽屉里的路径跟着变
+  const newRoot = path.join(dataDir, 'pics');
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(`document.querySelector('#assetPane .asset-root').click()`);
+  await page.evaluate(`(() => {
+    const i = document.querySelector('#assetPane .asset-path-in');
+    i.value = ${JSON.stringify(newRoot)};
+    return true;
+  })()`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-path button.prime').click()`);
+  await new Promise((r) => setTimeout(r, 2000));
+  const movedTo = diskFiles(newRoot);
+  const movedTitle = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').title`);
+  check('改存放路径：剩下那张搬到新目录，抽屉里的路径跟着变',
+    movedTo.length === 1 && norm(movedTitle).endsWith('/pics'),
+    `新目录 ${movedTo.join(',')} · 路径 ${movedTitle}`);
+
   // 收尾：回到「全部」、退出多选，后面的 Esc 才是关抽屉
+  await hit('all');
   await cellsInGroup('全部');
   await new Promise((r) => setTimeout(r, 300));
 

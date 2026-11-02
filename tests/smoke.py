@@ -10,6 +10,7 @@ CI 里跑这个就够；要连 ComfyUI 的完整回归用 `python selftest.py`�
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -347,6 +348,72 @@ def main() -> int:
         check("不认识的 op 回 400", status == 400, f"HTTP {status}")
         status, _ = request(base, "/api/assets/lib", "POST", {"op": "assign", "keys": [], "group": ""})
         check("空 keys 回 400（「没选中」不能被当成「全部」）", status == 400, f"HTTP {status}")
+
+        # ---- 资产库的目录：收进库 / 改名 / 删除 / 改路径 ----
+        # 上面那些验的是「列表里的分组」，这一段验**磁盘**：库内文件就是目录里的文件，
+        # 收进库是复制、改名是改文件名、删除是移进 .trash（不是 unlink）。
+        # 所以断言直接看文件系统——列表对了但文件没动，等于没做。
+        adir = data_dir / "assets"
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "group-add", "name": "素材"})
+        g2 = (json.loads(raw or b"{}").get("id") or "")
+        check("新建分组会在资产目录里建同名文件夹",
+              status == 200 and (adir / "素材").is_dir(), str(adir / "素材"))
+
+        # 画布上的图服务端看不见，收进库时由前端把字节带上来（这里模拟那段 base64）
+        png = b"\x89PNG\r\n\x1a\n" + b"smoke-test-bytes"
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "import", "items": [
+            {"key": "canvas:demo:1:0", "filename": "小图.png",
+             "data": base64.b64encode(png).decode("ascii")}]})
+        got = json.loads(raw or b"{}")
+        check("收进库：把画布上的图复制进资产目录（磁盘上真有这个文件）",
+              status == 200 and got.get("imported") == 1 and (adir / "小图.png").read_bytes() == png,
+              f"imported={got.get('imported')} 目录={[p.name for p in adir.iterdir()] if adir.is_dir() else '无'}")
+
+        status, raw = request(base, "/api/assets?limit=50")
+        listed = json.loads(raw or b"{}")
+        libs = [it for it in (listed.get("items") or []) if it.get("source") == "lib"]
+        check("列表里出现库内文件：source=lib、key 以 lib: 开头、url 指向 /api/assets/file",
+              len(libs) == 1 and libs[0]["key"].startswith("lib:")
+              and libs[0]["url"].startswith("/api/assets/file?path="),
+              json.dumps(libs[:1], ensure_ascii=False))
+
+        status, raw = request(base, libs[0]["url"] if libs else "/api/assets/file?path=x")
+        check("按 url 能把库内文件取回来（字节一致）", status == 200 and raw == png, f"HTTP {status} {len(raw)}B")
+
+        status, _ = request(base, "/api/assets/file?path=" + urllib.parse.quote("../asset-lib.json"))
+        check("目录穿越：拿不到资产目录之外的文件", status == 400, f"HTTP {status}")
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "assign", "keys": [libs[0]["key"]], "group": g2})
+        check("移动库内文件：真的搬到分组文件夹里（不是只改列表）",
+              status == 200 and (adir / "素材" / "小图.png").is_file()
+              and not (adir / "小图.png").exists(), str(adir / "素材"))
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "rename", "key": "lib:素材/小图.png", "name": "封面"})
+        rn = json.loads(raw or b"{}")
+        check("改名：磁盘上的文件名跟着变，扩展名自动保留",
+              status == 200 and (adir / "素材" / "封面.png").is_file() and rn.get("key") == "lib:素材/封面.png",
+              json.dumps({k: rn.get(k) for k in ("key", "filename")}, ensure_ascii=False))
+
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "delete", "keys": ["lib:素材/封面.png"]})
+        dl = json.loads(raw or b"{}")
+        trash = adir / ".trash"
+        check("删除库内文件：移进 .trash，原位置不再有（删错了还能自己捞回来）",
+              status == 200 and dl.get("trashed") == 1 and not (adir / "素材" / "封面.png").exists()
+              and any(p.name.endswith("封面.png") for p in trash.iterdir()), str(trash))
+
+        newroot = data_dir / "pics"
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "root-set", "path": str(newroot)})
+        rs = json.loads(raw or b"{}")
+        check("改存放路径：文件搬到新目录，配置里记的是新路径",
+              status == 200 and rs.get("moved") == 0 and newroot.is_dir()
+              and json.loads((data_dir / "asset-lib.json").read_text(encoding="utf-8"))["root"] == str(newroot),
+              json.dumps(rs, ensure_ascii=False))
+
+        status, _ = request(base, "/api/assets/lib", "POST", {"op": "root-set", "path": "相对路径/assets"})
+        check("改路径只收绝对路径（相对路径会跟着启动目录飘）", status == 400, f"HTTP {status}")
 
         # 文件坏了：留档后从空库开始，绝不覆盖——这个文件手改不回来
         libfile.write_text("{ broken", encoding="utf-8")

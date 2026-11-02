@@ -26,7 +26,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
 | 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅。ws 一个数都没有时，`/api/job` 退一步去读 ComfyUI 控制台日志（`/internal/logs/raw`）里 tqdm 的百分比兜底 |
-| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表） |
+| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `data/assets/`（资产库的图片本体，可换到别的盘） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
 几个不显眼但重要的点：
@@ -363,41 +363,60 @@ CSS 四条 `[data-dock="…"]` 规则分别定位（底部/左侧/右侧/顶部�
   两者互相等对方）；这里用 `height:0 + padding-bottom:100%` + `img` 绝对定位。
 - `#lightbox` 挂着「点一下就关」，所以抽屉必须 `stopPropagation`，否则在里面选文字就把图关了。
 
-**资产抽屉（`/api/assets`）的取舍：只索引，不复制。**
+**资产库：一个真实目录 + 两路只读索引。**
+
+2026-11-02 改版。上一版只有索引：分组是个标签、删除只是藏起来，用户没法真正组织自己的图。
+现在资产库落在磁盘上：
 
 ```
-history.outputs[*].images[]            → source=output   （生成结果）
-history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材）
-前端 canvasAssets()                     → source=canvas   （画布上现有的图，服务端看不到）
+<数据目录>/assets/             ← 未分组的图（默认；可改，见 asset-lib.json 的 root）
+<数据目录>/assets/人像/         ← 分组 = 子文件夹
+<数据目录>/assets/.trash/      ← 删除的库内文件（不是 unlink）
 ```
 
-不扫 `output/` 目录的原因：ComfyUI 没有列目录的接口，而每个人的输出目录位置都不同（便携版 / 秋叶版 /
-`--output-directory`），本地猜路径必然错一半；反过来 `/history` 天然只包含**真用过的**图，不会把几百张
-陈年缓存倒进来。代价是历史被清空（ComfyUI 重启）后 `output` 那部分就没了——所以画布上的图由前端补，
-离线（`comfy=false`）时抽屉也不会是空的。
+```
+assets/**（两层）                      → source=lib     （库内文件，可改名 / 移动 / 删除）
+history.outputs[*].images[]            → source=output  （生成结果，只读）
+history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，只读）
+前端 canvasAssets()                     → source=canvas  （画布上现有的图，服务端看不到）
+```
 
-**资产库的分组 / 移除（`data/asset-lib.json`）。**
+- **为什么不把 ComfyUI 的产物直接当资产库**：ComfyUI 没有列目录的接口，每个人的输出目录位置都不同
+  （便携版 / 秋叶版 / `--output-directory`），本地猜路径必然错一半。`/history` 里恰好两种都有，所以
+  仍然只**索引**它；但历史会被清空（ComfyUI 重启、清过 `output/`），想留住就得**收进库**——复制一份
+  到自己的目录。复制而不是移动：ComfyUI 那边的文件一个字不碰。
+- **分组就是文件夹**，不是标签。这样资源管理器里直接建个「人像」把图拖进去也算分类：扫目录时发现
+  没登记过的文件夹，会按目录名算一个稳定 id（`d` + md5 前 12 位）当成隐式分组返回，第一次被
+  「移动到」点名时才补一条记录。改名分组 = 改目录名，删分组 = 把文件搬回根目录（文件不删）。
+- **删除分两种，界面上一次说清**：库内文件移进 `.trash/`（带时间戳前缀，重名不覆盖），原地址立刻 404；
+  库外的（生成 / 上传 / 画布）只写 `hidden` 标记，ComfyUI 磁盘上的文件一个不动。理由：前者是自己的
+  文件，删错了还能去 `.trash` 捞；后者不是我们的文件，替用户删等于不可逆地毁掉他的产出。
+- **改名只对库内文件开放**：库外的名字来自 `/history`，改了下次读历史又变回去，是个假动作。
+- **`/api/assets/file` 必须挡目录穿越**：`lib:相对路径` → `(root / rel).resolve()` 后要落在 `root` 之内，
+  `../`、绝对路径、别的盘一律 400。这个接口是唯一一个按用户给的路径读文件的入口。
 
-「资产」只是一份索引，本身没有归属；分组、勾选、移除这三样是**用户自己加的**，ComfyUI 一概不知道，
-所以单独存一个文件：
+**资产库的用户数据（`data/asset-lib.json`）。**
 
 ```jsonc
-{ "groups": [{ "id": "g1a19...", "name": "人像" }],
+{ "root": "D:/InfiSheet/assets",                       // 空 = 用默认 <数据目录>/assets
+  "groups": [{ "id": "g1a19...", "name": "人像", "dir": "人像" }],
   "items":  { "output:/a.png": { "group": "g1a19...", "hidden": true } } }
 ```
 
-- **键不是文件名**，是 `asset_key()` 拼的 `source:subfolder/filename`。`output/` 和 `input/` 里可以有
-  同名文件，只按文件名归组会把两张完全不同的图认成一张，删一张连另一张一起消失。
-  画布上的图服务端看不见，它的键由前端按同一套规则拼 `canvas:项目:节点:序号`——
-  两边必须一致，改规则等于清空所有人攒的分组。
-- **「删除」= 写 `hidden: true`，不删磁盘文件。** 资产是 ComfyUI 的产物，删文件不可逆；用户点「删除」
-  时想的多半只是「别在这儿烦我」。所以底部留一颗「已移除 N 项」，点一下全部放回（分组归属还在）。
+- **键不是文件名**，是 `asset_key()` 拼的 `source:subfolder/filename`（库内是 `lib:相对路径`）。
+  `output/` 和 `input/` 里可以有同名文件，只按文件名归组会把两张完全不同的图认成一张，
+  删一张连另一张一起消失。画布上的图服务端看不见，它的键由前端按同一套规则拼
+  `canvas:项目:节点:序号`——两边必须一致，改规则等于清空所有人攒的分组。
+- `items` 里只存**库外**来源的归属与隐藏；库内文件的归属由它所在的文件夹决定，不重复记。
 - 只存有信息量的条目：既没分组也没隐藏的直接不落盘，否则文件会随着用越攒越大。
-- 删分组时组内资产**回「未分组」而不是跟着删**，并且顺手把空条目清掉。
 - 落盘走临时文件 + `os.replace`；读坏了**不覆盖**——先改名留档 `.bad-时间戳`，再从空库开始，
   直接覆盖等于把用户攒的分组一次抹掉，而这个文件手改不回来。
 - 写操作只有一个入口 `POST /api/assets/lib`，靠 `op` 分发（`group-add` / `group-rename` /
-  `group-remove` / `assign` / `hide`）。回包一律带最新的 `groups` + `meta`，前端一次往返就能刷完。
+  `group-remove` / `assign` / `hide` / `import` / `rename` / `delete` / `root-set`）。
+  回包一律带最新的 `groups` + `meta` + `root`，前端一次往返就能刷完。
+- **`root-set` 换目录**：新目录必须是绝对路径、不能是当前目录的上下级（会自己搬自己），
+  逐个文件搬（跨盘自动退化成复制 + 删除），`failed` 里如实列出搬不动的；回收站不搬。
+  新目录正好是默认目录时把 `root` 存成空串，这样以后跟着数据目录走。
 - 前端的多选态是**独立的开关**（`assetPicking`）：开着时单击是勾选而不是开大图，`Shift` 从锚点连选；
   被筛掉的勾选会自动作废——看不见的东西不该被「删除」顺手带走。
 

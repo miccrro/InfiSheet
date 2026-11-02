@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -969,7 +970,7 @@ def history_summary(limit: int = 20) -> list[dict]:
 # --------------------------------------------------------------------------- #
 ASSET_CACHE: dict = {"at": 0.0, "limit": 0, "items": [], "comfy": True, "error": None}
 ASSET_TTL = 5.0          # 秒：连点刷新不该把 /history 打爆，5 秒内复用
-ASSET_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+ASSET_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".svg")
 
 
 def list_assets(limit: int = 400, force: bool = False) -> dict:
@@ -1054,6 +1055,8 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
 # --------------------------------------------------------------------------- #
 ASSET_LIB_MAX_GROUPS = 40
 ASSET_LIB_MAX_KEYS = 500          # 一次最多改 500 张：防手滑传个几十万条的数组
+ASSET_TRASH = ".trash"            # 回收站：删掉的库内文件挪进来，还能自己捞回去
+ASSET_BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def asset_lib_file() -> Path:
@@ -1065,11 +1068,59 @@ def asset_key(source: str, subfolder: str, filename: str) -> str:
     return f"{source}:{subfolder or ''}/{filename or ''}"
 
 
+def asset_root_default() -> Path:
+    """资产库默认落在数据目录下的 assets/。"""
+    return DATA / "assets"
+
+
+def asset_root(lib: dict | None = None) -> Path:
+    """资产库当前的文件目录。lib["root"] 空 = 用默认目录（跟着数据目录走）。
+
+    相对路径一律不认：它会跟着「从哪儿启动 server.py」飘，同一份配置在两台机器上
+    指的是两个地方。root-set 那边也只收绝对路径，这里再挡一次手改坏的情况。
+    """
+    raw = str((lib or {}).get("root") or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if p.is_absolute():
+            return p
+    return asset_root_default()
+
+
+def _dir_name(raw: str, gid: str, taken: set) -> str:
+    """分组名 → 目录名。同名就加 -2、-3，避免两个分组共用一个文件夹。"""
+    base = ASSET_BAD_CHARS.sub("_", str(raw or "")).strip().strip(".")[:40]
+    if base.startswith("."):                 # 别在资产目录里弄出隐藏目录
+        base = "_" + base.lstrip(".")
+    base = base or gid
+    cand, n = base, 2
+    while cand.lower() in taken:
+        cand = f"{base}-{n}"
+        n += 1
+    taken.add(cand.lower())
+    return cand
+
+
+def _clean_dir(raw: str) -> str:
+    return ASSET_BAD_CHARS.sub("_", str(raw or "")).strip().strip(".")[:40]
+
+
+def _implicit_gid(dirname: str) -> str:
+    """磁盘上自己建的文件夹 → 稳定的分组 id。
+
+    用户完全可能在资源管理器里直接建个「人像」文件夹把图拖进去——那也是分类，
+    没道理在应用里看不见。id 由目录名算出来，所以不用落盘也能对上，改名之前一直有效。
+    """
+    return "d" + hashlib.md5(dirname.encode("utf-8")).hexdigest()[:12]
+
+
 def _clean_asset_lib(raw) -> dict:
     """把读进来 / 传进来的东西洗成能用的样子。某一条不合法就丢那一条，不整份作废。"""
     if not isinstance(raw, dict):
-        return {"groups": [], "items": {}}
+        return {"root": "", "groups": [], "items": {}}
+    root = str(raw.get("root") or "").strip()[:500]
     groups, seen = [], set()
+    dirs = {ASSET_TRASH}                     # 回收站的名字不许被分组占用
     for it in raw.get("groups") or []:
         if not isinstance(it, dict):
             continue
@@ -1078,7 +1129,13 @@ def _clean_asset_lib(raw) -> dict:
         if not gid or not name or not CAT_ID_RE.match(gid) or gid in seen:
             continue
         seen.add(gid)
-        groups.append({"id": gid, "name": name})
+        # 目录名跟着分组走：老数据没有 dir 的，按名字补一个
+        d = _clean_dir(it.get("dir") or "")
+        if not d or d.lower() in dirs:
+            d = _dir_name(name, gid, dirs)
+        else:
+            dirs.add(d.lower())
+        groups.append({"id": gid, "name": name, "dir": d})
         if len(groups) >= ASSET_LIB_MAX_GROUPS:
             break
     items: dict = {}
@@ -1092,7 +1149,7 @@ def _clean_asset_lib(raw) -> dict:
         hidden = bool(v.get("hidden"))
         if gid or hidden:             # 既没分组也没隐藏的条目没有信息量，不占文件
             items[key] = {"group": gid, "hidden": hidden}
-    return {"groups": groups, "items": items}
+    return {"root": root, "groups": groups, "items": items}
 
 
 def load_asset_lib() -> dict:
@@ -1105,14 +1162,14 @@ def load_asset_lib() -> dict:
     try:
         raw = json.loads(f.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return {"groups": [], "items": {}}
+        return {"root": "", "groups": [], "items": {}}
     except Exception:  # noqa: BLE001
         try:
             f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
             print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空库开始")
         except OSError:
             pass
-        return {"groups": [], "items": {}}
+        return {"root": "", "groups": [], "items": {}}
     return _clean_asset_lib(raw)
 
 
@@ -1127,42 +1184,179 @@ def save_asset_lib(data: dict) -> dict:
     return clean
 
 
+def _safe_asset_name(raw, fallback: str = "image") -> str:
+    """用户输入的文件名 → 能落盘的干净名字。"""
+    name = str(raw or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = ASSET_BAD_CHARS.sub("_", name).strip().strip(".")
+    if not name:
+        name = fallback
+    if not name.lower().endswith(ASSET_IMAGE_EXT):
+        name += ".png"
+    return name[:80]
+
+
+def _unique_path(folder: Path, name: str) -> Path:
+    """同名就加 -1、-2。收进库时两张同名的图不该互相覆盖。"""
+    p = folder / name
+    if not p.exists():
+        return p
+    stem, suf = os.path.splitext(name)
+    n = 1
+    while True:
+        cand = folder / f"{stem}-{n}{suf}"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def asset_file_path(root: Path, key: str) -> Path:
+    """库内键 → 磁盘路径。越界（../、绝对路径、别的盘）一律拒。"""
+    if not key.startswith("lib:"):
+        raise ValueError("只有资产库自己的文件能这样操作")
+    rel = key[4:]
+    if not rel or rel.startswith("/") or ".." in Path(rel).parts:
+        raise ValueError("路径非法")
+    root_r = root.resolve()
+    p = (root_r / rel).resolve()
+    if p != root_r and root_r not in p.parents:
+        raise ValueError("路径越界")
+    return p
+
+
+def scan_assets(root: Path, groups: list[dict]) -> tuple[list[dict], list[dict]]:
+    """扫资产目录：root 下的图（未分组）+ root/组目录/图（各分组）。
+
+    返回 (文件列表, 目录里发现但还没登记的分组)。第二项是给「用户自己在资源管理器里
+    建的文件夹」用的——那些文件夹也是分类，得在应用里看得见，不能只当未分组。
+    只认两层：再深的目录不当资产——那是用户自己搞的子分类，不该被列出来又被「移动到」搬走。
+    """
+    out: list[dict] = []
+    implicit: list[dict] = []
+    if not root.is_dir():
+        return out, implicit
+    by_dir = {g["dir"].lower(): g["id"] for g in groups}
+
+    def push(p: Path, sub: str, gid: str) -> None:
+        if p.suffix.lower() not in ASSET_IMAGE_EXT:
+            return
+        try:
+            st = p.stat()
+        except OSError:
+            return
+        rel = p.relative_to(root).as_posix()
+        out.append({
+            "filename": p.name, "subfolder": sub, "type": "lib", "source": "lib",
+            "url": "/api/assets/file?path=" + urllib.parse.quote(rel),
+            "key": "lib:" + rel, "group": gid, "hidden": False,
+            "size": st.st_size, "mtime": int(st.st_mtime * 1000),
+        })
+
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return out, implicit
+    for p in entries:
+        try:
+            if p.is_dir():
+                if p.name == ASSET_TRASH:
+                    continue
+                gid = by_dir.get(p.name.lower())
+                if not gid:
+                    gid = _implicit_gid(p.name)
+                    implicit.append({"id": gid, "name": p.name[:20], "dir": p.name,
+                                     "implicit": True})
+                for f in p.iterdir():
+                    if f.is_file():
+                        push(f, p.name, gid)
+            elif p.is_file():
+                push(p, "", "")
+        except OSError:
+            continue
+    out.sort(key=lambda it: it["mtime"], reverse=True)
+    implicit.sort(key=lambda g: g["name"])
+    return out, implicit
+
+
+def _drop_empty_dirs(root: Path, groups: list[dict]) -> None:
+    """组目录搬空之后顺手删掉，别在资产目录里留一堆空文件夹。"""
+    for g in groups:
+        d = root / g["dir"]
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+
+
 def _assets_with_lib(items: list[dict], limit: int, *, cached: bool,
                      comfy: bool, error) -> dict:
     """把 ComfyUI 那边的结果和本地资产库贴在一起返回。
 
+    库内文件是**真实目录**（root/组名/文件），每次请求现扫：几百个文件的 iterdir
+    比一次 HTTP 往返便宜得多，改了名、挪了组也能立刻看到。
     分组 / 隐藏是本地文件，随时会被改，所以每次请求都重新贴一遍，不进 ASSET_CACHE
     ——缓存里存的应该只是 ComfyUI 的历史，不是用户的分组。
     画布上的图由前端合并，它拿不到服务端贴的字段，所以额外把整张 meta 表一起返回。
     """
     lib = load_asset_lib()
-    out = []
+    root = asset_root(lib)
+    local, implicit = scan_assets(root, lib["groups"])
+    out = list(local)
     for it in items[:limit]:
         key = asset_key(it.get("source", ""), it.get("subfolder", ""), it.get("filename", ""))
         meta = lib["items"].get(key) or {}
         out.append({**it, "key": key, "group": meta.get("group") or "",
                     "hidden": bool(meta.get("hidden"))})
-    return {"ok": True, "items": out, "groups": lib["groups"], "meta": lib["items"],
+    return {"ok": True, "items": out[:limit], "groups": lib["groups"] + implicit,
+            "meta": lib["items"], "root": str(root), "rootDefault": not lib.get("root"),
             "comfy": comfy, "cached": cached, "error": error}
+
+
+def _move_file(src: Path, dest: Path) -> None:
+    """搬文件。跨盘（换到 D:）时 shutil.move 会自动退化成「复制 + 删除」。"""
+    shutil.move(str(src), str(dest))
+
+
+def _fetch_comfy_asset(key: str) -> bytes:
+    """从 ComfyUI 取回一张图的字节。key 是 output:/input: 开头的那种。"""
+    source, _, rest = key.partition(":")
+    if source not in ("output", "input"):
+        raise ValueError("这张图不在 ComfyUI 里，没法收进库")
+    subfolder, _, filename = rest.rpartition("/")
+    if not filename:
+        raise ValueError("键里没有文件名")
+    qs = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": source})
+    status, _, raw = comfy_request("GET", f"/view?{qs}", timeout=120)
+    if status != 200 or not raw:
+        raise ValueError(f"ComfyUI 取图失败（HTTP {status}）")
+    return raw
 
 
 def asset_lib_apply(payload: dict) -> dict:
     """资产库的写操作。全部走一个入口，op 决定动作：
 
-        group-add    {name}           → 新建分组，返回新 id
-        group-rename {id, name}       → 分组改名
-        group-remove {id}             → 删分组，组内资产回「未分组」（资产本身不动）
-        assign       {keys, group}    → 批量移动，group 空串 = 未分组
-        hide         {keys, hidden}   → 批量从资产库移除 / 恢复
+        group-add    {name}           → 新建分组（顺便在磁盘上建同名目录）
+        group-rename {id, name}       → 分组改名（目录跟着改）
+        group-remove {id}             → 删分组，组内文件搬回未分组（文件本身不删）
+        assign       {keys, group}    → 批量移动：库内文件真搬目录，外部来源只记归属
+        hide         {keys, hidden}   → 外部来源的「从列表移除 / 恢复」
+        import       {items, group}   → 把 ComfyUI 的图 / 画布上的图复制进库
+        rename       {key, name}      → 库内文件改名（同一个目录里原地改）
+        delete       {keys}           → 库内文件移进 .trash，外部来源只写 hidden
+        root-set     {path}           → 换存放目录，把现有文件一起搬过去
 
-    「移除」只写 hidden 标记，不删磁盘上的文件——资产是 ComfyUI 的产物，删文件是不可逆的，
-    而用户点「删除」时想的多半只是「别在这儿烦我」。
+    两条底线：
+      · **只动资产库自己目录里的文件**。ComfyUI 的 output/ 一个字都不碰——
+        「删除」对库外的图只是从列表里移除，磁盘上还在。
+      · 库内删除是**移进 .trash**，不是 unlink。删错了还能自己去目录里捞回来。
     """
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是对象")
     op = str(payload.get("op") or "")
     lib = load_asset_lib()
+    root = asset_root(lib)
     groups, items = lib["groups"], lib["items"]
+    state = {"root": lib.get("root") or ""}
 
     def keys_of() -> list[str]:
         raw = payload.get("keys")
@@ -1180,8 +1374,26 @@ def asset_lib_apply(payload: dict) -> dict:
         return out
 
     def done(extra: dict | None = None) -> dict:
-        saved = save_asset_lib({"groups": groups, "items": items})
-        return {"ok": True, "groups": saved["groups"], "meta": saved["items"], **(extra or {})}
+        saved = save_asset_lib({"root": state["root"], "groups": groups, "items": items})
+        return {"ok": True, "groups": saved["groups"], "meta": saved["items"],
+                "root": str(asset_root(saved)), **(extra or {})}
+
+    def group_of(gid: str):
+        """按 id 找分组。磁盘上自己建的文件夹（隐式分组）第一次被点名时补一条记录，
+        之后就和正常分组一样——不然「移动到那个文件夹」会报「分组不存在」。"""
+        g = next((x for x in groups if x["id"] == gid), None)
+        if g or not gid:
+            return g
+        try:
+            found = [p.name for p in root.iterdir() if p.is_dir() and p.name != ASSET_TRASH]
+        except OSError:
+            found = []
+        d = next((n for n in found if _implicit_gid(n) == gid), None)
+        if not d:
+            return None
+        g = {"id": gid, "name": d[:20], "dir": d}
+        groups.append(g)
+        return g
 
     if op == "group-add":
         name = str(payload.get("name") or "").strip()[:20]
@@ -1194,13 +1406,25 @@ def asset_lib_apply(payload: dict) -> dict:
         gid = "g" + format(int(time.time() * 1000), "x")
         while any(g["id"] == gid for g in groups):      # 同一毫秒连点两次
             gid += "x"
-        groups.append({"id": gid, "name": name})
-        return done({"id": gid, "name": name})
+        taken = {g["dir"].lower() for g in groups} | {ASSET_TRASH}
+        # 磁盘上已经有同名文件夹（用户自己建的）就直接接管，别另开一个「人像-2」
+        base = _clean_dir(name)
+        if base and (root / base).is_dir() and base.lower() not in taken:
+            d = base
+            taken.add(base.lower())
+        else:
+            d = _dir_name(name, gid, taken)
+        groups.append({"id": gid, "name": name, "dir": d})
+        try:
+            (root / d).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass                     # 目录建不出来不影响分组本身，第一次放图时会再试
+        return done({"id": gid, "name": name, "dir": d})
 
     if op == "group-rename":
         gid = str(payload.get("id") or "").strip()
         name = str(payload.get("name") or "").strip()[:20]
-        target = next((g for g in groups if g["id"] == gid), None)
+        target = group_of(gid)
         if not target:
             raise ValueError("分组不存在")
         if not name:
@@ -1208,42 +1432,227 @@ def asset_lib_apply(payload: dict) -> dict:
         if any(g["name"] == name and g["id"] != gid for g in groups):
             raise ValueError("已经有同名分组了")
         target["name"] = name
-        return done()
+        taken = {g["dir"].lower() for g in groups if g["id"] != gid} | {ASSET_TRASH}
+        newdir = _dir_name(name, gid, taken)
+        if newdir != target["dir"]:
+            src, dst = root / target["dir"], root / newdir
+            if not src.is_dir():
+                target["dir"] = newdir          # 目录还没建过，直接跟着改
+            elif not dst.exists():
+                try:
+                    os.replace(src, dst)        # 同盘改目录名，一次系统调用
+                    target["dir"] = newdir
+                except OSError:
+                    pass                        # 挪不动就沿用老目录名，分组照样改名
+        return done({"id": gid, "name": name, "dir": target["dir"]})
 
     if op == "group-remove":
         gid = str(payload.get("id") or "").strip()
-        if not any(g["id"] == gid for g in groups):
+        target = group_of(gid)
+        if not target:
             raise ValueError("分组不存在")
-        groups = [g for g in groups if g["id"] != gid]
+        moved = 0
+        d = root / target["dir"]
+        if d.is_dir():
+            # 组里还有文件：搬回未分组，不能连文件一起消失
+            for f in list(d.iterdir()):
+                if not f.is_file():
+                    continue
+                try:
+                    _move_file(f, _unique_path(root, f.name))
+                    moved += 1
+                except OSError:
+                    pass
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        groups.remove(target)
         for key, meta in list(items.items()):
             if meta.get("group") == gid:
                 meta["group"] = ""
                 if not meta.get("hidden"):
                     items.pop(key)          # 回未分组、也没隐藏 → 这条没信息量了
-        return done()
+        return done({"moved": moved})
 
     if op == "assign":
         gid = str(payload.get("group") or "").strip()
-        if gid and not any(g["id"] == gid for g in groups):
+        g = group_of(gid)
+        if gid and not g:
             raise ValueError("分组不存在")
         keys = keys_of()
+        dest = (root / g["dir"]) if g else root
+        files = 0
         for key in keys:
-            meta = items.setdefault(key, {"group": "", "hidden": False})
-            meta["group"] = gid
-            if not gid and not meta.get("hidden"):
-                items.pop(key)
-        name = next((g["name"] for g in groups if g["id"] == gid), "")
-        return done({"moved": len(keys), "group": gid, "name": name})
+            if key.startswith("lib:"):
+                # 库内文件：真的搬目录。分类就是文件夹结构，用户在资源管理器里也看得懂。
+                try:
+                    p = asset_file_path(root, key)
+                except ValueError:
+                    continue
+                if not p.is_file() or p.parent == dest:
+                    continue
+                try:
+                    dest.mkdir(parents=True, exist_ok=True)
+                    _move_file(p, _unique_path(dest, p.name))
+                    files += 1
+                except OSError:
+                    pass
+            else:
+                meta = items.setdefault(key, {"group": "", "hidden": False})
+                meta["group"] = gid
+                if not gid and not meta.get("hidden"):
+                    items.pop(key)
+        _drop_empty_dirs(root, groups)
+        return done({"moved": len(keys), "files": files, "group": gid,
+                     "name": g["name"] if g else ""})
 
     if op == "hide":
         hidden = bool(payload.get("hidden"))
         keys = keys_of()
         for key in keys:
+            if key.startswith("lib:"):
+                continue                  # 库内文件走 delete（进回收站），不写 hidden
             meta = items.setdefault(key, {"group": "", "hidden": False})
             meta["hidden"] = hidden
             if not hidden and not meta.get("group"):
                 items.pop(key)
         return done({"changed": len(keys), "hidden": hidden})
+
+    if op == "import":
+        raw = payload.get("items")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("没有要收进库的图")
+        if len(raw) > ASSET_LIB_MAX_KEYS:
+            raise ValueError(f"一次最多收 {ASSET_LIB_MAX_KEYS} 张")
+        gid = str(payload.get("group") or "").strip()
+        g = group_of(gid)
+        if gid and not g:
+            raise ValueError("分组不存在")
+        dest = (root / g["dir"]) if g else root
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"建不了目录：{exc}") from exc
+        ok, failed = 0, []
+        for it in raw:
+            if not isinstance(it, dict):
+                continue
+            key = str(it.get("key") or "")[:300]
+            name = _safe_asset_name(it.get("filename") or key.rsplit("/", 1)[-1])
+            try:
+                blob = it.get("data")
+                if blob:
+                    # 画布上的图服务端根本看不见，只能由前端把字节带上来
+                    blob = base64.b64decode(str(blob).split(",", 1)[-1], validate=False)
+                else:
+                    blob = _fetch_comfy_asset(key)
+                if not blob:
+                    raise ValueError("取回来是空的")
+                _unique_path(dest, name).write_bytes(blob)
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{name}: {exc}")
+        return done({"imported": ok, "failed": failed[:20], "group": gid})
+
+    if op == "rename":
+        key = str(payload.get("key") or "").strip()[:300]
+        try:
+            p = asset_file_path(root, key)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        if not p.is_file():
+            raise ValueError("文件不在了（可能被挪走了），刷新一下再试")
+        name = str(payload.get("name") or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+        name = ASSET_BAD_CHARS.sub("_", name).strip().strip(".")[:80]
+        if not name:
+            raise ValueError("名字不能为空")
+        if not name.lower().endswith(p.suffix.lower()):
+            name += p.suffix               # 用户只改主名，扩展名替他保留
+        target = p.with_name(name)
+        if target != p:
+            if target.exists():
+                raise ValueError("同一个文件夹里已经有同名文件")
+            os.replace(p, target)
+        rel = target.relative_to(root.resolve()).as_posix()
+        return {"ok": True, "key": "lib:" + rel, "filename": target.name,
+                "url": "/api/assets/file?path=" + urllib.parse.quote(rel),
+                "groups": groups, "meta": items}
+
+    if op == "delete":
+        keys = keys_of()
+        trashed = hidden = 0
+        trash = root / ASSET_TRASH
+        for key in keys:
+            if key.startswith("lib:"):
+                try:
+                    p = asset_file_path(root, key)
+                except ValueError:
+                    continue
+                if not p.is_file():
+                    continue
+                try:
+                    trash.mkdir(parents=True, exist_ok=True)
+                    stamp = time.strftime("%Y%m%d-%H%M%S")
+                    dest = trash / f"{stamp}-{p.name}"
+                    n = 2
+                    while dest.exists():
+                        dest = trash / f"{stamp}-{n}-{p.name}"
+                        n += 1
+                    _move_file(p, dest)
+                    trashed += 1
+                except OSError:
+                    pass
+            else:
+                items.setdefault(key, {"group": "", "hidden": False})["hidden"] = True
+                hidden += 1
+        _drop_empty_dirs(root, groups)
+        return done({"trashed": trashed, "hidden": hidden})
+
+    if op == "root-set":
+        raw = str(payload.get("path") or "").strip()
+        if not raw:
+            raise ValueError("路径不能为空")
+        new = Path(raw).expanduser()
+        if not new.is_absolute():
+            raise ValueError("请写绝对路径，例如 D:/InfiSheet/assets")
+        try:
+            new = new.resolve()
+        except OSError as exc:
+            raise ValueError(f"路径不可用：{exc}") from exc
+        old = root.resolve() if root.exists() else root
+        if new == old:
+            return done({"moved": 0})
+        if old in new.parents or new in old.parents:
+            raise ValueError("新目录不能在当前目录的里面或外面（会自己搬自己）")
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"建不了目录：{exc}") from exc
+        moved, failed = 0, []
+        if old.is_dir():
+            for entry in sorted(old.iterdir()):
+                if entry.name == ASSET_TRASH:
+                    continue              # 回收站跟着新目录重新开始，不搬旧垃圾
+                try:
+                    if entry.is_dir():
+                        sub = new / entry.name
+                        sub.mkdir(parents=True, exist_ok=True)
+                        for f in sorted(entry.iterdir()):
+                            if f.is_file():
+                                _move_file(f, _unique_path(sub, f.name))
+                                moved += 1
+                        try:
+                            entry.rmdir()
+                        except OSError:
+                            pass
+                    elif entry.is_file():
+                        _move_file(entry, _unique_path(new, entry.name))
+                        moved += 1
+                except OSError as exc:
+                    failed.append(f"{entry.name}: {exc}")
+        state["root"] = "" if new == asset_root_default().resolve() else str(new)
+        return done({"moved": moved, "failed": failed[:20]})
 
     raise ValueError(f"不认识的操作：{op or '（空）'}")
 
@@ -1816,6 +2225,23 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(limit, 2000))
             force = (query.get("refresh") or [""])[0] in ("1", "true", "yes")
             return self.json_out(list_assets(limit, force))
+
+        if path == "/api/assets/file":
+            # 资产库自己目录里的图。只认 root 之内的相对路径，越界一律 400（见 asset_file_path）。
+            rel = (query.get("path") or [""])[0]
+            try:
+                p = asset_file_path(asset_root(load_asset_lib()), "lib:" + rel)
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            if not p.is_file():
+                return self.fail("文件不存在", 404)
+            ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+            try:
+                body = p.read_bytes()
+            except OSError as exc:
+                return self.fail(f"读不了文件：{exc}", 500)
+            # _send 已经带了 no-store：改名 / 挪组之后 URL 会变，缓存反而容易看到旧图
+            return self._send(200, body, ctype)
 
         if path == "/api/view":
             qs = urllib.parse.urlencode({k: v[0] for k, v in query.items()})

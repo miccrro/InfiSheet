@@ -2932,21 +2932,27 @@
     });
   }
   /* ---------------- 资产库 ----------------
-   * 「用过的图」以前散在三处：画布节点上、生成器节点的 gallery 里、ComfyUI 的 output/ 里。
-   * 换个画布就再也找不回来。这里把它们汇到一块：当前画布上的图 + ComfyUI 历史里
-   * 的生成结果 + 历史上传过的素材（LoadImage 引用过的）。
-   * 只做索引，不复制文件——本地一个 4096 的 png 就 10MB 起，复制等于把磁盘翻倍。
+   * 以前这里只是个**索引**：把画布上的图、ComfyUI 的 output/ 与 input/ 汇在一起看，
+   * 但用户没法组织它——分组只是个标签，删除只是藏起来。
+   *
+   * 现在资产库有自己的**真实目录**（默认 <数据目录>/assets，可改，见路径行）：
+   *   assets/            ← 未分组的图
+   *   assets/人像/        ← 分组的图（分组 = 子文件夹，资源管理器里也看得懂）
+   *   assets/.trash/     ← 删除的图（移进来，不 unlink，还能自己捞回去）
+   * ComfyUI 的图仍然是**只读索引**，想留住就「收进库」复制一份进来——复制之前
+   * 那边删了输出目录就再也找不回来。库内文件可以改名、换组、删除；库外的一律不碰。
    *
    * 分组 / 归属 / 移除是**本项目自己的用户数据**，落在服务端的 data/asset-lib.json
    * （见 server.py 的 asset_lib_apply）。画布上的图服务端根本看不见，所以它的键得在前端拼，
    * 规则必须和服务端 asset_key() 对得上：canvas:项目:节点:序号。
    */
   let assetItems = null;          // null=还没拉过；数组=已加载
-  let assetTab = 'all';           // 来源：all / output / canvas / input
+  let assetTab = 'all';           // 来源：all / lib / output / canvas / input
   let assetQuery = '';
   let assetGroup = 'all';         // 分组：all / none（未分组）/ <gid>
-  let assetGroups = [];           // [{id,name}]，服务端那份分组表
-  let assetMeta = {};             // key -> {group, hidden}
+  let assetGroups = [];           // [{id,name,dir}]，服务端那份分组表
+  let assetMeta = {};             // key -> {group, hidden}（只对外部来源有意义）
+  let assetRoot = '';             // 资产库当前的存放目录（服务端给的绝对路径）
   let assetPicking = false;       // 是否在多选态
   let assetPicked = new Set();    // 多选态里勾上的 key
   let assetLastIdx = -1;          // Shift 连选的锚点（当前筛选结果里的下标）
@@ -2959,6 +2965,20 @@
   // 一张图在资产库里的唯一键。远端图服务端已经给好了 key，画布图得自己拼。
   function assetKeyOf(item) {
     return item.key || `${item.source}:${item.subfolder || ''}/${item.filename || ''}`;
+  }
+
+  // 把一张图（dataURL / /api/view / /api/assets/file）读成 base64。
+  // 画布上的图服务端看不见，收进库时只能由这边把字节带上去。
+  async function assetBlobBase64(url) {
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    let bin = '';
+    // 分块拼字符串：一次 apply 十几万个参数会爆栈
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(bin);
   }
 
   // 当前画布上的图：节点的图 + 生成器节点的整组结果（其余几张也要能找回来）
@@ -2984,11 +3004,12 @@
     return out;
   }
 
-  // 服务端返回的分组表 / 归属表：写操作的回包也带这两样，所以一次往返就能刷完
+  // 服务端返回的分组表 / 归属表 / 存放目录：写操作的回包也带这几样，所以一次往返就能刷完
   function applyAssetLib(res) {
     if (!res) return;
     if (Array.isArray(res.groups)) assetGroups = res.groups;
     if (res.meta && typeof res.meta === 'object') assetMeta = res.meta;
+    if (typeof res.root === 'string' && res.root) assetRoot = res.root;
   }
 
   async function loadAssets(force) {
@@ -3007,9 +3028,9 @@
     const q = assetQuery.trim().toLowerCase();
     return (assetItems || []).filter((it) => {
       const meta = assetMeta[assetKeyOf(it)] || {};
-      if (meta.hidden) return false;              // 「移除」= 从资产库藏起来，磁盘文件还在
+      if (meta.hidden) return false;              // 外部来源的「移除」：只是不再列出来
       if (assetTab !== 'all' && it.source !== assetTab) return false;
-      const g = meta.group || '';
+      const g = it.group || meta.group || '';
       if (assetGroup === 'none' && g) return false;
       if (assetGroup !== 'all' && assetGroup !== 'none' && g !== assetGroup) return false;
       if (q && !String(it.filename || '').toLowerCase().includes(q)) return false;
@@ -3057,28 +3078,35 @@
         <header>
           <strong>资产库</strong>
           <span class="asset-n"></span>
+          <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史">⟳</button>
           <button type="button" class="x" title="关闭（Esc）">×</button>
         </header>
         <div class="asset-bar">
-          <input class="asset-q" placeholder="搜索文件名…" spellcheck="false" />
           <div class="asset-row">
-            <div class="asset-tabs">
-              <button type="button" data-k="all" class="on">全部</button>
-              <button type="button" data-k="output">生成</button>
-              <button type="button" data-k="canvas">画布</button>
-              <button type="button" data-k="input">上传</button>
-            </div>
-            <button type="button" class="asset-pick" title="多选：移动分组 / 从资产库移除">选择</button>
-            <button type="button" class="asset-reload" title="重新读取 ComfyUI 的历史">刷新</button>
+            <input class="asset-q" placeholder="搜索文件名…" spellcheck="false" />
+            <button type="button" class="asset-pick" title="多选：收进库 / 移动分组 / 删除">选择</button>
+          </div>
+          <div class="asset-tabs">
+            <button type="button" data-k="all" class="on">全部</button>
+            <button type="button" data-k="lib">库</button>
+            <button type="button" data-k="output">生成</button>
+            <button type="button" data-k="canvas">画布</button>
+            <button type="button" data-k="input">上传</button>
           </div>
           <div class="asset-groups"></div>
         </div>
         <div class="asset-grid"><p class="asset-tip">读取中…</p></div>
         <div class="asset-actions"></div>
-        <p class="asset-hint">
-          <span class="asset-hint-t">单击看大图（可翻页） · 双击或点右上「＋」放入画布</span>
-          <button type="button" class="asset-restore"></button>
-        </p>
+        <div class="asset-foot">
+          <div class="asset-path">
+            <span class="asset-path-t" title=""></span>
+            <button type="button" class="asset-root">修改…</button>
+          </div>
+          <p class="asset-hint">
+            <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
+            <button type="button" class="asset-restore"></button>
+          </p>
+        </div>
       </aside>`;
     document.body.appendChild(box);
     box.querySelector('.x').onclick = closeAssetSheet;
@@ -3088,12 +3116,72 @@
     const q = box.querySelector('.asset-q');
     const groupBar = box.querySelector('.asset-groups');
     const actions = box.querySelector('.asset-actions');
+    const footEl = box.querySelector('.asset-foot');
+    const pathRow = box.querySelector('.asset-path');
+    const pathT = box.querySelector('.asset-path-t');
+    const pathBtn = box.querySelector('.asset-root');
     const hintEl = box.querySelector('.asset-hint');
     const hintT = box.querySelector('.asset-hint-t');
     const restoreBtn = box.querySelector('.asset-restore');
     const pickBtn = box.querySelector('.asset-pick');
 
     const groupName = (id) => (assetGroups.find((g) => g.id === id) || {}).name || '未分组';
+    // 当前选中的自定义分组 id；没选中（全部 / 未分组）时收进库就落未分组
+    const curGid = () => (assetGroup !== 'all' && assetGroup !== 'none' ? assetGroup : '');
+
+    /* ---------- 存放路径 ---------- */
+    // 路径只显示尾部两段：绝对路径一行放不下，全塞进去会把「修改…」挤出去。
+    const shortPath = (p) => {
+      const raw = String(p || '');
+      const sep = raw.includes('\\') ? '\\' : '/';
+      const parts = raw.split(/[\\/]+/).filter(Boolean);
+      return parts.length <= 3 ? raw : '…' + sep + parts.slice(-2).join(sep);
+    };
+    const paintPath = () => {
+      pathT.textContent = assetRoot ? shortPath(assetRoot) : '…';
+      pathT.title = assetRoot || '';
+      pathBtn.textContent = '修改…';
+    };
+    const closePathEdit = () => {
+      pathRow.innerHTML = '';
+      pathRow.append(pathT, pathBtn);
+      paintPath();
+    };
+    const editPath = () => {
+      pathRow.innerHTML = '';
+      const inp = document.createElement('input');
+      inp.className = 'asset-path-in';
+      inp.value = assetRoot;
+      inp.spellcheck = false;
+      inp.title = '资产库的文件放哪。改完会把现有文件一起搬过去。';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'prime';
+      save.textContent = '保存';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = '取消';
+      pathRow.append(inp, save, cancel);
+      inp.focus();
+      inp.select();
+      cancel.onclick = closePathEdit;
+      inp.onkeydown = (ev) => {
+        if (ev.key === 'Escape') { ev.stopPropagation(); closePathEdit(); }
+        if (ev.key === 'Enter') save.click();
+      };
+      save.onclick = async () => {
+        const v = inp.value.trim();
+        if (!v || v === assetRoot) { closePathEdit(); return; }
+        save.disabled = true;
+        const res = await assetLibPost({ op: 'root-set', path: v });
+        if (!res) { save.disabled = false; return; }
+        closePathEdit();
+        await reload(true);
+        flash(`存放目录已改（搬过去 ${res.moved || 0} 个文件）`);
+        if ((res.failed || []).length) flash(`${res.failed.length} 个文件没搬成：${res.failed[0]}`);
+      };
+    };
+    pathBtn.onclick = editPath;
 
     /* ---------- 分组 ---------- */
     // 自定义分组挂在来源页签下面一行：来源是「这张图哪来的」，分组是「我把它放哪」，
@@ -3116,13 +3204,13 @@
       const add = document.createElement('button');
       add.type = 'button';
       add.className = 'asset-g-add';
-      add.title = '新建分组';
+      add.title = '新建分组（会在存放目录里建同名文件夹）';
       add.textContent = '＋';
       add.onclick = () => newAssetGroup();
       groupBar.appendChild(add);
       // 只有选中自定义分组时才露出「改名 / 删除」：没选中就没什么可改的，
       // 常驻两颗按钮会把这一行挤爆（分组多了要横向滚动）。
-      if (assetGroup !== 'all' && assetGroup !== 'none') {
+      if (curGid()) {
         const ops = document.createElement('span');
         ops.className = 'asset-g-ops';
         const rn = document.createElement('button');
@@ -3157,7 +3245,7 @@
     const renameAssetGroup = async () => {
       const g = assetGroups.find((x) => x.id === assetGroup);
       if (!g) return;
-      const name = prompt('分组名称', g.name);
+      const name = prompt('分组名称（文件夹会跟着改名）', g.name);
       if (name == null) return;
       const v = name.trim().slice(0, 20);
       if (!v || v === g.name) return;
@@ -3170,8 +3258,8 @@
     const removeAssetGroup = async () => {
       const g = assetGroups.find((x) => x.id === assetGroup);
       if (!g) return;
-      const n = (assetItems || []).filter((it) => (assetMeta[assetKeyOf(it)] || {}).group === g.id).length;
-      const tip = n ? `\n组里 ${n} 张图会回到「未分组」，图片本身不动。` : '';
+      const n = (assetItems || []).filter((it) => (it.group || (assetMeta[assetKeyOf(it)] || {}).group) === g.id).length;
+      const tip = n ? `\n组里 ${n} 张图会回到「未分组」，文件本身不删。` : '';
       if (!confirm(`删除分组「${g.name}」？${tip}`)) return;
       if (!await assetLibPost({ op: 'group-remove', id: g.id })) return;
       assetGroup = 'all';
@@ -3191,17 +3279,60 @@
       flash(`已移动 ${keys.length} 张到「${groupName(gid)}」`);
     };
 
-    const removePicked = async () => {
-      const keys = [...assetPicked];
-      if (!keys.length) return;
-      // 说清楚「只是从资产库移除」——否则用户会以为 ComfyUI 里的文件被删了
-      if (!confirm(`从资产库移除这 ${keys.length} 项？\n\n`
-        + '只是不再列在这里，ComfyUI 磁盘上的文件不动。\n之后能在底部「已移除 N 项」里找回来。')) return;
-      if (!await assetLibPost({ op: 'hide', keys, hidden: true })) return;
+    // 收进库：库外的图复制一份到存放目录。ComfyUI 那边的历史随时可能被清，
+    // 复制进来才算真的留住了——所以这里不是「移动」，原图不会消失。
+    const importPicked = async () => {
+      const picked = assetFiltered().filter((it) => assetPicked.has(assetKeyOf(it)));
+      const out = picked.filter((it) => it.source !== 'lib');
+      if (!out.length) { flash('这些已经在库里了'); return; }
+      const payload = { op: 'import', group: curGid(), items: [] };
+      for (const it of out) {
+        const row = { key: assetKeyOf(it), filename: it.filename };
+        if (it.source === 'canvas') {
+          // 画布上的图可能是 dataURL，服务端取不到，字节得由这边带上去
+          try { row.data = await assetBlobBase64(it.url); } catch { continue; }
+        }
+        payload.items.push(row);
+      }
+      if (!payload.items.length) { flash('这几张取不到字节，没法收进库'); return; }
+      const res = await assetLibPost(payload);
+      if (!res) return;
       assetPicked.clear();
-      paintGroups();
-      paint();
-      flash(`已移除 ${keys.length} 项（文件还在）`);
+      await reload(true);
+      const fail = (res.failed || []).length;
+      flash(`已收进库 ${res.imported || 0} 张` + (fail ? `，${fail} 张失败` : ''));
+    };
+
+    const renameAsset = async (item) => {
+      const cur = String(item.filename || '');
+      const next = prompt('新名字（扩展名自动保留）', cur.replace(/\.[a-z0-9]{1,5}$/i, ''));
+      if (next == null) return;
+      const v = next.trim();
+      if (!v) return;
+      const res = await assetLibPost({ op: 'rename', key: assetKeyOf(item), name: v });
+      if (!res) return;
+      await reload(true);
+      flash('已改名：' + res.filename);
+    };
+
+    // 删除分两种，一次说清楚：库内是真进回收站，库外只是从列表移除。
+    const removePicked = async () => {
+      const picked = assetFiltered().filter((it) => assetPicked.has(assetKeyOf(it)));
+      if (!picked.length) return;
+      const inLib = picked.filter((it) => it.source === 'lib').length;
+      const outLib = picked.length - inLib;
+      const lines = [`删除这 ${picked.length} 项？`];
+      if (inLib) lines.push(`\n· 库内 ${inLib} 张移到存放目录的 .trash/（想找回可以去那个文件夹）`);
+      if (outLib) lines.push(`\n· 其余 ${outLib} 张只是不再列在这里，ComfyUI 磁盘上的文件不动`);
+      if (!confirm(lines.join(''))) return;
+      const res = await assetLibPost({ op: 'delete', keys: picked.map(assetKeyOf) });
+      if (!res) return;
+      assetPicked.clear();
+      await reload(true);
+      const bits = [];
+      if (res.trashed) bits.push(`${res.trashed} 张进了回收站`);
+      if (res.hidden) bits.push(`${res.hidden} 项已移除`);
+      flash('已删除：' + (bits.join('，') || '0 项'));
     };
 
     const setPicking = (on) => {
@@ -3217,6 +3348,7 @@
       actions.innerHTML = '';
       actions.classList.toggle('on', assetPicking);
       hintEl.classList.toggle('hidden', assetPicking);
+      footEl.classList.toggle('picking', assetPicking);
       if (!assetPicking) return;
       const n = assetPicked.size;
       // 分两行：抽屉只有 392px，五个控件挤一行会被挤成两个字的宽度。
@@ -3239,6 +3371,13 @@
 
       const row2 = document.createElement('div');
       row2.className = 'asset-arow';
+      const imp = document.createElement('button');
+      imp.type = 'button';
+      imp.className = 'asset-imp';
+      imp.textContent = '收进库';
+      imp.title = '把选中的库外图片复制一份到资产库（ComfyUI 那边不动）';
+      imp.disabled = !n;
+      imp.onclick = () => importPicked();
       const move = document.createElement('select');
       move.className = 'asset-move';
       move.title = '把选中的移到分组';
@@ -3265,7 +3404,7 @@
       cancel.type = 'button';
       cancel.textContent = '取消';
       cancel.onclick = () => setPicking(false);
-      row2.append(move, del, cancel);
+      row2.append(imp, move, del, cancel);
       actions.append(row1, row2);
     };
 
@@ -3281,14 +3420,15 @@
       nEl.textContent = list.length === total ? `${total} 项` : `${list.length} / ${total} 项`;
       restoreBtn.textContent = hiddenN ? `已移除 ${hiddenN} 项` : '';
       restoreBtn.classList.toggle('hidden', !hiddenN);
-      hintT.textContent = '单击看大图（可翻页） · 双击或点右上「＋」放入画布';
+      paintPath();
 
       grid.innerHTML = '';
       if (!list.length) {
         const why = assetQuery ? '没有匹配的文件'
-          : assetGroup !== 'all' && assetGroup !== 'none' ? '这个分组还是空的：回「全部」选几张，再用「移动到」放进来'
-            : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
-              : '还没有资产：生成一张图、或上传一张图就会出现在这里';
+          : curGid() ? '这个分组还是空的：回「全部」选几张，用「移动到」放进来'
+            : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
+              : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
+                : '还没有资产：生成一张图、或上传一张图就会出现在这里';
         grid.innerHTML = `<p class="asset-tip">${why}</p>`;
         paintActions();
         return;
@@ -3303,9 +3443,10 @@
           + (assetPicked.has(key) ? ' on' : '');
         cell.setAttribute('role', 'button');
         cell.tabIndex = 0;
-        const where = item.source === 'canvas' ? '画布上的图'
-          : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
-        cell.title = `${item.filename}\n${where}\n分组：${groupName((assetMeta[key] || {}).group || '')}`;
+        const where = item.source === 'lib' ? '资产库（存放目录里的文件）'
+          : item.source === 'canvas' ? '画布上的图'
+            : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
+        cell.title = `${item.filename}\n${where}\n分组：${groupName(item.group || (assetMeta[key] || {}).group || '')}`;
         const img = document.createElement('img');
         img.src = item.url;
         img.alt = '';
@@ -3315,7 +3456,8 @@
         name.textContent = item.filename || '（未命名）';
         const badge = document.createElement('span');
         badge.className = `asset-badge ${item.source}`;
-        badge.textContent = item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
+        badge.textContent = item.source === 'lib' ? '库'
+          : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
         const add = document.createElement('span');
         add.className = 'asset-add';
         add.title = '放入画布';
@@ -3324,6 +3466,16 @@
         const tick = document.createElement('span');
         tick.className = 'asset-tick';
         cell.append(img, badge, name, add, tick);
+        // 库内文件才能改名：库外的是 ComfyUI 的产物，改名字等于把它从历史里改名，
+        // 下次 /history 一读又变回去了。
+        if (item.source === 'lib') {
+          const rn = document.createElement('span');
+          rn.className = 'asset-add asset-rn';
+          rn.title = '改名';
+          rn.textContent = '✎';
+          rn.onclick = (ev) => { ev.stopPropagation(); renameAsset(item); };
+          cell.append(rn);
+        }
 
         cell.onclick = (ev) => {
           // 多选态下点击 = 勾选，不再是看大图（否则永远选不中）
@@ -6150,7 +6302,8 @@
 
   function assetImageInfo(item) {
     const rows = [
-      ['来源', item.source === 'canvas' ? '画布上的图' : item.source === 'input' ? '上传素材' : '生成结果'],
+      ['来源', item.source === 'lib' ? '资产库（存放目录）'
+        : item.source === 'canvas' ? '画布上的图' : item.source === 'input' ? '上传素材' : '生成结果'],
       ['文件', item.filename || ''],
     ];
     let prompt = '';
