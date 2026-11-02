@@ -2631,14 +2631,33 @@
     if (!n.gen) { flash('这个节点只放图：点标题上的「生成」把面板打开再生成'); return; }
     const g = n.gen;
     if (g.busy) return;
+    // **立刻置位**，别等真正提交（原来在下面 60 行之后才 busy = true）。
+    // 中间那一串 await 是上传参考图 / 烘焙遮罩 / 读风格，一次几秒；这期间按钮还是可点的，
+    // 用户以为没反应再点一下、再点一下，每次都从「检查 busy」那里进来，于是各提交一个任务
+    // ——一次操作出三张图，三张还都不一样（种子每次重算）。状态也一起改，
+    // 让他当场看到「已经在准备了」，而不是对着一个没反应的按钮连点。
+    const prevStatus = g.status || '';
+    g.busy = true;
+    g.status = '准备中…';
+    refreshGenPanel(n);
+    // 提前返回的几条路都得把 busy 放掉，否则这个节点就永远卡在「准备中…」
+    const bail = () => { g.busy = false; g.status = prevStatus; refreshGenPanel(n); };
     // 自动重试复用同一条队列记录：否则每重试一次就多一行，用户会以为提交了好几遍
     const keepJob = g.jobReuse && g.job ? g.job : null;
     g.jobReuse = false;
     g.retried = 0;          // 手动发起的一次生成，重置「已自动重试」标记
-    if (!g.wf) { flash('先在面板里选一个工作流'); return; }
+    if (!g.wf) { flash('先在面板里选一个工作流'); bail(); return; }
     // 扩图：先把边框烘成像素 + 遮罩，再走后面那条完全不懂扩图的生成流程。
     // 必须排在「取参考图 / 算遮罩」前面——它换的正是这两样东西。
-    if (outpaintOn(n)) await bakeOutpaint(n);
+    if (outpaintOn(n)) {
+      try {
+        await bakeOutpaint(n);
+      } catch (err) {
+        flash(`扩图准备失败：${err.message}`);
+        bail();
+        return;
+      }
+    }
     // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
     const inLinks = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
       .map((l) => getNode(l.from)).filter(Boolean);
@@ -2653,7 +2672,7 @@
     }
     const promptText = styleEntry ? applyStylePrompt(rawPrompt, styleEntry) : rawPrompt;
     // 只选了风格、没写提示词也能出图（模板本身就是完整的提示词）
-    if (!promptText.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); return; }
+    if (!promptText.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); bail(); return; }
     // 参考图全上传（能传几张算几张）。以前只传第一张：用户 @ 了两张，第二张根本进不去，
     // 提示词里还留着指代——「@ 的图识别不准」有一半是这里。
     const refs = refsOf(n);
@@ -2677,20 +2696,21 @@
     // 而它本身就是「原图 + alpha」，所以图和遮罩天然配对，不存在两个文件错位的可能。
     const mdoc = maskDocOf(n);
     const needMask = !!(mdoc && mdoc.strokes.length && n.dataURL);
-    if (!reconcileWorkflow(n, picked, needMask)) return;
+    if (!reconcileWorkflow(n, picked, needMask)) { bail(); return; }
     if (needMask) {
       try {
         const name = await uploadMaskedImage(n, mdoc);
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
         flash(`遮罩上传失败：${err.message}`);
+        bail();
         return;
       }
     }
     // 自动挑的工作流按「有没有参考图」纠正一次：有图走图生图，没图走文生图。
     // 这段逻辑已经挪进 reconcileWorkflow（上面调用），因为它必须先和遮罩对齐——
     // 分两处判断时，遮罩那边切到「局部重绘」，这边又按分类切回去，最后涂了等于没涂。
-    g.busy = true; g.status = '准备工作流…'; refreshGenPanel(n);
+    g.status = '准备工作流…'; refreshGenPanel(n);
     // 队列条目在这里就建：上传参考图、分析工作流、构建图都有可能失败，
     // 那些失败同样要能在队列里看到（否则「点了生成没反应」查无实据）。
     g.job = keepJob || newJob(n, 'image', { wf: g.wf, title: rawPrompt });

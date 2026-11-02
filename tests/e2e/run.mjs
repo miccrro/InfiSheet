@@ -4553,6 +4553,51 @@ try {
       && (hideCall.keys || []).includes('output:/e2e-auto.png'),
     JSON.stringify(hideCall));
 
+  // ---- 连点生成只提交一次 ----
+  // 准备阶段（上传参考图 / 烘焙遮罩 / 读风格）是一串 await，一次几秒。以前 busy 要等
+  // **真正提交**才置位，这期间按钮可点：用户以为没反应，再点一下、再点一下，每次都从
+  // 「检查 busy」那里进来，于是各提交一个任务——一次操作出三张图，三张还都不一样
+  // （种子每次重算）。这条用例把 /api/analyze 拖慢 600ms 来复现那个窗口。
+  const clickStorm = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const runs = [];
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/run')) { runs.push(u.slice(0, 40)); return json({ ok: true, prompt_id: 'storm' }); }
+      // 真正的窗口在**上传参考图**：它发生在 busy 置位之前，一张大图几秒。
+      // （/api/analyze 在 busy 之后，拖慢它复现不出这个问题。）
+      if (u.startsWith('/api/upload')) { await sleep(700); return json({ ok: false, error: 'offline' }); }
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/job')) {
+        if (!u.includes('storm')) return real(url, opts);
+        return json({ ok: true, status: 'success', progress: 100, artifacts: [
+          { kind: 'image', filename: 'e2e-storm.png', subfolder: '', type: 'output' }] });
+      }
+      if (u.startsWith('/api/assets/lib')) return json({ ok: true, imported: 0, saved: [] });
+      return real(url, opts);
+    };
+    const ta = document.querySelector('[data-panel-for="i2"] .gen-prompt');
+    if (ta) {
+      ta.focus();
+      ta.textContent = 'storm';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // 连点三次，间隔 80ms：模拟「点了没反应，再点一下」
+    for (let i = 0; i < 3; i++) {
+      const b = document.querySelector('[data-panel-for="i2"] .gen-run');
+      if (b) b.click();
+      await sleep(80);
+    }
+    for (let k = 0; k < 60 && !runs.length; k++) await sleep(100);
+    await sleep(1600);        // 等准备阶段彻底跑完，确认没有后续提交
+    window.fetch = real;
+    return { runs: runs.length, urls: runs };
+  })()`);
+  check('连点生成只提交一次（准备阶段的 await 不再放行重复提交）',
+    clickStorm.runs === 1, JSON.stringify(clickStorm));
+
   // ---- MCP：外部改画布，浏览器要自己跟上 ----
   // 服务端那条链路归 tests/mcp.py；这里验的是**前端**：它手里握着整份画布快照，
   // 一次自动保存就能把 MCP 刚建的节点抹掉。所以这条用例盯的是「轮询 → 重载」这段。
