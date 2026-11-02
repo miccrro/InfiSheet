@@ -2953,6 +2953,7 @@
   let assetGroups = [];           // [{id,name,dir}]，服务端那份分组表
   let assetMeta = {};             // key -> {group, hidden}（只对外部来源有意义）
   let assetRoot = '';             // 资产库当前的存放目录（服务端给的绝对路径）
+  let assetComfyDir = '';         // ComfyUI 安装目录：删库外的图要靠它定位文件，空=没配
   let assetPicking = false;       // 是否在多选态
   let assetPicked = new Set();    // 多选态里勾上的 key
   let assetLastIdx = -1;          // Shift 连选的锚点（当前筛选结果里的下标）
@@ -3010,6 +3011,7 @@
     if (Array.isArray(res.groups)) assetGroups = res.groups;
     if (res.meta && typeof res.meta === 'object') assetMeta = res.meta;
     if (typeof res.root === 'string' && res.root) assetRoot = res.root;
+    if (typeof res.comfyDir === 'string') assetComfyDir = res.comfyDir;
   }
 
   async function loadAssets(force) {
@@ -3102,6 +3104,10 @@
             <span class="asset-path-t" title=""></span>
             <button type="button" class="asset-root">修改…</button>
           </div>
+          <div class="asset-path asset-comfy">
+            <span class="asset-comfy-t" title=""></span>
+            <button type="button" class="asset-comfy-btn">修改…</button>
+          </div>
           <p class="asset-hint">
             <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
             <button type="button" class="asset-restore"></button>
@@ -3120,6 +3126,9 @@
     const pathRow = box.querySelector('.asset-path');
     const pathT = box.querySelector('.asset-path-t');
     const pathBtn = box.querySelector('.asset-root');
+    const comfyRow = box.querySelector('.asset-comfy');
+    const comfyT = box.querySelector('.asset-comfy-t');
+    const comfyBtn = box.querySelector('.asset-comfy-btn');
     const hintEl = box.querySelector('.asset-hint');
     const hintT = box.querySelector('.asset-hint-t');
     const restoreBtn = box.querySelector('.asset-restore');
@@ -3141,6 +3150,13 @@
       pathT.textContent = assetRoot ? shortPath(assetRoot) : '…';
       pathT.title = assetRoot || '';
       pathBtn.textContent = '修改…';
+      // 第二行：ComfyUI 的目录。没配的时候「删除」对库外的图只能从列表移除，
+      // 所以这行不是装饰——它决定删除能不能真删到磁盘。
+      comfyT.textContent = assetComfyDir ? `ComfyUI ${shortPath(assetComfyDir)}` : 'ComfyUI 目录未设置';
+      comfyT.title = assetComfyDir
+        ? `${assetComfyDir}\n删除库外的图会从这里真删（进系统回收站）`
+        : '不填也能用：只是库外（生成结果 / 上传素材）的图删除时只会从列表移除，磁盘文件不动';
+      comfyRow.classList.toggle('unset', !assetComfyDir);
     };
     const closePathEdit = () => {
       pathRow.innerHTML = '';
@@ -3182,6 +3198,49 @@
       };
     };
     pathBtn.onclick = editPath;
+
+    /* ---------- ComfyUI 目录 ---------- */
+    // 只有删除库外的图时才用到它：ComfyUI 没有「删文件」的接口，只能按
+    // <根目录>/output/子目录/文件名 拼出磁盘路径。没配就只写 hidden，绝不猜。
+    const closeComfyEdit = () => {
+      comfyRow.innerHTML = '';
+      comfyRow.append(comfyT, comfyBtn);
+      paintPath();
+    };
+    const editComfy = () => {
+      comfyRow.innerHTML = '';
+      const inp = document.createElement('input');
+      inp.className = 'asset-path-in';
+      inp.value = assetComfyDir;
+      inp.spellcheck = false;
+      inp.placeholder = 'ComfyUI 根目录，如 D:/ComfyUI（留空=不删库外文件）';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'prime';
+      save.textContent = '保存';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = '取消';
+      comfyRow.append(inp, save, cancel);
+      inp.focus();
+      inp.select();
+      cancel.onclick = closeComfyEdit;
+      inp.onkeydown = (ev) => {
+        if (ev.key === 'Escape') { ev.stopPropagation(); closeComfyEdit(); }
+        if (ev.key === 'Enter') save.click();
+      };
+      save.onclick = async () => {
+        const v = inp.value.trim();
+        if (v === assetComfyDir) { closeComfyEdit(); return; }
+        save.disabled = true;
+        const res = await assetLibPost({ op: 'comfy-dir', path: v });
+        if (!res) { save.disabled = false; return; }
+        closeComfyEdit();
+        await reload(true);
+        flash(v ? '已指定 ComfyUI 目录：删除会真删磁盘文件（进系统回收站）' : '已清空 ComfyUI 目录');
+      };
+    };
+    comfyBtn.onclick = editComfy;
 
     /* ---------- 分组 ---------- */
     // 自定义分组挂在来源页签下面一行：来源是「这张图哪来的」，分组是「我把它放哪」，
@@ -3319,19 +3378,24 @@
     const removePicked = async () => {
       const picked = assetFiltered().filter((it) => assetPicked.has(assetKeyOf(it)));
       if (!picked.length) return;
-      const inLib = picked.filter((it) => it.source === 'lib').length;
-      const outLib = picked.length - inLib;
+      // 库内文件一定在磁盘上；库外要看 onDisk（服务端按 ComfyUI 目录算出来的）
+      const onDisk = picked.filter((it) => it.source === 'lib' || it.onDisk).length;
+      const listOnly = picked.length - onDisk;
       const lines = [`删除这 ${picked.length} 项？`];
-      if (inLib) lines.push(`\n· 库内 ${inLib} 张移到存放目录的 .trash/（想找回可以去那个文件夹）`);
-      if (outLib) lines.push(`\n· 其余 ${outLib} 张只是不再列在这里，ComfyUI 磁盘上的文件不动`);
+      if (onDisk) lines.push(`\n· ${onDisk} 张从磁盘删掉（进系统回收站，删错了能还原）`);
+      if (listOnly) {
+        lines.push(`\n· ${listOnly} 张只是不再列在这里`
+          + `（${assetComfyDir ? '磁盘上找不到对应文件' : '还没配 ComfyUI 目录'}）`);
+      }
       if (!confirm(lines.join(''))) return;
       const res = await assetLibPost({ op: 'delete', keys: picked.map(assetKeyOf) });
       if (!res) return;
       assetPicked.clear();
       await reload(true);
       const bits = [];
-      if (res.trashed) bits.push(`${res.trashed} 张进了回收站`);
+      if (res.trashed) bits.push(`${res.trashed} 张已删（回收站）`);
       if (res.hidden) bits.push(`${res.hidden} 项已移除`);
+      if (res.failed) bits.push(`${res.failed} 张没删成${(res.why || [])[0] ? '：' + res.why[0] : ''}`);
       flash('已删除：' + (bits.join('，') || '0 项'));
     };
 

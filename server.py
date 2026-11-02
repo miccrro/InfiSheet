@@ -29,6 +29,7 @@ import re
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -1117,8 +1118,9 @@ def _implicit_gid(dirname: str) -> str:
 def _clean_asset_lib(raw) -> dict:
     """把读进来 / 传进来的东西洗成能用的样子。某一条不合法就丢那一条，不整份作废。"""
     if not isinstance(raw, dict):
-        return {"root": "", "groups": [], "items": {}}
+        return {"root": "", "comfyDir": "", "groups": [], "items": {}}
     root = str(raw.get("root") or "").strip()[:500]
+    comfy = str(raw.get("comfyDir") or "").strip()[:500]
     groups, seen = [], set()
     dirs = {ASSET_TRASH}                     # 回收站的名字不许被分组占用
     for it in raw.get("groups") or []:
@@ -1149,7 +1151,7 @@ def _clean_asset_lib(raw) -> dict:
         hidden = bool(v.get("hidden"))
         if gid or hidden:             # 既没分组也没隐藏的条目没有信息量，不占文件
             items[key] = {"group": gid, "hidden": hidden}
-    return {"root": root, "groups": groups, "items": items}
+    return {"root": root, "comfyDir": comfy, "groups": groups, "items": items}
 
 
 def load_asset_lib() -> dict:
@@ -1162,14 +1164,14 @@ def load_asset_lib() -> dict:
     try:
         raw = json.loads(f.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return {"root": "", "groups": [], "items": {}}
+        return {"root": "", "comfyDir": "", "groups": [], "items": {}}
     except Exception:  # noqa: BLE001
         try:
             f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
             print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空库开始")
         except OSError:
             pass
-        return {"root": "", "groups": [], "items": {}}
+        return {"root": "", "comfyDir": "", "groups": [], "items": {}}
     return _clean_asset_lib(raw)
 
 
@@ -1305,16 +1307,133 @@ def _assets_with_lib(items: list[dict], limit: int, *, cached: bool,
     for it in items[:limit]:
         key = asset_key(it.get("source", ""), it.get("subfolder", ""), it.get("filename", ""))
         meta = lib["items"].get(key) or {}
+        # onDisk：这一项在磁盘上找不找得到。库内的当然在（刚扫出来）；库外的要看
+        # 有没有配 ComfyUI 目录。前端靠它把「真删」和「只从列表移除」分开说清楚。
+        p = comfy_file_path(lib, it.get("source", ""), it.get("subfolder", ""), it.get("filename", ""))
         out.append({**it, "key": key, "group": meta.get("group") or "",
-                    "hidden": bool(meta.get("hidden"))})
+                    "hidden": bool(meta.get("hidden")), "onDisk": bool(p and p.is_file())})
     return {"ok": True, "items": out[:limit], "groups": lib["groups"] + implicit,
             "meta": lib["items"], "root": str(root), "rootDefault": not lib.get("root"),
+            "comfyDir": lib.get("comfyDir") or "",
             "comfy": comfy, "cached": cached, "error": error}
 
 
 def _move_file(src: Path, dest: Path) -> None:
     """搬文件。跨盘（换到 D:）时 shutil.move 会自动退化成「复制 + 删除」。"""
     shutil.move(str(src), str(dest))
+
+
+def _trash_windows(files: list[Path]) -> tuple[bool, str]:
+    """Windows：SHFileOperationW + FOF_ALLOWUNDO → 进系统回收站。
+
+    不用 .trash 目录的原因：那只是「换个地方放着」，用户翻不到、也不会自动清理，
+    用久了就是一份偷偷翻倍的磁盘占用。系统回收站才是用户脑子里那个「删了」。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception as exc:  # noqa: BLE001
+        return False, f"回收站不可用：{exc}"
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("wFunc", wintypes.UINT),
+            ("pFrom", ctypes.c_void_p),      # 必须是 c_void_p：c_wchar_p 会在第一个 \0 截断，
+            ("pTo", ctypes.c_void_p),        # 多文件那种 \0 分隔的列表会被吃掉只剩第一个
+            ("fFlags", ctypes.c_uint16),
+            ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", ctypes.c_void_p),
+            ("lpszProgressTitle", ctypes.c_void_p),
+        ]
+
+    FO_DELETE = 3
+    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x4, 0x10, 0x40, 0x400
+    src = "\0".join(str(p.resolve()) for p in files) + "\0\0"
+    buf = ctypes.create_unicode_buffer(src, len(src) + 1)
+    op = SHFILEOPSTRUCTW()
+    op.wFunc = FO_DELETE
+    op.pFrom = ctypes.cast(buf, ctypes.c_void_p)
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    # 别只信返回码：实测有过 rc=0x0002（FILE_NOT_FOUND）但文件确实已经进回收站的情况，
+    # 大概是内部重试/同名冲突后仍然搬走了。以「原位置还有没有」为准。
+    left = [p for p in files if p.exists()]
+    if not left:
+        return True, ""
+    if rc != 0:
+        return False, f"回收站失败（0x{rc & 0xffff:04x}）"
+    return False, "文件还在，回收站没有接收"
+    if op.fAnyOperationsAborted:
+        return False, "回收站操作被取消"
+    return True, ""
+
+
+def _trash_posix(files: list[Path]) -> tuple[bool, str]:
+    """macOS 走 Finder（进废纸篓），Linux 走 gio trash（进 XDG 回收站）。"""
+    for p in files:
+        cmd = (["osascript", "-e", f'tell application "Finder" to delete POSIX file "{p}"']
+               if sys.platform == "darwin" else ["gio", "trash", str(p)])
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=20)
+        except FileNotFoundError:
+            return False, "系统里没有回收站命令（gio / osascript）"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"回收站失败：{str(exc)[:80]}"
+    return True, ""
+
+
+def send_to_trash(paths: list[Path]) -> tuple[bool, str]:
+    """把文件移进**系统回收站**。返回 (成功?, 失败原因)。
+
+    用户要的是「删掉」，但不是「删掉就再也找不回来」。回收站同时满足这两点：
+    文件从资产目录里消失（真实删除），后悔了右键还原就行。
+    真删失败（回收站不可用）时**不退回 unlink**——宁可报错，也不做不可逆的事。
+    """
+    files = [p for p in paths if p.is_file()]
+    if not files:
+        return True, ""
+    if os.name == "nt":
+        return _trash_windows(files)
+    return _trash_posix(files)
+
+
+def comfy_root(lib: dict | None = None) -> Path | None:
+    """ComfyUI 的安装目录（含 output/ input/）。没配或配坏了返回 None。"""
+    raw = str((lib or {}).get("comfyDir") or "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() and p.is_dir() else None
+
+
+def comfy_file_path(lib: dict, source: str, subfolder: str, filename: str) -> Path | None:
+    """库外键 → ComfyUI 磁盘上的文件。定位不了（没配目录 / 越界 / 文件没了）返回 None。
+
+    这是第二个「按用户给的东西读磁盘」的地方，越界检查不能省：
+    filename 来自 /history，但 key 也可能被手改过。
+    """
+    base = comfy_root(lib)
+    if not base or source not in ("output", "input", "temp") or not filename:
+        return None
+    rel = Path(subfolder or "") / filename
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+    root = (base / source).resolve()
+    try:
+        p = (root / rel).resolve()
+    except OSError:
+        return None
+    if p != root and root not in p.parents:
+        return None
+    return p
+
+
+def _split_asset_key(key: str) -> tuple[str, str, str]:
+    """'output:人像/a.png' → ('output', '人像', 'a.png')。"""
+    source, _, rest = key.partition(":")
+    subfolder, _, filename = rest.rpartition("/")
+    return source, subfolder, filename
 
 
 def _fetch_comfy_asset(key: str) -> bytes:
@@ -1342,13 +1461,15 @@ def asset_lib_apply(payload: dict) -> dict:
         hide         {keys, hidden}   → 外部来源的「从列表移除 / 恢复」
         import       {items, group}   → 把 ComfyUI 的图 / 画布上的图复制进库
         rename       {key, name}      → 库内文件改名（同一个目录里原地改）
-        delete       {keys}           → 库内文件移进 .trash，外部来源只写 hidden
+        delete       {keys}           → **真删**：移进系统回收站（库外若能定位 ComfyUI 目录也删）
         root-set     {path}           → 换存放目录，把现有文件一起搬过去
+        comfy-dir    {path}           → 指定 ComfyUI 根目录，删库外的图时才找得到文件
 
     两条底线：
-      · **只动资产库自己目录里的文件**。ComfyUI 的 output/ 一个字都不碰——
-        「删除」对库外的图只是从列表里移除，磁盘上还在。
-      · 库内删除是**移进 .trash**，不是 unlink。删错了还能自己去目录里捞回来。
+      · **只删选中的那几张**。库外要删，必须先在设置里指定 ComfyUI 的安装目录；
+        没指定就只从列表里移除（写 hidden），绝不猜路径。
+      · 删除走**系统回收站**，不是 unlink。用户要的是「删掉」，不是「删掉就找不回来」。
+        回收站不可用时宁可报错，也不退回不可逆的 unlink。
     """
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是对象")
@@ -1356,7 +1477,7 @@ def asset_lib_apply(payload: dict) -> dict:
     lib = load_asset_lib()
     root = asset_root(lib)
     groups, items = lib["groups"], lib["items"]
-    state = {"root": lib.get("root") or ""}
+    state = {"root": lib.get("root") or "", "comfyDir": lib.get("comfyDir") or ""}
 
     def keys_of() -> list[str]:
         raw = payload.get("keys")
@@ -1374,9 +1495,11 @@ def asset_lib_apply(payload: dict) -> dict:
         return out
 
     def done(extra: dict | None = None) -> dict:
-        saved = save_asset_lib({"root": state["root"], "groups": groups, "items": items})
+        saved = save_asset_lib({"root": state["root"], "comfyDir": state["comfyDir"],
+                                "groups": groups, "items": items})
         return {"ok": True, "groups": saved["groups"], "meta": saved["items"],
-                "root": str(asset_root(saved)), **(extra or {})}
+                "root": str(asset_root(saved)), "comfyDir": saved["comfyDir"],
+                **(extra or {})}
 
     def group_of(gid: str):
         """按 id 找分组。磁盘上自己建的文件夹（隐式分组）第一次被点名时补一条记录，
@@ -1581,8 +1704,8 @@ def asset_lib_apply(payload: dict) -> dict:
 
     if op == "delete":
         keys = keys_of()
-        trashed = hidden = 0
-        trash = root / ASSET_TRASH
+        trashed = hidden = failed = 0
+        why: list[str] = []
         for key in keys:
             if key.startswith("lib:"):
                 try:
@@ -1590,24 +1713,53 @@ def asset_lib_apply(payload: dict) -> dict:
                 except ValueError:
                     continue
                 if not p.is_file():
+                    items.pop(key, None)          # 文件本来就不在了，归属记录留着也没用
                     continue
-                try:
-                    trash.mkdir(parents=True, exist_ok=True)
-                    stamp = time.strftime("%Y%m%d-%H%M%S")
-                    dest = trash / f"{stamp}-{p.name}"
-                    n = 2
-                    while dest.exists():
-                        dest = trash / f"{stamp}-{n}-{p.name}"
-                        n += 1
-                    _move_file(p, dest)
+                ok, msg = send_to_trash([p])
+                if ok:
                     trashed += 1
-                except OSError:
-                    pass
+                    items.pop(key, None)
+                else:
+                    failed += 1
+                    if msg and msg not in why:
+                        why.append(msg)
             else:
+                # 库外：配了 ComfyUI 目录就能真删，没配就只从列表移除。
+                # 绝不猜路径——删错别人的产物是不可逆的。
+                source, subfolder, filename = _split_asset_key(key)
+                p = comfy_file_path(lib, source, subfolder, filename)
+                if p and p.is_file():
+                    ok, msg = send_to_trash([p])
+                    if ok:
+                        trashed += 1
+                    else:
+                        failed += 1
+                        if msg and msg not in why:
+                            why.append(msg)
+                else:
+                    hidden += 1
+                # 无论删没删掉都写 hidden：ComfyUI 的 /history 还留着这条记录，
+                # 不隐藏的话下次刷新它又冒出来了。
                 items.setdefault(key, {"group": "", "hidden": False})["hidden"] = True
-                hidden += 1
         _drop_empty_dirs(root, groups)
-        return done({"trashed": trashed, "hidden": hidden})
+        return done({"trashed": trashed, "hidden": hidden, "failed": failed, "why": why[:3]})
+
+    if op == "comfy-dir":
+        raw = str(payload.get("path") or "").strip()
+        if not raw:
+            state["comfyDir"] = ""
+            return done({"comfyDir": ""})
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            raise ValueError("请写绝对路径，例如 D:/ComfyUI")
+        if not p.is_dir():
+            raise ValueError(f"目录不存在：{p}")
+        if p.name.lower() in ("output", "input", "temp") and p.parent.is_dir():
+            p = p.parent                       # 直接填了 output/ 也认，往上退一层
+        if not any((p / d).is_dir() for d in ("output", "input")):
+            raise ValueError("这个目录下没有 output/ 或 input/，要填 ComfyUI 的根目录")
+        state["comfyDir"] = str(p)
+        return done({"comfyDir": str(p)})
 
     if op == "root-set":
         raw = str(payload.get("path") or "").strip()

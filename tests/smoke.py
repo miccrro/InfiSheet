@@ -399,10 +399,31 @@ def main() -> int:
         status, raw = request(base, "/api/assets/lib", "POST",
                               {"op": "delete", "keys": ["lib:素材/封面.png"]})
         dl = json.loads(raw or b"{}")
-        trash = adir / ".trash"
-        check("删除库内文件：移进 .trash，原位置不再有（删错了还能自己捞回来）",
+        check("删除库内文件：真删（进系统回收站），原位置不再有，也不留 .trash",
               status == 200 and dl.get("trashed") == 1 and not (adir / "素材" / "封面.png").exists()
-              and any(p.name.endswith("封面.png") for p in trash.iterdir()), str(trash))
+              and not (adir / ".trash").exists(), json.dumps(dl, ensure_ascii=False))
+
+        # 库外的图：没配 ComfyUI 目录时只从列表移除（绝不猜路径去删别人的产物）
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "delete", "keys": ["output:/x.png"]})
+        d2 = json.loads(raw or b"{}")
+        check("没配 ComfyUI 目录时，库外的图只写 hidden（trashed=0）",
+              status == 200 and d2.get("trashed") == 0 and d2.get("hidden") == 1,
+              json.dumps(d2, ensure_ascii=False))
+
+        # 配了就能真删：按 <根>/output/... 拼出磁盘路径，进回收站
+        fake_comfy = data_dir / "comfy"
+        (fake_comfy / "output").mkdir(parents=True, exist_ok=True)
+        (fake_comfy / "output" / "x.png").write_bytes(png)
+        status, raw = request(base, "/api/assets/lib", "POST",
+                              {"op": "comfy-dir", "path": str(fake_comfy / "output")})
+        cd = json.loads(raw or b"{}")
+        check("ComfyUI 目录：填 output/ 也能认，自动退到根目录",
+              status == 200 and cd.get("comfyDir") == str(fake_comfy), json.dumps(cd, ensure_ascii=False))
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "delete", "keys": ["output:/x.png"]})
+        d3 = json.loads(raw or b"{}")
+        check("配了 ComfyUI 目录：库外的图也真删（磁盘上没了）",
+              status == 200 and d3.get("trashed") == 1 and not (fake_comfy / "output" / "x.png").exists(),
+              json.dumps(d3, ensure_ascii=False))
 
         newroot = data_dir / "pics"
         status, raw = request(base, "/api/assets/lib", "POST", {"op": "root-set", "path": str(newroot)})

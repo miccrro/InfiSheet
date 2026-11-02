@@ -2904,19 +2904,20 @@ try {
   check('改名：库内格子有「改名」入口，且磁盘上的文件名真的跟着变',
     rnBtn === true && diskFiles(assetDir).includes('封面.svg'), diskFiles(assetDir).join(','));
 
-  // 删除：进 .trash，原地址立刻 404（不是只从列表里消失）
+  // 删除：真删（进系统回收站），原地址立刻 404，也不再留 .trash 目录
   const delSrc = await page.evaluate(`document.querySelector('#assetPane .asset-cell img').getAttribute('src')`);
   await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
   await new Promise((r) => setTimeout(r, 250));
   await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
   await page.evaluate(`document.querySelector('#assetPane .asset-del').click()`);
   await new Promise((r) => setTimeout(r, 1600));
-  const trash = diskFiles(path.join(assetDir, '.trash'));
+  const leftFiles = diskFiles(assetDir);
   // 从 Node 这边探，不在页面里 fetch：页面里打一个 404 会进控制台，
   // 末尾那条「控制台无报错」就被自己弄红了，真正该抓的 JS 报错反而被淹。
   const goneStatus = await fetch(server.base.replace(/\/$/, '') + delSrc).then((r) => r.status);
-  check('删除库内文件：移进 .trash（不 unlink），原地址立刻 404',
-    trash.length === 1 && goneStatus === 404, `回收站 ${trash.join(',')} · 旧地址 ${goneStatus}`);
+  check('删除库内文件：真删（进系统回收站），磁盘上没有，也不留 .trash',
+    goneStatus === 404 && !leftFiles.includes('封面.svg') && !fs.existsSync(path.join(assetDir, '.trash')),
+    `磁盘 ${leftFiles.join(',')} · 旧地址 ${goneStatus}`);
 
   // 改存放路径：文件跟着搬，抽屉里的路径跟着变
   const newRoot = path.join(dataDir, 'pics');
