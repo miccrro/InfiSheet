@@ -2876,8 +2876,15 @@ try {
   const norm = (p) => String(p || '').replace(/\\/g, '/');
 
   const rootTitle = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').title`);
+  // title 现在是「路径 + 换行 + 一句说明」，取第一行比整串比更稳
   check('抽屉底部写明存放目录（完整路径挂在 title 上，一眼知道文件在哪）',
-    norm(rootTitle).endsWith('/assets'), rootTitle);
+    norm(String(rootTitle).split('\n')[0]).endsWith('/assets'), rootTitle);
+  // 「默认」两个字是给用户看的：默认路径跟着程序走，把整个文件夹拷到别的机器图还在；
+  // 自定义路径（尤其填到 D:\ 上）换机器就没了。分不清这两者，用户就不知道该不该备份。
+  const rootIsDefault = await page.evaluate(
+    `document.querySelector('#assetPane .asset-path-t').textContent.includes('（默认）')`);
+  check('默认路径在抽屉里标出「（默认）」（用户才知道这个目录是跟着程序走的）',
+    rootIsDefault === true, String(rootIsDefault));
 
   await hit('canvas');
   await new Promise((r) => setTimeout(r, 350));
@@ -2905,10 +2912,20 @@ try {
     rnBtn === true && diskFiles(assetDir).includes('封面.svg'), diskFiles(assetDir).join(','));
 
   // 删除：真删（进系统回收站），原地址立刻 404，也不再留 .trash 目录
-  const delSrc = await page.evaluate(`document.querySelector('#assetPane .asset-cell img').getAttribute('src')`);
+  // 按 src 找格子，不按下标：目录扫描顺序不是稳定的（NTFS 给什么顺序就是什么），
+  // 按下标可能删到另一张，断言就成了「删对了才通过」的运气测试。
+  const pickCover = `(() => {
+    const cell = [...document.querySelectorAll('#assetPane .asset-cell')]
+      .find((c) => decodeURIComponent(c.querySelector('img').getAttribute('src')).includes('封面'));
+    return cell || null;
+  })()`;
+  const delSrc = await page.evaluate(`(() => {
+    const c = ${pickCover};
+    return c ? c.querySelector('img').getAttribute('src') : '';
+  })()`);
   await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
   await new Promise((r) => setTimeout(r, 250));
-  await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell')[0].click()`);
+  await page.evaluate(`(() => { const c = ${pickCover}; if (c) c.click(); return !!c; })()`);
   await page.evaluate(`document.querySelector('#assetPane .asset-del').click()`);
   await new Promise((r) => setTimeout(r, 1600));
   const leftFiles = diskFiles(assetDir);
@@ -2934,8 +2951,23 @@ try {
   const movedTo = diskFiles(newRoot);
   const movedTitle = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').title`);
   check('改存放路径：剩下那张搬到新目录，抽屉里的路径跟着变',
-    movedTo.length === 1 && norm(movedTitle).endsWith('/pics'),
+    movedTo.length === 1 && norm(String(movedTitle).split('\n')[0]).endsWith('/pics'),
     `新目录 ${movedTo.join(',')} · 路径 ${movedTitle}`);
+  const customText = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').textContent`);
+  check('改成自定义路径后不再标「（默认）」', !customText.includes('（默认）'), customText);
+
+  // 清空 = 恢复默认。改过一次自定义路径的人得有路可退，否则只能去数据目录里翻 lib.json 手改。
+  await page.evaluate(`document.querySelector('#assetPane .asset-root').click()`);
+  await page.evaluate(`(() => {
+    const i = document.querySelector('#assetPane .asset-path-in');
+    i.value = '';
+    return true;
+  })()`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-path button.prime').click()`);
+  await new Promise((r) => setTimeout(r, 2000));
+  const backText = await page.evaluate(`document.querySelector('#assetPane .asset-path-t').textContent`);
+  check('清空路径 = 恢复默认（文件搬回程序/数据目录下的 assets，并重新标出「（默认）」）',
+    backText.includes('（默认）') && diskFiles(assetDir).length === 1, `${backText} · ${diskFiles(assetDir).join(',')}`);
 
   // 收尾：回到「全部」、退出多选，后面的 Esc 才是关抽屉
   await hit('all');
@@ -4418,6 +4450,80 @@ try {
     stFirst >= 0 && stAfter.length > 0 && stAfter.every((s) => /生成中 \d+%/.test(s)),
     JSON.stringify(stSeq));
 
+  // ---- 生成完自动入库：前端必须真的把这次出的图交给资产库 ----
+  // 命名规则和去重归 tests/smoke.py 管，这里只验**前端有没有接上**：MCP 那边就曾经
+  // 因为「函数没注入」整个功能失效，表现却是「什么都没发生」——这种静默失效最难发现。
+  // 先把这个节点选中：生成面板是按「当前选中的节点」渲染的，不选就查不到 .gen-run。
+  const i2Title = await page.center(`#nodes .node[data-id="i2"] .node-title`);
+  await page.clickAt(i2Title.x, i2Title.y, { settle: 400 });
+  const autoImp = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const libCalls = [];
+    const hits = [];
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      hits.push(u.slice(0, 50));
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'auto-imp' });
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
+      if (u.startsWith('/api/job')) {
+        // 只糊自己这个任务：别的 pid 一律走真实请求
+        if (!u.includes('auto-imp')) return real(url, opts);
+        return json({ ok: true, status: 'success', progress: 100, artifacts: [
+          { kind: 'image', filename: 'e2e-auto.png', subfolder: '', type: 'output' }] });
+      }
+      if (u.startsWith('/api/assets/lib')) {
+        const body = JSON.parse(opts.body);
+        libCalls.push(body);
+        if (body.op === 'import') {
+          return json({ ok: true, imported: 1, saved: [{ key: body.items[0].key,
+            name: '20261102-000000-01.png', rel: '20261102-000000-01.png' }] });
+        }
+        return json({ ok: true, changed: 1, hidden: true });
+      }
+      return real(url, opts);
+    };
+    const ta = document.querySelector('[data-panel-for="i2"] .gen-prompt');
+    if (ta) {
+      // 提示词是 contenteditable（要能把 @[名字] 渲染成胶囊），没有 .value；
+      // 写 textContent + 触发 input 才等价于用户打字，跟面板有没有焦点、是不是隐藏无关。
+      ta.focus();
+      ta.textContent = 'auto import';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // 上一个用例刚在这个节点上收尾，按钮可能还禁用着；而且面板会随进度重渲染，
+    // 抓到的元素随时会脱离文档——所以每一轮都重新查、拿到活的再点。
+    let clicked = false;
+    for (let k = 0; k < 40; k++) {
+      const b = document.querySelector('[data-panel-for="i2"] .gen-run');
+      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      await sleep(100);
+    }
+    for (let k = 0; k < 120 && !libCalls.length; k++) await sleep(100);
+    let status = '';
+    for (let k = 0; k < 20; k++) {
+      const st = document.querySelector('[data-panel-for="i2"] .gen-status');
+      status = st ? st.textContent.trim() : '';
+      if (/完成|失败|错误/.test(status)) break;
+      await sleep(100);
+    }
+    window.fetch = real;
+    return { libCalls, status, clicked, hits,
+             prompt: ta ? String(ta.textContent || '').slice(0, 30) : '(无输入框)' };
+  })()`);
+  const impCall = (autoImp.libCalls || [])[0] || {};
+  const hideCall = (autoImp.libCalls || [])[1] || {};
+  check('生成完自动入库：前端按「时间+序号」把这次的图交给资产库',
+    impCall.op === 'import' && impCall.nameMode === 'time'
+      && (impCall.items || [])[0] && impCall.items[0].key === 'output:/e2e-auto.png',
+    JSON.stringify(autoImp));
+  check('自动入库后把原 ComfyUI 键标成隐藏（列表里不会同一张图出现两次）',
+    hideCall.op === 'hide' && hideCall.hidden === true
+      && (hideCall.keys || []).includes('output:/e2e-auto.png'),
+    JSON.stringify(hideCall));
+
   // ---- MCP：外部改画布，浏览器要自己跟上 ----
   // 服务端那条链路归 tests/mcp.py；这里验的是**前端**：它手里握着整份画布快照，
   // 一次自动保存就能把 MCP 刚建的节点抹掉。所以这条用例盯的是「轮询 → 重载」这段。
@@ -4615,12 +4721,13 @@ try {
   // ComfyUI 的 /history 会一直留着「图已经被删掉」的记录（清过 output/ 就会这样），
   // 资产库照着 /history 列出来，缩略图必然 404。这不是我们的 bug——我们只是请求了它自己报的
   // 文件名——所以这里把它排除，否则本机清过一次输出目录，这条断言就永远红着，
-  // 真正该抓的 JS 报错反而被淹没。除「/api/view 的 404」之外的一切照旧。
+  // 真正该抓的 JS 报错反而被淹没。除「/api/view 取不到图（404 / 502）」之外的一切照旧。
+  // 502 是 ComfyUI 没开或取不到字节，同样是「图不在了」的一种，不是 JS 错。
   // 注意 URL 在 e.url 里，不在 e.text 里（text 只有「Failed to load resource…」）。
   const consoleErrors = page.errors.filter((e) => {
     const s = `${e.text || ''} ${e.url || ''}`;
     if (/favicon/.test(s)) return false;
-    return !(/\/api\/view\?/.test(s) && /404/.test(s));
+    return !(/\/api\/view\?/.test(s) && /40[34]|502/.test(s));
   });
   // 只打 text 的话永远只看到「Uncaught」——把 detail / 位置也带上，否则报错了也查不出是哪一行
   const errText = (e) => [e.text, e.detail, e.url && `${e.url}:${e.line}`].filter(Boolean).join(' ');

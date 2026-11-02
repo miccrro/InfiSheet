@@ -72,6 +72,10 @@ def default_data_dir() -> Path:
 
 
 DATA = default_data_dir()
+# 数据目录是不是「人明确指定的」（INFISHEET_DATA / --data）。
+# 指定了就等于说「所有东西都放这儿」——测试、多实例、便携版、容器挂卷都是这个语义，
+# 这时候资产库还跑去程序目录就会分家（测试会写脏真目录，容器里的图挂不出来）。
+DATA_EXPLICIT = bool(os.environ.get("INFISHEET_DATA"))
 LIBRARY = DATA / "library"
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
@@ -1070,8 +1074,27 @@ def asset_key(source: str, subfolder: str, filename: str) -> str:
 
 
 def asset_root_default() -> Path:
-    """资产库默认落在数据目录下的 assets/。"""
-    return DATA / "assets"
+    """资产库默认落在**程序目录**下的 assets/（跟着程序走）。
+
+    为什么从数据目录搬过来：图是用户真正在乎的东西，数据目录是平台相关的
+    （Windows 在 %LOCALAPPDATA%、macOS 在 Application Support），换台机器就找不到了。
+    放程序目录下，整个文件夹拷走图就跟着走。
+
+    两个例外，都是为了不让人「突然看不到自己的图」：
+      · 老版本默认在数据目录，已经攒了图的人：ROOT/assets 还不存在而旧目录存在 → 继续用旧的，不搬。
+      · 程序装在只读位置（Program Files / .app 包内）→ 退回数据目录，否则一存就报错。
+      · 数据目录是人明确指定的（INFISHEET_DATA / --data）→ 放数据目录里。指定数据目录
+        就是「所有东西都在这儿」的意思，测试和多实例靠这条才不会写脏真目录。
+    """
+    prog = ROOT / "assets"
+    legacy = DATA / "assets"
+    if DATA_EXPLICIT:
+        return legacy
+    if not prog.is_dir() and legacy.is_dir():
+        return legacy
+    if not os.access(ROOT, os.W_OK):
+        return legacy
+    return prog
 
 
 def asset_root(lib: dict | None = None) -> Path:
@@ -1149,8 +1172,15 @@ def _clean_asset_lib(raw) -> dict:
         if gid not in seen:
             gid = ""                  # 分组被删了：回「未分组」，不留指向空分组的孤儿
         hidden = bool(v.get("hidden"))
-        if gid or hidden:             # 既没分组也没隐藏的条目没有信息量，不占文件
+        # imported：这个 ComfyUI 文件已经存成了库内哪个文件。自动入库靠它去重
+        # （MCP 写回 + 浏览器收尾 + job_status 反复查都会触发，不去重会攒出一堆同图）。
+        imported = str(v.get("imported") or "")[:500]
+        if ".." in Path(imported).parts or imported.startswith("/"):
+            imported = ""
+        if gid or hidden or imported:  # 三样都没有的条目没有信息量，不占文件
             items[key] = {"group": gid, "hidden": hidden}
+            if imported:
+                items[key]["imported"] = imported
     return {"root": root, "comfyDir": comfy, "groups": groups, "items": items}
 
 
@@ -1594,7 +1624,8 @@ def asset_lib_apply(payload: dict) -> dict:
         for key, meta in list(items.items()):
             if meta.get("group") == gid:
                 meta["group"] = ""
-                if not meta.get("hidden"):
+                # 有 imported 的条目要留着，否则下次自动入库会重复存一份
+                if not meta.get("hidden") and not meta.get("imported"):
                     items.pop(key)          # 回未分组、也没隐藏 → 这条没信息量了
         return done({"moved": moved})
 
@@ -1617,14 +1648,26 @@ def asset_lib_apply(payload: dict) -> dict:
                     continue
                 try:
                     dest.mkdir(parents=True, exist_ok=True)
-                    _move_file(p, _unique_path(dest, p.name))
+                    tgt = _unique_path(dest, p.name)
+                    _move_file(p, tgt)
                     files += 1
+                    # 库内文件挪了位置：把「已存成哪个文件」的记录跟着改，
+                    # 否则这条记录指向一个不存在的路径，去重就失效了。
+                    try:
+                        nrel = tgt.relative_to(root.resolve()).as_posix()
+                    except ValueError:
+                        nrel = ""
+                    if nrel:
+                        old_rel = key[4:]
+                        for meta in items.values():
+                            if meta.get("imported") == old_rel:
+                                meta["imported"] = nrel
                 except OSError:
                     pass
             else:
                 meta = items.setdefault(key, {"group": "", "hidden": False})
                 meta["group"] = gid
-                if not gid and not meta.get("hidden"):
+                if not gid and not meta.get("hidden") and not meta.get("imported"):
                     items.pop(key)
         _drop_empty_dirs(root, groups)
         return done({"moved": len(keys), "files": files, "group": gid,
@@ -1638,7 +1681,9 @@ def asset_lib_apply(payload: dict) -> dict:
                 continue                  # 库内文件走 delete（进回收站），不写 hidden
             meta = items.setdefault(key, {"group": "", "hidden": False})
             meta["hidden"] = hidden
-            if not hidden and not meta.get("group"):
+            # 有 imported 的条目得留着：删掉就等于「忘了这张已经存过」，下次生成
+            # 再入库时会多存一份一模一样的。
+            if not hidden and not meta.get("group") and not meta.get("imported"):
                 items.pop(key)
         return done({"changed": len(keys), "hidden": hidden})
 
@@ -1657,12 +1702,26 @@ def asset_lib_apply(payload: dict) -> dict:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ValueError(f"建不了目录：{exc}") from exc
-        ok, failed = 0, []
-        for it in raw:
+        # nameMode=time：自动入库用「时间+序号」（20261102-203104-01.png），同一次出的
+        # 4 张不会互相覆盖，也不会和上一批撞名。手动「收进库」仍用原文件名——
+        # 用户认得那个名字，改成时间反而找不着。
+        name_mode = str(payload.get("nameMode") or "")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        ok, failed, saved = 0, [], []
+        for idx, it in enumerate(raw, 1):
             if not isinstance(it, dict):
                 continue
             key = str(it.get("key") or "")[:300]
             name = _safe_asset_name(it.get("filename") or key.rsplit("/", 1)[-1])
+            if name_mode == "time":
+                name = f"{stamp}-{idx:02d}{Path(name).suffix.lower() or '.png'}"
+            # 同一个 ComfyUI 文件只存一份。自动入库会被触发不止一次（MCP 写回、
+            # 浏览器收尾、job_status 反复查），不去重就会攒出一堆时间戳不同、
+            # 内容完全一样的文件，用户还删不干净。
+            prev = str((items.get(key) or {}).get("imported") or "")
+            if prev and (root / prev).is_file():
+                saved.append({"key": key, "name": Path(prev).name, "rel": prev, "dup": True})
+                continue
             try:
                 blob = it.get("data")
                 if blob:
@@ -1672,11 +1731,17 @@ def asset_lib_apply(payload: dict) -> dict:
                     blob = _fetch_comfy_asset(key)
                 if not blob:
                     raise ValueError("取回来是空的")
-                _unique_path(dest, name).write_bytes(blob)
+                target = _unique_path(dest, name)
+                target.write_bytes(blob)
+                rel = target.relative_to(root.resolve()).as_posix()
+                # 记下「这个 ComfyUI 文件已经存成哪个库内文件」，下次直接跳过
+                meta = items.setdefault(key, {"group": "", "hidden": False})
+                meta["imported"] = rel
                 ok += 1
+                saved.append({"key": key, "name": target.name, "rel": rel})
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{name}: {exc}")
-        return done({"imported": ok, "failed": failed[:20], "group": gid})
+        return done({"imported": ok, "failed": failed[:20], "group": gid, "saved": saved})
 
     if op == "rename":
         key = str(payload.get("key") or "").strip()[:300]
@@ -1698,9 +1763,14 @@ def asset_lib_apply(payload: dict) -> dict:
                 raise ValueError("同一个文件夹里已经有同名文件")
             os.replace(p, target)
         rel = target.relative_to(root.resolve()).as_posix()
-        return {"ok": True, "key": "lib:" + rel, "filename": target.name,
-                "url": "/api/assets/file?path=" + urllib.parse.quote(rel),
-                "groups": groups, "meta": items}
+        # 改名会让「这个 ComfyUI 文件已存成哪个库内文件」的记录失效，跟着一起改。
+        # 不改的话，下次同一个 key 再触发自动入库就会多存一份一模一样的。
+        old_rel = key[4:]
+        for meta in items.values():
+            if meta.get("imported") == old_rel:
+                meta["imported"] = rel
+        return done({"key": "lib:" + rel, "filename": target.name,
+                     "url": "/api/assets/file?path=" + urllib.parse.quote(rel)})
 
     if op == "delete":
         keys = keys_of()
@@ -1763,9 +1833,9 @@ def asset_lib_apply(payload: dict) -> dict:
 
     if op == "root-set":
         raw = str(payload.get("path") or "").strip()
-        if not raw:
-            raise ValueError("路径不能为空")
-        new = Path(raw).expanduser()
+        # 留空 = 恢复默认（程序目录下的 assets/）。没有这个口子的话，改过一次自定义
+        # 路径就再也回不去，只能去数据目录里翻 lib.json 手改。
+        new = asset_root_default() if not raw else Path(raw).expanduser()
         if not new.is_absolute():
             raise ValueError("请写绝对路径，例如 D:/InfiSheet/assets")
         try:
@@ -1807,6 +1877,36 @@ def asset_lib_apply(payload: dict) -> dict:
         return done({"moved": moved, "failed": failed[:20]})
 
     raise ValueError(f"不认识的操作：{op or '（空）'}")
+
+
+def auto_import_assets(keys: list[str]) -> dict:
+    """生成完成后自动把产物存一份进资产库（文件名用时间+序号）。
+
+    为什么自动存：ComfyUI 的 /history 随时会被清（重启、清过 output/），
+    只有复制进自己的目录才算真的留住。
+
+    存完把这些 ComfyUI 键标记 hidden：库里已经有一份了，列表里再显示一份
+    「生成」来源的同图，用户只会看到两张一模一样的缩略图。
+
+    失败**不抛**：存不进库（磁盘满、权限、ComfyUI 取图失败）不该让一次成功的
+    生成看起来像失败了。
+    """
+    keys = [str(k) for k in (keys or []) if k]
+    if not keys:
+        return {"ok": True, "imported": 0, "saved": []}
+    try:
+        res = asset_lib_apply({"op": "import", "items": [{"key": k} for k in keys],
+                               "nameMode": "time"})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200], "imported": 0, "saved": []}
+    saved = res.get("saved") or []
+    if saved:
+        try:
+            asset_lib_apply({"op": "hide", "keys": [s["key"] for s in saved], "hidden": True})
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "imported": res.get("imported") or 0, "saved": saved,
+            "failed": res.get("failed") or []}
 
 
 # --------------------------------------------------------------------------- #
@@ -3189,7 +3289,7 @@ def main():
                              "0 = 不做租约（灯永不熄灭）")
     args = parser.parse_args()
 
-    global COMFY_URL, COMFY_SOURCE, DATA, LIBRARY, PRESETS, TOKEN
+    global COMFY_URL, COMFY_SOURCE, DATA, LIBRARY, PRESETS, TOKEN, DATA_EXPLICIT
     if args.token is not None:
         TOKEN = args.token.strip()
     if args.presets:
@@ -3197,6 +3297,7 @@ def main():
     if args.data:
         DATA = Path(args.data).expanduser().resolve()
         LIBRARY = DATA / "library"
+        DATA_EXPLICIT = True
     DATA.mkdir(parents=True, exist_ok=True)
     LIBRARY.mkdir(parents=True, exist_ok=True)
 
@@ -3237,6 +3338,7 @@ def main():
         root=ROOT, static=STATIC, presets=PRESETS, data=DATA, library=LIBRARY,
         comfy_json=comfy_json, comfy_request=comfy_request,
         analyze_graph=analyze_graph, list_presets=list_presets, job_status=job_status,
+        auto_import_assets=auto_import_assets,
         client_id=PROGRESS_CLIENT, mcp_lease=args.mcp_lease,
     ))
 

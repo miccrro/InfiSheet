@@ -2824,6 +2824,9 @@
             style: g.style ? { ...g.style } : null,
             items: g.gallery.slice(),
           });
+          // 自动存一份进资产库（时间+序号命名）。放在 pushRun 之后、状态文案之前：
+          // 不 await，出图该立刻显示，存库慢不该拖着界面；失败也只是没存下，不影响这次生成。
+          autoImportAssets(g.gallery);
           g.status = `完成 · ${secs}s · ${imgs.length} 张`;
           // 面板上选了 4 张、图里只回来 1 张：这不是"多图生成坏了"，而是**图提交上去了、
           // 工作流自己把批量抹平了**（二次采样链、ImageBatch、单张后处理之类）。不吭声的话
@@ -2953,6 +2956,7 @@
   let assetGroups = [];           // [{id,name,dir}]，服务端那份分组表
   let assetMeta = {};             // key -> {group, hidden}（只对外部来源有意义）
   let assetRoot = '';             // 资产库当前的存放目录（服务端给的绝对路径）
+  let assetRootDefault = true;    // 上面这个路径是不是「默认」（程序目录下的 assets/）
   let assetComfyDir = '';         // ComfyUI 安装目录：删库外的图要靠它定位文件，空=没配
   let assetPicking = false;       // 是否在多选态
   let assetPicked = new Set();    // 多选态里勾上的 key
@@ -3011,6 +3015,7 @@
     if (Array.isArray(res.groups)) assetGroups = res.groups;
     if (res.meta && typeof res.meta === 'object') assetMeta = res.meta;
     if (typeof res.root === 'string' && res.root) assetRoot = res.root;
+    if (typeof res.rootDefault === 'boolean') assetRootDefault = res.rootDefault;
     if (typeof res.comfyDir === 'string') assetComfyDir = res.comfyDir;
   }
 
@@ -3050,6 +3055,38 @@
     if (!res || !res.ok) { flash((res && res.error) || '操作失败'); return null; }
     applyAssetLib(res);
     return res;
+  }
+
+  // 生成完自动存一份进资产库（文件名用时间+序号）。
+  // 为什么自动存：ComfyUI 的 output/ 随时会被清（重启、清过目录、换机器），
+  // 只有复制进自己的目录才算真的留住。
+  // 全程静默：存不进库（磁盘满、权限、ComfyUI 取图失败）不该让一次成功的生成
+  // 看起来像失败了，也不该每次出图都弹一个提示。
+  async function autoImportAssets(items) {
+    const keys = (items || []).filter((it) => it && it.filename)
+      .map((it) => `${it.type || 'output'}:${it.subfolder || ''}/${it.filename}`);
+    if (!keys.length) return 0;
+    let res = null;
+    try {
+      res = await postJson('/api/assets/lib', {
+        op: 'import', nameMode: 'time', items: keys.map((k) => ({ key: k })),
+      });
+    } catch (e) { return 0; }
+    if (!res || !res.ok) return 0;
+    const saved = res.saved || [];
+    if (!saved.length) return 0;
+    applyAssetLib(res);
+    // 库里已经有一份了，「生成」页签再列一张一模一样的图只会让人以为出了两张。
+    try {
+      const hres = await postJson('/api/assets/lib', {
+        op: 'hide', keys: saved.map((s) => s.key), hidden: true,
+      });
+      if (hres) applyAssetLib(hres);
+    } catch (e) { /* 藏不住不影响图已经存下来 */ }
+    // 抽屉开着就顺手刷一下，不然新存的图要等下次打开才出现
+    const reload = document.querySelector('#assetPane .asset-reload');
+    if (reload) reload.click();
+    return saved.length;
   }
 
   function putAssetOnCanvas(item) {
@@ -3147,8 +3184,16 @@
       return parts.length <= 3 ? raw : '…' + sep + parts.slice(-2).join(sep);
     };
     const paintPath = () => {
-      pathT.textContent = assetRoot ? shortPath(assetRoot) : '…';
-      pathT.title = assetRoot || '';
+      // 「默认」两个字不是装饰：默认路径跟着程序走，把整个文件夹拷到别的机器上图还在；
+      // 自定义路径（尤其填到 D:\ 上）换机器就没了。用户得能一眼看出自己是不是默认。
+      pathT.textContent = assetRoot
+        ? shortPath(assetRoot) + (assetRootDefault ? '（默认）' : '')
+        : '…';
+      pathT.title = assetRoot
+        ? (assetRootDefault
+          ? `${assetRoot}\n默认位置：程序目录下的 assets/，整个文件夹拷走图就跟着走`
+          : `${assetRoot}\n自定义位置（点「修改…」清空可恢复默认）`)
+        : '';
       pathBtn.textContent = '修改…';
       // 第二行：ComfyUI 的目录。没配的时候「删除」对库外的图只能从列表移除，
       // 所以这行不是装饰——它决定删除能不能真删到磁盘。
@@ -3169,7 +3214,8 @@
       inp.className = 'asset-path-in';
       inp.value = assetRoot;
       inp.spellcheck = false;
-      inp.title = '资产库的文件放哪。改完会把现有文件一起搬过去。';
+      inp.title = '资产库的文件放哪。改完会把现有文件一起搬过去；清空保存 = 恢复默认。';
+      inp.placeholder = '留空 = 默认（程序目录下的 assets/）';
       const save = document.createElement('button');
       save.type = 'button';
       save.className = 'prime';
@@ -3187,7 +3233,9 @@
       };
       save.onclick = async () => {
         const v = inp.value.trim();
-        if (!v || v === assetRoot) { closePathEdit(); return; }
+        // 空 = 恢复默认；已经是默认又清空就没必要发请求
+        if (!v && assetRootDefault) { closePathEdit(); return; }
+        if (v && v === assetRoot) { closePathEdit(); return; }
         save.disabled = true;
         const res = await assetLibPost({ op: 'root-set', path: v });
         if (!res) { save.disabled = false; return; }

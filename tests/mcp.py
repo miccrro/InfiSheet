@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -570,6 +571,20 @@ def main() -> int:
 
             out5, _ = c.tool("run_nodes", {"nodes": []})
             check("run_nodes 空列表回错误（别把「没给」当成「全部」）", out5["isError"], out5["text"][:50])
+
+            # 生成完自动入库：图要按「时间+序号」落进资产库。ComfyUI 的 /history 随时会被
+            # 清（重启、清过 output/、换机器），只有复制进自己的目录才算真的留住。
+            adir = data_dir / "assets"
+            saved = sorted(p.name for p in adir.glob("*.png")) if adir.is_dir() else []
+            check("生成完自动存进资产库，文件名是「时间+序号」",
+                  len(saved) >= 3 and all(re.fullmatch(r"\d{8}-\d{6}-\d{2}\.png", n) for n in saved),
+                  f"{len(saved)} 张 · {saved[:3]}")
+
+            libf = data_dir / "asset-lib.json"
+            meta = (json.loads(libf.read_text(encoding="utf-8-sig")).get("items") or {}) if libf.is_file() else {}
+            auto = [k for k, v in meta.items() if v.get("hidden") and v.get("imported")]
+            check("自动入库后原 ComfyUI 键被标 hidden（列表里不会同一张图出现两次）",
+                  len(auto) >= 3, f"{len(auto)} 条")
 
         else:
             skip("run_node 真出图", "ComfyUI 未连接")

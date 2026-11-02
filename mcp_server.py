@@ -1899,6 +1899,9 @@ def _gallery_of(artifacts: list) -> list:
             for a in artifacts if a.get("kind") == "image"]
 
 
+_AUTO_IMPORT_WARNED = False    # 自动入库失败只报一次，别每次出图都刷一行
+
+
 def _settle_node(pid: str, node_id: str, prompt_id: str, gallery: list, *,
                  secs=None, seed=None, dims=None, batch=None) -> bool:
     """把一次生成的结果写回节点：gallery / 首图 / runs / 状态。
@@ -1932,6 +1935,20 @@ def _settle_node(pid: str, node_id: str, prompt_id: str, gallery: list, *,
         return True
 
     res, _ = mutate(pid, apply)
+    if res and gallery:
+        # 生成完自动存一份进资产库（时间+序号命名）：ComfyUI 的 /history 随时会被清，
+        # 只有复制进自己的目录才算留住。失败静默——存不进库不该让生成算失败。
+        # 但**不能一声不响**：这个功能曾经因为 E() 里没注入函数而整个失效，
+        # 表现却是「什么都没发生」。所以第一次失败往 stderr 报一句（stdout 是 JSON-RPC 通道）。
+        global _AUTO_IMPORT_WARNED
+        try:
+            E().auto_import_assets([
+                f"{it.get('type') or 'output'}:{it.get('subfolder') or ''}/{it['filename']}"
+                for it in gallery if it.get("filename")])
+        except Exception as exc:  # noqa: BLE001
+            if not _AUTO_IMPORT_WARNED:
+                _AUTO_IMPORT_WARNED = True
+                print(f"[warn] 生成结果没能自动存进资产库：{exc}", file=sys.stderr)
     return bool(res)
 
 

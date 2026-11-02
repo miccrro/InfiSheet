@@ -26,7 +26,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
 | 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅。ws 一个数都没有时，`/api/job` 退一步去读 ComfyUI 控制台日志（`/internal/logs/raw`）里 tqdm 的百分比兜底 |
-| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `data/assets/`（资产库的图片本体，可换到别的盘） |
+| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `assets/`（资产库的图片本体，默认在程序目录下，可换到别的盘；生成完自动存一份，按时间+序号命名） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
 几个不显眼但重要的点：
@@ -369,8 +369,8 @@ CSS 四条 `[data-dock="…"]` 规则分别定位（底部/左侧/右侧/顶部�
 现在资产库落在磁盘上：
 
 ```
-<数据目录>/assets/             ← 未分组的图（默认；可改，见 asset-lib.json 的 root）
-<数据目录>/assets/人像/         ← 分组 = 子文件夹
+<程序目录>/assets/             ← 未分组的图（默认；可改，见 asset-lib.json 的 root）
+<程序目录>/assets/人像/         ← 分组 = 子文件夹
 ```
 
 ```
@@ -380,6 +380,23 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，�
 前端 canvasAssets()                     → source=canvas  （画布上现有的图，服务端看不到）
 ```
 
+- **默认目录跟着程序走**（`asset_root_default()`）：图是用户真正在乎的东西，数据目录是平台相关的
+  （Windows 在 `%LOCALAPPDATA%`、macOS 在 `Application Support`），换台机器就找不到了；放程序旁边，
+  整个文件夹拷走图就跟着走。三条例外都是为了不让人「突然看不到自己的图」：① 老版本已经攒了图的
+  （`ROOT/assets` 不存在而旧目录存在）继续用旧目录，不搬；② 程序装在只读位置（Program Files /
+  `.app` 包内）退回数据目录；③ 数据目录是**人明确指定的**（`INFISHEET_DATA` / `--data`，
+  即 `DATA_EXPLICIT`）就放数据目录——指定数据目录就是「所有东西都在这儿」的意思，测试、多实例、
+  容器挂卷都靠这条，否则图会写进程序目录、挂卷里反而看不到。
+- **生成完自动存一份进库**，文件名「时间+序号」（`20261102-203104-01.png`，`import` 的
+  `nameMode: "time"`）。触发点有两个：浏览器生成成功的分支（`autoImportAssets`）和 MCP 的
+  `_settle_node`（`run_node` / `run_nodes` / `job_status` 写回都走它）。存完把对应的 ComfyUI 键
+  标 `hidden`——库里已经有一份，「生成」页签再列一张一模一样的图只会让人以为出了两张。
+  整个流程**失败静默**（磁盘满、权限、取图失败不该让一次成功的生成看起来像失败），但 MCP 侧第一次
+  失败会往 stderr 报一句：这个功能曾经因为 `E()` 里没注入函数而整个失效，表现却是「什么都没发生」。
+- **自动入库必须去重**：同一个 ComfyUI 文件只存一份。`items[key].imported` 记着「已经存成哪个库内
+  文件」，下次直接跳过（`saved` 里回 `dup: true`）。不去重的话，MCP 写回、浏览器收尾、`job_status`
+  反复查这三路都会触发，攒出一堆时间戳不同、内容完全一样的文件，用户还删不干净。改名 / 移动库内文件
+  时要把这条记录跟着改，否则指向一个不存在的路径，去重就失效了。
 - **为什么不把 ComfyUI 的产物直接当资产库**：ComfyUI 没有列目录的接口，每个人的输出目录位置都不同
   （便携版 / 秋叶版 / `--output-directory`），本地猜路径必然错一半。`/history` 里恰好两种都有，所以
   仍然只**索引**它；但历史会被清空（ComfyUI 重启、清过 `output/`），想留住就得**收进库**——复制一份
@@ -403,25 +420,28 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，�
 **资产库的用户数据（`data/asset-lib.json`）。**
 
 ```jsonc
-{ "root": "D:/InfiSheet/assets",                       // 空 = 用默认 <数据目录>/assets
+{ "root": "D:/InfiSheet/assets",                       // 空 = 用默认 <程序目录>/assets
   "groups": [{ "id": "g1a19...", "name": "人像", "dir": "人像" }],
-  "items":  { "output:/a.png": { "group": "g1a19...", "hidden": true } } }
+  "items":  { "output:/a.png": { "group": "g1a19...", "hidden": true,
+                                 "imported": "20261102-203104-01.png" } } }   // 已存成哪个库内文件
 ```
 
 - **键不是文件名**，是 `asset_key()` 拼的 `source:subfolder/filename`（库内是 `lib:相对路径`）。
   `output/` 和 `input/` 里可以有同名文件，只按文件名归组会把两张完全不同的图认成一张，
   删一张连另一张一起消失。画布上的图服务端看不见，它的键由前端按同一套规则拼
   `canvas:项目:节点:序号`——两边必须一致，改规则等于清空所有人攒的分组。
-- `items` 里只存**库外**来源的归属与隐藏；库内文件的归属由它所在的文件夹决定，不重复记。
-- 只存有信息量的条目：既没分组也没隐藏的直接不落盘，否则文件会随着用越攒越大。
+- `items` 里只存**库外**来源的归属、隐藏与已入库记录；库内文件的归属由它所在的文件夹决定，不重复记。
+- 只存有信息量的条目：既没分组、没隐藏、也没有 `imported` 的直接不落盘，否则文件会随着用越攒越大。
 - 落盘走临时文件 + `os.replace`；读坏了**不覆盖**——先改名留档 `.bad-时间戳`，再从空库开始，
   直接覆盖等于把用户攒的分组一次抹掉，而这个文件手改不回来。
 - 写操作只有一个入口 `POST /api/assets/lib`，靠 `op` 分发（`group-add` / `group-rename` /
   `group-remove` / `assign` / `hide` / `import` / `rename` / `delete` / `root-set` / `comfy-dir`）。
-  回包一律带最新的 `groups` + `meta` + `root` + `comfyDir`，前端一次往返就能刷完。
+  回包一律带最新的 `groups` + `meta` + `root` + `rootDefault` + `comfyDir`，前端一次往返就能刷完。
 - **`root-set` 换目录**：新目录必须是绝对路径、不能是当前目录的上下级（会自己搬自己），
   逐个文件搬（跨盘自动退化成复制 + 删除），`failed` 里如实列出搬不动的。
-  新目录正好是默认目录时把 `root` 存成空串，这样以后跟着数据目录走。
+  `path` 传**空串 = 恢复默认**（`asset_root_default()`）：改过一次自定义路径的人得有路可退，
+  否则只能去数据目录里翻 `asset-lib.json` 手改。新目录正好是默认目录时把 `root` 存成空串，
+  这样以后跟着默认规则走。
 - **`comfyDir`**：ComfyUI 的安装目录（含 `output/` `input/`），只为删除库外文件服务。填 `output/`
   也会自动退到上一层。没配时 `GET /api/assets` 给每项回 `onDisk: false`，前端据此把「真删」和
   「只从列表移除」分开写进确认框——用户点之前就知道会发生什么。

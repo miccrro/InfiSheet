@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -435,6 +436,65 @@ def main() -> int:
 
         status, _ = request(base, "/api/assets/lib", "POST", {"op": "root-set", "path": "相对路径/assets"})
         check("改路径只收绝对路径（相对路径会跟着启动目录飘）", status == 400, f"HTTP {status}")
+
+        # ---- 自动入库的命名与去重 ----
+        # 每次生成完都自动存一份进库（时间+序号命名）。这里直接打 import 接口验两件事：
+        # 同一批不能互相覆盖，同一个 ComfyUI 文件也不能存两遍。
+        auto1 = b"\x89PNG\r\n\x1a\n" + b"auto-one"
+        auto2 = b"\x89PNG\r\n\x1a\n" + b"auto-two"
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "import", "nameMode": "time", "items": [
+            {"key": "output:/auto1.png", "filename": "auto1.png",
+             "data": base64.b64encode(auto1).decode("ascii")},
+            {"key": "output:/auto2.png", "filename": "auto2.png",
+             "data": base64.b64encode(auto2).decode("ascii")}]})
+        ti = json.loads(raw or b"{}")
+        tnames = [s.get("name") or "" for s in (ti.get("saved") or [])]
+        check("自动入库按「时间+序号」命名，同批两张不互相覆盖",
+              status == 200 and ti.get("imported") == 2 and len(set(tnames)) == 2
+              and all(re.fullmatch(r"\d{8}-\d{6}-\d{2}\.png", n) for n in tnames),
+              ",".join(tnames) or "没存下来")
+
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "import", "nameMode": "time", "items": [
+            {"key": "output:/auto1.png", "filename": "auto1.png",
+             "data": base64.b64encode(auto1).decode("ascii")}]})
+        dup = json.loads(raw or b"{}")
+        check("同一个 ComfyUI 文件重复入库不会再存一份（MCP 与浏览器都会触发，不去重会攒垃圾）",
+              status == 200 and dup.get("imported") == 0
+              and bool((dup.get("saved") or [{}])[0].get("dup")), json.dumps(dup, ensure_ascii=False))
+
+        # 恢复默认：清空路径。改过一次自定义路径的人得有路可退，
+        # 否则只能去数据目录里翻 asset-lib.json 手改。
+        status, raw = request(base, "/api/assets/lib", "POST", {"op": "root-set", "path": ""})
+        rd = json.loads(raw or b"{}")
+        rd_root = json.loads((data_dir / "asset-lib.json").read_text(encoding="utf-8")).get("root")
+        check("清空路径 = 恢复默认（配置里存空，不是写死一个绝对路径）",
+              status == 200 and rd_root == "" and rd.get("root") == str(adir),
+              f"root={rd_root!r} → {rd.get('root')}")
+
+        # 默认路径跟着程序走，不是数据目录：整个文件夹拷到别的机器，图还在。
+        # 用纯函数验（不动磁盘）：假造一个「程序装在 prog、旧数据目录不存在」的环境。
+        sys.path.insert(0, str(ROOT))
+        import server as _srv
+        saved_globals = (_srv.DATA_EXPLICIT, _srv.ROOT, _srv.DATA)
+        prog = data_dir / "prog"
+        prog.mkdir(parents=True, exist_ok=True)
+        try:
+            _srv.DATA_EXPLICIT, _srv.ROOT, _srv.DATA = False, prog, data_dir / "nodata"
+            dflt = _srv.asset_root_default()
+        finally:
+            _srv.DATA_EXPLICIT, _srv.ROOT, _srv.DATA = saved_globals
+        check("默认存放路径在程序目录下的 assets/（不是平台数据目录）",
+              dflt == prog / "assets", str(dflt))
+
+        # 显式指定数据目录（INFISHEET_DATA / --data）时跟着数据目录走：
+        # 测试、多实例、容器挂卷都靠这条，不然图会写到程序目录里去。
+        try:
+            _srv.DATA_EXPLICIT, _srv.ROOT, _srv.DATA = True, prog, data_dir / "portable"
+            portable = _srv.asset_root_default()
+        finally:
+            _srv.DATA_EXPLICIT, _srv.ROOT, _srv.DATA = saved_globals
+        check("显式指定数据目录时，资产库跟着数据目录走（测试/多实例不写脏程序目录）",
+              portable == data_dir / "portable" / "assets", str(portable))
 
         # 文件坏了：留档后从空库开始，绝不覆盖——这个文件手改不回来
         libfile.write_text("{ broken", encoding="utf-8")
