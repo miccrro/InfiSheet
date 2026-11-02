@@ -8093,9 +8093,30 @@
   }
 
   /* ---------------- 首页 ---------------- */
+  // 离开画布时，把它那套「屏幕坐标」的浮层收干净。
+  //
+  // 这些浮层都挂在 document.body 上、position:fixed，z-index 比首页（#home，45）高：
+  // 图片工具条 46、对齐条 45、连线删除 46、任务面板 60、资产抽屉 62。画布本身被首页
+  // 整块盖住了，它们却照旧钉在视口上——用户截图里那条「裁剪 / 旋转 / … / 下载」就悬在
+  // 首页项目卡片的上方，看着像首页自带的工具条。
+  //
+  // 清选中是最不容易漏的一条：工具条和对齐条本来就是 paintSelection() 的产物
+  // （imgToolNode() 要求「单选 + 有图」），选中没了它们自己就收；连线删除跟着 linkSel 走。
+  // 剩下几个是「打开就一直挂着」的，点名收掉——它们各自都有空值保护，重复调用无害。
+  function leaveCanvasChrome() {
+    let dirty = false;
+    if (state.selected.size) { state.selected = new Set(); dirty = true; }
+    if (state.linkSel) { state.linkSel = null; dirty = true; }
+    if (dirty) paintSelection();       // 里面会一并处理 #alignBar 与 #imgTools
+    positionLinkDel();                 // linkSel 已清，这一句把删除按钮收起来
+    closeAssetSheet();                 // 右侧资产抽屉
+    closeQueue();                      // 顶栏的任务队列面板
+  }
+
   async function showHome() {
     const home = document.getElementById('home');
     if (!home) return;
+    leaveCanvasChrome();                        // 先收浮层：点了立刻有反应，不必等落盘
     if (state.hydrated) await saveToServer();   // 退出编辑器先落盘，再刷新列表
     home.classList.remove('hidden');
     await initHome();

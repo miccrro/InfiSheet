@@ -291,6 +291,29 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
   名字就白改了（e2e 里就是这么挂的）。
 - 代价：组内空白不能再框选（pointerdown 被组框接管）。组内要框选得先解组，这个取舍写在验收报告里。
 
+### 离开画布时把浮层收干净（`leaveCanvasChrome`）
+
+首页 `#home` 是 `position: absolute; inset: 0; z-index: 45`，画布整块被它盖住——但画布那套
+**屏幕坐标**浮层全挂在 `document.body` 上、`position: fixed`，`z-index` 还都比 45 高：
+图片工具条 46、对齐条 45、连线删除 46、任务队列面板 60、资产抽屉 62。于是 `showHome()`
+只把 `#home` 的 `.hidden` 去掉时，这些浮层照旧钉在视口上——用户截图里那条「裁剪 / 旋转 / …
+/ 下载」就悬在首页项目卡片的上方，看着像首页自带的工具条。
+
+`showHome()` 现在先调 `leaveCanvasChrome()` 再落盘，收三样东西：
+
+- **清选中**（`state.selected` / `state.linkSel`）——最不容易漏的一条：图片工具条和对齐条本来就是
+  `paintSelection()` 的产物（`imgToolNode()` 要求「单选 + 有图」），选中没了它们自己就收，
+  连线删除按钮跟着 `linkSel` 走。新增浮层只要也挂在选中/连线上，就自动被这一条覆盖。
+- **关资产抽屉与任务队列面板**（`closeAssetSheet()` / `closeQueue()`）——它们打开后一直挂着，
+  各自的空值保护让重复调用无害。
+- **不改 z-index 去「盖住」它们**：把 `#home` 抬到 46 以上会连带压掉 60/62 的抽屉和队列，
+  再往上抬就顶到弹层（70/80/130）了；而且那些浮层在首页上本来就是**不该存在**的，
+  藏起来只是掩盖「画布还在后台活着」。
+
+e2e 有一条对着这个：选中图片节点 → 点返回首页 → 工具条 / 对齐条 / 连线删除都收起，
+并且**原来那条工具条所在的位置**用 `elementFromPoint` 点下去必须落在 `#home` 里
+（只断言 `classList.contains('hidden')` 挡不住「换成 `display:none` 又浮出来」这类回归）。
+
 ### 工具条的停靠位置（`state.dockSide`）
 
 `#dockWrap`（工具条 + 圆球）的 `data-dock` 由 `applyDockSide()` 按 `state.dockSide` 设置，

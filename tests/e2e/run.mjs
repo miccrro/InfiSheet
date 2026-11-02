@@ -1755,6 +1755,29 @@ try {
   await page.evaluate(`document.querySelector('#appSettings .x').click()`);
   await new Promise((r) => setTimeout(r, 300));
 
+  // 回首页前先选中一张有图的节点：工具条是「选中才有」的浮层，不选它就没得可收，
+  // 这条用例也就成了空跑。
+  const homeImg = await page.evaluate(`(() => {
+    const n = [...document.querySelectorAll('#nodes .node.image')]
+      .find((e) => { const im = e.querySelector('.thumb img'); return im && im.naturalWidth >= 8; });
+    return n ? n.dataset.id : '';
+  })()`);
+  if (!homeImg) throw new Error('回首页收浮层的用例需要一张有图的图片节点');
+  const homeTitle = await page.center(`#nodes .node[data-id="${homeImg}"] .node-title`);
+  if (!homeTitle) throw new Error('找不到图片节点的标题');
+  await page.clickAt(homeTitle.x, homeTitle.y, { settle: 400 });
+  const chromeBefore = await page.evaluate(`(() => {
+    const bar = document.getElementById('imgTools');
+    const r = bar && bar.getBoundingClientRect();
+    return {
+      shown: !!bar && !bar.classList.contains('hidden'),
+      // 记下它此刻的中心：回首页之后要在**同一个点**上验「现在点下去是首页」
+      at: r && r.width ? [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)] : null,
+    };
+  })()`);
+  check('回首页之前：选中图片节点，工具条是开着的',
+    chromeBefore.shown && !!chromeBefore.at, JSON.stringify(chromeBefore));
+
   // 回首页：列表里应有夹具画布，hash 改成 #home
   await page.click('#projectBar [data-act="home"]', { settle: 900 });
   const backHome = await page.evaluate(`(() => ({
@@ -1765,6 +1788,31 @@ try {
   }))()`);
   check('返回首页并改写 hash', backHome.hash === '#home' && backHome.home, JSON.stringify(backHome));
   check('最近项目里有夹具画布', backHome.cards >= 1 && /e2e 夹具画布/.test(backHome.name), backHome.name);
+
+  // ---- 回首页要把画布那套浮层收干净 ----
+  // 这些浮层都挂在 body 上、position:fixed，z-index 比 #home(45) 高：图片工具条 46、对齐条 45、
+  // 连线删除 46、任务面板 60、资产抽屉 62。画布本身被首页整块盖住了，它们却照旧钉在视口上——
+  // 用户截图里那条「裁剪 / 旋转 / … / 下载」就悬在首页项目卡片的上方，看着像首页自带的工具条。
+  const chromeAfter = await page.evaluate(`(() => {
+    const bar = document.getElementById('imgTools');
+    const align = document.getElementById('alignBar');
+    const del = document.getElementById('linkDel');
+    const [x, y] = ${JSON.stringify(chromeBefore.at || [0, 0])};
+    const at = document.elementFromPoint(x, y);
+    return {
+      hidden: !bar || bar.classList.contains('hidden') || getComputedStyle(bar).display === 'none',
+      // 原来那条工具条所在的位置，现在点下去必须落在首页里，而不是还浮着的按钮
+      hitHome: !!(at && at.closest && at.closest('#home')),
+      hit: at ? (at.id || at.className || at.tagName) : 'none',
+      selected: document.querySelectorAll('#nodes .node.selected').length,
+      align: !align || align.classList.contains('hidden'),
+      linkDel: !del || del.classList.contains('hidden'),
+      home: !document.getElementById('home').classList.contains('hidden'),
+    };
+  })()`);
+  check('返回首页：工具条 / 对齐条 / 连线删除全收起，原来那个位置点下去是首页',
+    chromeAfter.hidden && chromeAfter.hitHome && chromeAfter.align && chromeAfter.linkDel
+      && chromeAfter.selected === 0 && chromeAfter.home, JSON.stringify(chromeAfter));
 
   // ---- 品牌图标：首页那块、标签页那颗、左下角按钮，用的都是同一张原图 ----
   // 以前首页品牌位是一块 conic-gradient 彩球、标签页是内联 data URI 的小方块，
