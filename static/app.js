@@ -10249,9 +10249,89 @@
     flash(`已裁出 ${sw} × ${sh}，可接着连进工作流`);
   }
 
+  /* ---------------- 首次使用：先确认生成的图存哪 ---------------- */
+  // 为什么问这一次：默认目录在程序旁边，用户得知道图存在哪——哪天清理磁盘、换机器，
+  // 才不会连攒的图一起丢掉。只在第一次问（服务端记 setup_done，库里已经有图也跳过），
+  // 之后不再打扰。
+  // 主按钮是「用默认，开始使用」：绝大多数人不用改，别为了一个可选项拦路。
+  async function firstRunSetup() {
+    const st = await api('/api/setup').catch(() => null);
+    if (!st || !st.ok || !st.needsSetup) return;
+    if (document.getElementById('setupCard')) return;
+    const def = st.root || st.defaultDir || '';
+    const wrap = document.createElement('div');
+    wrap.id = 'setupCard';
+    wrap.innerHTML = `
+      <div class="sheet setup-sheet" role="dialog" aria-label="生成的图存在哪">
+        <header><strong>生成的图存在哪</strong></header>
+        <div class="setup-body">
+          <p class="setup-lead">每次生成完会自动存一份到这里，按「时间+序号」命名。</p>
+          <input class="setup-path" spellcheck="false" />
+          <p class="setup-hint"></p>
+        </div>
+        <footer class="setup-foot">
+          <button type="button" class="prime setup-default">用默认，开始使用</button>
+          <button type="button" class="setup-save">保存到这个目录</button>
+        </footer>
+      </div>`;
+    document.body.appendChild(wrap);
+    const inp = wrap.querySelector('.setup-path');
+    const hint = wrap.querySelector('.setup-hint');
+    const defBtn = wrap.querySelector('.setup-default');
+    const saveBtn = wrap.querySelector('.setup-save');
+    inp.value = def;
+    const say = (text, bad) => {
+      hint.textContent = text;
+      hint.classList.toggle('bad', !!bad);
+    };
+    if (st.writable === false) {
+      // 默认目录写不进去（Program Files / .app 包内 / 只读挂载 / 断线的网络盘）：
+      // 这时候「用默认」是骗人的，必须让用户换一个。
+      say(`默认目录写不进去：${st.why || '权限不足'}。请换一个目录。`, true);
+      defBtn.disabled = true;
+      inp.focus();
+      inp.select();
+    } else {
+      say(`默认位置：${st.defaultDir || def}`);
+    }
+
+    let busy = false;
+    const send = async (payload) => {
+      if (busy) return;
+      busy = true;
+      defBtn.disabled = saveBtn.disabled = true;
+      try {
+        const res = await postJson('/api/setup', payload);
+        if (!res || !res.ok) { say((res && res.error) || '保存失败', true); return; }
+        wrap.remove();
+        if (res.moved) flash(`已搬过去 ${res.moved} 个文件`);
+        if ((res.failed || []).length) flash(`${res.failed.length} 个文件没搬成：${res.failed[0]}`);
+      } catch (e) {
+        say(e.message || '保存失败', true);
+      } finally {
+        busy = false;
+        if (document.getElementById('setupCard')) {
+          defBtn.disabled = st.writable === false;
+          saveBtn.disabled = false;
+        }
+      }
+    };
+    defBtn.onclick = () => send({ action: 'default' });
+    saveBtn.onclick = () => {
+      const v = inp.value.trim();
+      if (!v) { say('先写一个目录，或者点左边用默认', true); return; }
+      send({ action: 'set', path: v });
+    };
+    inp.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); saveBtn.click(); }
+    };
+  }
+
   /* ---------------- 启动 ---------------- */
   (async function boot() {
     await refreshWorkflows();
+    // 不 await：引导浮在画布上，用户不点也能先看画布——「先设置」不能变成「不设置就不给用」
+    firstRunSetup();
     let restored = false;
     const savedPid = (() => { try { return localStorage.getItem('infisheet-project'); } catch { return null; } })();
     if (savedPid) {

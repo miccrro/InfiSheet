@@ -526,6 +526,35 @@ try {
   await page.goto(server.base);
   await page.waitFor(`document.readyState === 'complete'`, 15000);
 
+  // ---- 首次使用引导：先确认生成的图存哪 ----
+  // 只问一次。主按钮是「用默认，开始使用」——绝大多数人不用改，别为了一个可选项拦路。
+  // 这段必须排在所有画布用例前面：卡片是浮层，不关掉后面点哪儿都点在遮罩上。
+  let setupCard = null;
+  try {
+    setupCard = await page.waitFor(`(() => {
+      const el = document.getElementById('setupCard');
+      if (!el) return null;
+      const inp = el.querySelector('.setup-path');
+      return { lead: (el.querySelector('.setup-lead') || {}).textContent || '',
+               dir: inp ? inp.value : '',
+               defBtn: (el.querySelector('.setup-default') || {}).textContent || '',
+               hint: (el.querySelector('.setup-hint') || {}).textContent || '' };
+    })()`, 12000);
+  } catch { setupCard = null; }
+  check('首次打开：先问一次「生成的图存哪」',
+    !!setupCard && /自动存一份/.test(setupCard.lead || ''), JSON.stringify(setupCard));
+  check('引导预填默认目录（程序目录下的 assets），主按钮是「用默认，开始使用」',
+    !!setupCard && String(setupCard.dir).replace(/\\/g, '/').endsWith('/assets')
+      && /用默认/.test(setupCard.defBtn || ''),
+    JSON.stringify(setupCard));
+  await page.evaluate(`document.querySelector('#setupCard .setup-default').click()`);
+  const setupClosed = await page.waitFor(`!document.getElementById('setupCard')`, 8000)
+    .catch(() => false);
+  check('点「用默认，开始使用」→ 卡片关掉，不拦着画布', setupClosed === true);
+  const setupAfter = await (await fetch(server.base + 'api/setup')).json();
+  check('设置完就不再问（needsSetup 落成 false，下次打开直接进画布）',
+    setupAfter.needsSetup === false, JSON.stringify(setupAfter));
+
   // 启动落点不确定：有项目时会直接进画布，没有才停在首页。等到其中一种稳定状态。
   const boot = await page.waitFor(`(() => {
     const home = document.getElementById('home');

@@ -387,6 +387,14 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，�
   `.app` 包内）退回数据目录；③ 数据目录是**人明确指定的**（`INFISHEET_DATA` / `--data`，
   即 `DATA_EXPLICIT`）就放数据目录——指定数据目录就是「所有东西都在这儿」的意思，测试、多实例、
   容器挂卷都靠这条，否则图会写进程序目录、挂卷里反而看不到。
+- **第一次打开问一次「生成的图存哪」**（`GET/POST /api/setup`，前端 `firstRunSetup()`）。默认目录
+  在程序旁边，但用户得知道图在哪——哪天清理磁盘、换机器，才不会连攒的图一起丢掉。三条设计约束：
+  ① **不阻塞**：卡片是浮层，boot 里 `firstRunSetup()` 不 await，用户不点也能先看画布；
+  ② **不打扰**：`settings.json` 的 `setup_done` 或库里已经有图（老用户）就直接跳过；
+  ③ **不骗人**：`probe_dir_writable()` 试写一个临时文件再删——目录**能建**不等于**能写**
+  （Program Files 要管理员、`.app` 包内只读、只读挂载、断线的网络盘）。写不进去时「用默认」
+  按钮禁用并要求换目录，而不是让他以为设好了。引导的两个按钮都复用 `root-set`，不另写一份校验：
+  两份校验迟早长歪，引导里能过的路径抽屉里过不了，用户只会觉得「时好时坏」。
 - **生成完自动存一份进库**，文件名「时间+序号」（`20261102-203104-01.png`，`import` 的
   `nameMode: "time"`）。触发点有两个：浏览器生成成功的分支（`autoImportAssets`）和 MCP 的
   `_settle_node`（`run_node` / `run_nodes` / `job_status` 写回都走它）。存完把对应的 ComfyUI 键

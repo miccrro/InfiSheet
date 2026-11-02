@@ -1111,6 +1111,88 @@ def asset_root(lib: dict | None = None) -> Path:
     return asset_root_default()
 
 
+def probe_dir_writable(d: Path) -> tuple[bool, str]:
+    """试写一个临时文件再删掉——目录**能建**不等于**能写**。
+
+    三端都会踩：Windows 的 Program Files 要管理员、macOS 的 .app 包内只读、
+    Linux 的 /opt 和 /usr 只读、网络盘（UNC / NFS）断线。这些情况 mkdir 可能成功
+    （父目录可写），真正落图时才炸——那就变成「生成完了才发现图没存下」，
+    比一开始就说清楚糟得多。
+    """
+    probe = d / f".infisheet-probe-{os.getpid()}"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)[:200]
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+
+def _lib_has_images(root: Path) -> bool:
+    """目录里已经攒了图没有（两层：根 + 分组）。"""
+    try:
+        items, _ = scan_assets(root, [])
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(items)
+
+
+def setup_state() -> dict:
+    """首次使用的引导状态。
+
+    为什么需要它：默认目录是 `<程序目录>/assets`，绝大多数人直接用就行，但他得
+    **知道图存在哪**——否则哪天清理磁盘、换机器，攒的图跟着没了都不知道。
+    所以只在第一次打开时问一次，之后不再打扰。
+
+    三种情况不打扰：已经点过（settings 里的 setup_done）、库里已经有图（老用户）、
+    目录根本写不进去（这时候该报错，不该让他以为设好了）。
+    """
+    lib = load_asset_lib()
+    root = asset_root(lib)
+    default = asset_root_default()
+    settings = load_settings()
+    done = bool(settings.get("setup_done"))
+    # 老用户：库里已经有图了，说明他早就用起来了，弹一个「先设置目录」只会打断他
+    used = done or _lib_has_images(root)
+    writable, why = probe_dir_writable(root)
+    return {
+        "needsSetup": not used,
+        "setupDone": done,
+        "root": str(root),
+        "rootDefault": not str(lib.get("root") or "").strip(),
+        "defaultDir": str(default),
+        "writable": writable,
+        "why": why,
+        "platform": "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux"),
+    }
+
+
+def setup_apply(payload: dict) -> dict:
+    """首次引导的两个按钮：用默认（action=default）/ 存到这个目录（action=set）。
+
+    复用 root-set 那一套（绝对路径校验 + 搬文件 + 只读拦截），不另写一份——
+    两份校验迟早会长歪，引导里能过的路径抽屉里过不了，用户只会觉得「时好时坏」。
+    """
+    action = str(payload.get("action") or "").strip()
+    if action == "default":
+        res = asset_lib_apply({"op": "root-set", "path": ""})
+    elif action == "set":
+        res = asset_lib_apply({"op": "root-set", "path": payload.get("path") or ""})
+    else:
+        raise ValueError(f"不认识的 action：{action or '（空）'}")
+    save_settings({"setup_done": True})
+    out = setup_state()
+    out.update({"ok": True, "moved": res.get("moved") or 0,
+                "failed": res.get("failed") or []})
+    return out
+
+
 def _dir_name(raw: str, gid: str, taken: set) -> str:
     """分组名 → 目录名。同名就加 -2、-3，避免两个分组共用一个文件夹。"""
     base = ASSET_BAD_CHARS.sub("_", str(raw or "")).strip().strip(".")[:40]
@@ -1851,6 +1933,11 @@ def asset_lib_apply(payload: dict) -> dict:
             new.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ValueError(f"建不了目录：{exc}") from exc
+        # 建得出来不等于写得进去：Program Files / .app 包内 / 只读挂载 / 断线的网络盘
+        # 都是这个毛病。在这里拦住，别等用户生成完才发现图没存下。
+        ok_w, why_w = probe_dir_writable(new)
+        if not ok_w:
+            raise ValueError(f"这个目录写不进去：{why_w}")
         moved, failed = 0, []
         if old.is_dir():
             for entry in sorted(old.iterdir()):
@@ -2351,7 +2438,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
                    "features": ["presets", "projects", "canvas_history", "ui_import", "mcp",
-                                "comfy_config", "wf_categories", "wf_meta", "progress_log"]}
+                                "comfy_config", "wf_categories", "wf_meta", "progress_log",
+                                "setup"]}
             # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
@@ -2478,6 +2566,16 @@ class Handler(BaseHTTPRequestHandler):
             force = (query.get("refresh") or [""])[0] in ("1", "true", "yes")
             return self.json_out(list_assets(limit, force))
 
+        if path == "/api/setup":
+            # 首次使用引导：只回答「要不要问」和「默认存哪」，不写任何东西。
+            # 前端 boot 里问一次，needsSetup 为 false 就完全不打扰。
+            try:
+                return self.json_out({"ok": True, **setup_state()})
+            except Exception as exc:  # noqa: BLE001
+                # 引导挂了不能挡住画布：如实说「不用设了」，让用户先能用起来
+                return self.json_out({"ok": False, "needsSetup": False,
+                                      "error": f"{type(exc).__name__}: {exc}"})
+
         if path == "/api/assets/file":
             # 资产库自己目录里的图。只认 root 之内的相对路径，越界一律 400（见 asset_file_path）。
             rel = (query.get("path") or [""])[0]
@@ -2533,6 +2631,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json() or {}
             try:
                 return self.json_out(asset_lib_apply(payload))
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
+
+        if path == "/api/setup":
+            payload = self.read_json() or {}
+            try:
+                return self.json_out(setup_apply(payload))
             except ValueError as exc:
                 return self.fail(str(exc), 400)
             except Exception as exc:  # noqa: BLE001

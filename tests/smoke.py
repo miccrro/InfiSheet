@@ -350,6 +350,18 @@ def main() -> int:
         status, _ = request(base, "/api/assets/lib", "POST", {"op": "assign", "keys": [], "group": ""})
         check("空 keys 回 400（「没选中」不能被当成「全部」）", status == 400, f"HTTP {status}")
 
+        # ---- 首次使用引导：先确认生成的图存哪 ----
+        # 只问一次：点过（setup_done）或库里已经有图（老用户）都不再弹。
+        # 这一段必须在往资产库塞图**之前**跑，否则「空库要问」这个前提就没了。
+        status, raw = request(base, "/api/setup")
+        st0 = json.loads(raw or b"{}")
+        check("空库第一次打开：要问一次「生成的图存哪」",
+              status == 200 and st0.get("needsSetup") is True and st0.get("writable") is True,
+              json.dumps(st0, ensure_ascii=False))
+        check("引导里给出默认目录（数据目录下的 assets，测试实例隔离）",
+              str(st0.get("defaultDir") or "").replace("\\", "/").endswith("/assets"),
+              str(st0.get("defaultDir")))
+
         # ---- 资产库的目录：收进库 / 改名 / 删除 / 改路径 ----
         # 上面那些验的是「列表里的分组」，这一段验**磁盘**：库内文件就是目录里的文件，
         # 收进库是复制、改名是改文件名、删除是移进 .trash（不是 unlink）。
@@ -470,6 +482,45 @@ def main() -> int:
         check("清空路径 = 恢复默认（配置里存空，不是写死一个绝对路径）",
               status == 200 and rd_root == "" and rd.get("root") == str(adir),
               f"root={rd_root!r} → {rd.get('root')}")
+
+        # ---- 首次引导：有图就不再打扰 + 两个按钮都真的生效 ----
+        status, raw = request(base, "/api/setup")
+        st1 = json.loads(raw or b"{}")
+        check("库里已经有图 = 老用户，即使没点过引导也不再弹",
+              status == 200 and st1.get("needsSetup") is False and st1.get("setupDone") is False,
+              json.dumps(st1, ensure_ascii=False))
+
+        setup_dir = data_dir / "picked"
+        status, raw = request(base, "/api/setup", "POST",
+                              {"action": "set", "path": str(setup_dir)})
+        st2 = json.loads(raw or b"{}")
+        check("引导里「保存到这个目录」：目录生效且记下 setupDone",
+              status == 200 and st2.get("setupDone") is True
+              and st2.get("root") == str(setup_dir) and st2.get("rootDefault") is False
+              and setup_dir.is_dir(), json.dumps(st2, ensure_ascii=False))
+
+        status, raw = request(base, "/api/setup", "POST", {"action": "default"})
+        st3 = json.loads(raw or b"{}")
+        check("引导里「用默认」：回到默认目录",
+              status == 200 and st3.get("rootDefault") is True
+              and st3.get("root") == str(adir), json.dumps(st3, ensure_ascii=False))
+
+        status, _ = request(base, "/api/setup", "POST", {"action": "nope"})
+        check("引导只认两个按钮，别的 action 回 400", status == 400, f"HTTP {status}")
+
+        # 可写性预检：目录能建不等于能写。Program Files / .app 包内 / 只读挂载都是这个毛病，
+        # 得在设置的时候就拦住，别等用户生成完才发现图没存下。
+        # 用「系统上一定写不进去的位置」验：Windows 给不存在的盘符，POSIX 给 /proc。
+        sys.path.insert(0, str(ROOT))
+        import server as _srv_setup
+
+        def srv_probe(d):
+            return _srv_setup.probe_dir_writable(d)[0]
+
+        bad_dir = Path("Z:/infisheet-nope") if os.name == "nt" else Path("/proc/infisheet-nope")
+        check("可写性预检：写得进去的目录判 True", srv_probe(adir) is True, str(adir))
+        check("可写性预检：写不进去的目录判 False（不是等生成完才炸）",
+              srv_probe(bad_dir) is False, str(bad_dir))
 
         # 默认路径跟着程序走，不是数据目录：整个文件夹拷到别的机器，图还在。
         # 用纯函数验（不动磁盘）：假造一个「程序装在 prog、旧数据目录不存在」的环境。

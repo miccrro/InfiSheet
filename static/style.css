@@ -619,6 +619,32 @@ select option { background: #1f1f1f; color: var(--text); }
 .sheet header strong { flex: 1; font-size: 13px; }
 .sheet header button { border: none; background: transparent; color: var(--dim); font-size: 14px; }
 
+/* 首次使用：问一次「生成的图存哪」。
+   刻意做成一张小卡片而不是大向导：只问一件事，主按钮是「用默认」，不该有仪式感。
+   浮在画布上而不是挡住启动——用户不点也能先看画布。 */
+#setupCard {
+  position: fixed; inset: 0; z-index: 64; display: flex;
+  align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.5);
+}
+#setupCard .setup-sheet { width: 520px; max-width: 92vw; }
+.setup-body { padding: 14px 16px 6px; }
+.setup-lead { margin: 0 0 10px; color: var(--text); font-size: 12.5px; line-height: 1.6; }
+.setup-path {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 12px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font-family: inherit;
+}
+.setup-path:focus { outline: none; border-color: var(--accent); }
+.setup-hint { margin: 8px 0 0; color: var(--dim); font-size: 11.5px; line-height: 1.5; word-break: break-all; }
+/* 写不进去时这句是唯一的解释，得让它显眼——否则用户只会觉得「点了没反应」 */
+.setup-hint.bad { color: #ff8a6b; }
+.setup-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 16px 14px; border-top: 1px solid var(--line); margin-top: 12px;
+}
+.setup-foot button { padding: 7px 13px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+.setup-foot button:disabled { opacity: 0.45; cursor: default; }
+
 /* 面板通用：尺寸写死 + 内容自己滚。
    以前「顶部横向 tab + 高度自适应」——切一格内容变少窗口就缩一下，同一个面板跳两次。 */
 .list { display: flex; flex-direction: column; gap: 7px; }
