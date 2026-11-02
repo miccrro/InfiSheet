@@ -328,7 +328,8 @@ def main() -> int:
         names = {t.get("name") for t in tools}
         check("tools/list 至少 20 个工具", len(tools) >= 20, f"{len(tools)} 个")
         need = {"infisheet_status", "get_canvas", "add_image_node", "set_generation",
-                "connect_nodes", "run_node", "list_runs", "search_styles", "list_workflows"}
+                "connect_nodes", "run_node", "run_nodes", "list_runs", "search_styles",
+                "list_workflows"}
         check("关键工具都在", need <= names, "缺 " + "、".join(sorted(need - names)) if not need <= names else "")
         check("每个工具都有 object 型 inputSchema",
               all((t.get("inputSchema") or {}).get("type") == "object" and t.get("description")
@@ -523,6 +524,39 @@ def main() -> int:
                   bool(runs) and runs[0].get("w") == 96 and runs[0].get("seed") is not None
                   and len(runs[0].get("items") or []) >= 1,
                   f"{runs[0].get('w')}×{runs[0].get('h')} seed={runs[0].get('seed')}" if runs else "空")
+
+            # 批量：一次提交两个节点，不等；再用 job_status 收图。
+            # 这是「MCP 只能出第一张」的回归点——以前没有批量入口，逐个 run_node 等，
+            # 第一个超时后面就全断，节点永远空着。
+            ids = []
+            for t in ("批量A", "批量B"):
+                _o, d = c.tool("add_image_node", {
+                    "prompt": "a small blue square on white paper, top view", "title": t,
+                    "workflow": wf_file, "width": 64, "height": 64, "size": "custom"})
+                ids.append((d.get("node") or {}).get("id") or "")
+            out4, data4 = c.tool("run_nodes", {"nodes": ids})
+            queued = data4.get("queued") or []
+            check("run_nodes 一次提交多个节点，各回一个 prompt_id",
+                  (not out4["isError"]) and len(queued) == 2
+                  and all(q.get("prompt_id") for q in queued),
+                  f"{len(queued)} 个 · {[q.get('node') for q in queued]}")
+
+            for q in queued:
+                for _ in range(60):
+                    _o, js = c.tool("job_status", {"prompt_id": q["prompt_id"]})
+                    if js.get("status") in ("success", "error"):
+                        break
+                    time.sleep(2)
+            _o, after = c.tool("get_canvas")
+            rows = {n.get("id"): n for n in (after.get("nodes") or [])}
+            check("job_status 把每个节点的图都补写回画布（不再是空节点）",
+                  all((rows.get(i, {}).get("gen") or {}).get("images", 0) >= 1
+                      and str(rows.get(i, {}).get("dataURL") or "").startswith("/api/view")
+                      for i in ids),
+                  f"{[(i, (rows.get(i, {}).get('gen') or {}).get('images', 0)) for i in ids]}")
+
+            out5, _ = c.tool("run_nodes", {"nodes": []})
+            check("run_nodes 空列表回错误（别把「没给」当成「全部」）", out5["isError"], out5["text"][:50])
 
         else:
             skip("run_node 真出图", "ComfyUI 未连接")

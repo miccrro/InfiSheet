@@ -107,8 +107,9 @@ python server.py            # 或双击 启动.bat
 | 写 | `delete_nodes` | 删节点（连带连线） |
 | 写 | `connect_nodes` / `disconnect_nodes` | 连线 / 断线（带类型校验） |
 | 写 | `upload_image` | 本地图片上传进 ComfyUI 并建成节点（当参考图用） |
-| 跑 | `run_node` | 构建提交图 → 提交 → （默认）等出图 → 把结果写回节点 |
-| 跑 | `job_status` / `cancel_job` | 查任务 / 取消任务 |
+| 跑 | `run_node` | 构建提交图 → 提交 → （默认）等出图 → 把结果写回节点。**超时不报错**，返回 `pending` + `prompt_id`，之后 `job_status` 会自动补图 |
+| 跑 | `run_nodes` | 批量提交多个节点（各自用自己的参数），默认不等。要一次出好几张就用它，别连着调 `run_node` |
+| 跑 | `job_status` / `cancel_job` | 查任务 / 取消任务。`job_status` 查到成功时，把产物写回等它的那个节点 |
 | 跑 | `list_runs` | 某个图片节点的生成历史（种子、尺寸、产物） |
 
 ---
@@ -132,6 +133,26 @@ list_runs(node="i7")               # 拿到上一版满意的种子
 set_generation(node="i7", seed=1234567, seed_mode="fixed", prompt="…改一改…")
 run_node(node="i7")                # 结果进节点，同时留一条生成历史
 ```
+
+**一次出好几张（别循环调 run_node）：**
+
+```text
+add_image_node(prompt="街角落叶…", title="组1")   → i12
+add_image_node(prompt="咖啡馆窗边…", title="组2") → i13
+add_image_node(prompt="城市天台…", title="组3")   → i14
+run_nodes(nodes=["i12", "i13", "i14"])
+→ 已提交 3 个任务（ComfyUI 排队跑）
+   - i12 · 已提交 · prompt_id=394366c2-…
+   - i13 · 已提交 · prompt_id=f8baa784-…
+   - i14 · 已提交 · prompt_id=6e06336b-…
+
+job_status(prompt_id="394366c2-…")
+→ 394366c2-…：success · 2 个产物 · 已写回 20261102-190107/i12
+```
+
+`run_node` 一次只跑一个节点，逐个调用会把耗时叠起来；2k 图单张常要 3~5 分钟，
+第六张排到时前面早就超时了，超时的那些以前直接抛错，节点就一直是空的。
+`run_nodes` 一次全提交（ComfyUI 自己排队），结果由 `job_status` 补写回节点。
 
 **带参考图：**
 

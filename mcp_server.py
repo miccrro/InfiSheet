@@ -1831,25 +1831,15 @@ def _t_set_mask(args):
             "data": {"project": pid, "node": args["node"], "w": iw, "h": ih}}
 
 
-@tool("run_node",
-      "跑一个图片节点：构建提交图 → 提交 ComfyUI → （默认）等到出图 → 把结果写回节点。"
-      "run_node 之后节点上就有图了，浏览器打开也能看到。",
-      {"node": _node_field("图片节点 id"),
-       "prompt": {"type": "string", "description": "临时覆盖提示词（也会写回节点）"},
-       "wait": {"type": "boolean", "description": "是否等出图，默认 true"},
-       "timeout_s": {"type": "number", "description": "最多等多少秒，默认 180"},
-       "project": {"type": "string"}}, ["node"])
-def _t_run_node(args):
-    pid, canvas = resolve_project(args)
-    node = find_node(canvas, str(args["node"]))
-    if not node:
-        raise ToolError(f"没有节点 {args['node']}")
-    if node.get("type") != "image":
-        raise ToolError(f"{args['node']} 是 {node.get('type')} 节点；run_node 只跑图片节点"
-                        f"（工作流节点请在浏览器里调参数后运行）")
+def _run_prepare(canvas: dict, node: dict, prompt_override=None) -> dict:
+    """把一个图片节点的生成参数摊成 ComfyUI 要的 graph。run_node / run_nodes 共用。
+
+    以前这段只长在 run_node 里，批量跑就得复制一遍——两份迟早会跑偏（遮罩、参考图顺序、
+    风格拼接任何一处改漏，批量出的图和单跑就不一样，而这种差异极难查）。
+    """
     gen = node.setdefault("gen", {})
-    if args.get("prompt") is not None:
-        gen["prompt"] = str(args["prompt"])
+    if prompt_override is not None:
+        gen["prompt"] = str(prompt_override)
     wf = load_workflow(gen.get("wf"))
     info = E().analyze_graph(wf["graph"])
     slots = info.get("slots") or []
@@ -1864,7 +1854,6 @@ def _t_run_node(args):
     for r in use:
         images.append(ensure_uploaded(r["node"]))
     # 遮罩：和浏览器同一口径——烘进 alpha 上传，并排第一（第一个 image 插槽拿到它）。
-    # 不这么做的话，浏览器里涂了遮罩出的图和 AI 跑出来的图会不一样，而这种差异极难查。
     mdoc = mask_doc_for(node)
     if mdoc:
         up = upload_bytes(bake_alpha_png(node, mdoc),
@@ -1879,10 +1868,15 @@ def _t_run_node(args):
     if style:
         prompt = apply_style_prompt(prompt, style["entry"])
     if not prompt.strip():
-        raise ToolError("提示词是空的：先给这个节点写 prompt")
+        raise ToolError(f"{node.get('id')} 的提示词是空的：先给它写 prompt")
 
     built = build_gen_graph(wf["graph"], slots, dims, batch, prompt, images,
                             gen.get("seedMode") or "random", gen.get("seed"))
+    return {"wf": wf, "slots": slots, "dims": dims, "batch": batch, "use": use,
+            "built": built, "gen": gen}
+
+
+def _submit_prompt(built: dict) -> tuple:
     body = json.dumps({"prompt": built["graph"],
                        "client_id": getattr(E(), "client_id", "canvas-progress")}).encode("utf-8")
     status, _, raw = E().comfy_request("POST", "/prompt", body, timeout=60)
@@ -1895,6 +1889,83 @@ def _t_run_node(args):
         raise ToolError(f"ComfyUI 拒收了这张图（{status}）：{detail}")
     prompt_id = data.get("prompt_id")
     seed = built["seed"]["value"] if built["seed"] else None
+    return prompt_id, seed
+
+
+def _gallery_of(artifacts: list) -> list:
+    return [{"url": view_url(a.get("filename"), a.get("subfolder") or "", a.get("type") or "output"),
+             "filename": a.get("filename"), "subfolder": a.get("subfolder") or "",
+             "type": a.get("type") or "output"}
+            for a in artifacts if a.get("kind") == "image"]
+
+
+def _settle_node(pid: str, node_id: str, prompt_id: str, gallery: list, *,
+                 secs=None, seed=None, dims=None, batch=None) -> bool:
+    """把一次生成的结果写回节点：gallery / 首图 / runs / 状态。
+
+    run_node 等到了结果就当场写；没等到（超时）时任务还在 ComfyUI 跑，之后 job_status
+    查到这个 prompt_id 完成，也走这里补写——否则超时一次，那张图就永远只存在于 ComfyUI
+    的 output/ 里，画布上永远是个空节点。
+    """
+    def apply(c):
+        n = find_node(c, str(node_id))
+        if not n:
+            return False
+        g = n.setdefault("gen", {})
+        g["gallery"] = gallery
+        g["idx"] = 0
+        if gallery:
+            n["dataURL"] = gallery[0]["url"]
+            n["uploaded"] = None
+        if seed is not None:
+            g["seed"] = seed
+        g["pid"] = prompt_id
+        run = {"at": int(time.time() * 1000), "prompt": g.get("prompt") or "", "seed": seed,
+               "w": (dims or {}).get("width"), "h": (dims or {}).get("height"), "batch": batch,
+               "wf": g.get("wf") or "",
+               "style": dict(g["style"]) if g.get("style") else None, "items": gallery}
+        runs = g.setdefault("runs", [])
+        runs.insert(0, run)
+        del runs[RUN_CAP:]
+        g["status"] = (f"完成 · {secs}s · {len(gallery)} 张" if secs is not None
+                       else f"完成 · {len(gallery)} 张")
+        return True
+
+    res, _ = mutate(pid, apply)
+    return bool(res)
+
+
+def _find_pid_owner(prompt_id: str) -> tuple:
+    """哪个项目的哪个节点在等这个 prompt_id。job_status 只有 prompt_id，得自己找回来。"""
+    for f in projects_dir().glob("*.json"):
+        d = _read_json(f) or {}
+        for n in d.get("nodes") or []:
+            if str(((n.get("gen") or {}).get("pid") or "")) == prompt_id:
+                return f.stem, str(n.get("id") or "")
+    return None, ""
+
+
+@tool("run_node",
+      "跑一个图片节点：构建提交图 → 提交 ComfyUI → （默认）等到出图 → 把结果写回节点。"
+      "run_node 之后节点上就有图了，浏览器打开也能看到。"
+      "多张一起跑请用 run_nodes（一次提交全部，不逐个等）。",
+      {"node": _node_field("图片节点 id"),
+       "prompt": {"type": "string", "description": "临时覆盖提示词（也会写回节点）"},
+       "wait": {"type": "boolean", "description": "是否等出图，默认 true"},
+       "timeout_s": {"type": "number",
+                     "description": "最多等多少秒，默认 600。2k 图单张常要 3~5 分钟，别设太小"},
+       "project": {"type": "string"}}, ["node"])
+def _t_run_node(args):
+    pid, canvas = resolve_project(args)
+    node = find_node(canvas, str(args["node"]))
+    if not node:
+        raise ToolError(f"没有节点 {args['node']}")
+    if node.get("type") != "image":
+        raise ToolError(f"{args['node']} 是 {node.get('type')} 节点；run_node 只跑图片节点"
+                        f"（工作流节点请在浏览器里调参数后运行）")
+    prepared = _run_prepare(canvas, node, args.get("prompt"))
+    dims, batch, built, use = prepared["dims"], prepared["batch"], prepared["built"], prepared["use"]
+    prompt_id, seed = _submit_prompt(built)
 
     def stamp(c):
         n = find_node(c, str(args["node"]))
@@ -1920,7 +1991,7 @@ def _t_run_node(args):
         pass
 
     wait = args.get("wait", True) is not False
-    timeout = float(args.get("timeout_s") or 180)
+    timeout = float(args.get("timeout_s") or 600)
     if not wait:
         return {"text": f"已提交（prompt_id={prompt_id}）· {dims['width']}×{dims['height']} · 种子 {seed}。"
                         f"之后用 job_status 查询。",
@@ -1936,7 +2007,13 @@ def _t_run_node(args):
         time.sleep(1.2)
     secs = int(round(time.time() - started))
     if state.get("status") not in ("success", "error"):
-        raise ToolError(f"等了 {secs}s 还没跑完（prompt_id={prompt_id}）。用 job_status 继续查，或在浏览器队列里看进度")
+        # 超时**不 raise**：任务还在 ComfyUI 队列里跑，pid 已经写进节点。
+        # 之后用 job_status 查这个 id，出图会自动补写回画布（见 _settle_node）。
+        # 以前这里直接抛错，调用方以为失败了，重跑一次 → 队列里两张、画布上一张都没有。
+        return {"text": f"已提交，{secs}s 还没跑完（prompt_id={prompt_id}）。"
+                        f"别重复提交——之后用 job_status 查这个 id，出图会自动写回 {args['node']}。",
+                "data": {"project": pid, "node": args["node"], "prompt_id": prompt_id,
+                         "seed": seed, **dims, "pending": True}}
 
     if state.get("status") == "error":
         msg = str(state.get("error") or "执行失败")[:300]
@@ -1947,33 +2024,9 @@ def _t_run_node(args):
             pass
         raise ToolError("生成失败：" + msg)
 
-    imgs = [a for a in (state.get("artifacts") or []) if a.get("kind") == "image"]
-    gallery = [{"url": view_url(a.get("filename"), a.get("subfolder") or "", a.get("type") or "output"),
-                "filename": a.get("filename"), "subfolder": a.get("subfolder") or "",
-                "type": a.get("type") or "output"} for a in imgs]
-    run = {"at": int(time.time() * 1000), "prompt": gen.get("prompt") or "", "seed": seed,
-           "w": dims["width"], "h": dims["height"], "batch": batch, "wf": gen.get("wf") or "",
-           "style": dict(gen["style"]) if gen.get("style") else None, "items": gallery}
-
-    def apply(c):
-        n = find_node(c, str(args["node"]))
-        if not n:
-            raise ToolError("画布在生成期间被删掉了，结果没地方放")
-        g = n.setdefault("gen", {})
-        g["gallery"] = gallery
-        g["idx"] = 0
-        if gallery:
-            n["dataURL"] = gallery[0]["url"]
-            n["uploaded"] = None
-        g["seed"] = seed
-        g["pid"] = prompt_id
-        runs = g.setdefault("runs", [])
-        runs.insert(0, run)
-        del runs[RUN_CAP:]
-        g["status"] = f"完成 · {secs}s · {len(gallery)} 张"
-        return n
-
-    mutate(pid, apply)
+    gallery = _gallery_of(state.get("artifacts") or [])
+    _settle_node(pid, str(args["node"]), prompt_id, gallery,
+                 secs=secs, seed=seed, dims=dims, batch=batch)
     head = (f"生成完成 · {secs}s · {dims['width']}×{dims['height']} · 种子 {seed} · {len(gallery)} 张")
     if not gallery:
         head = f"任务完成但没有任何图片产物 · {secs}s（检查工作流里有没有 SaveImage）"
@@ -1992,7 +2045,105 @@ def _t_run_node(args):
                      "seed": seed, **dims, "images": gallery, "notes": notes}}
 
 
-@tool("job_status", "查一个 ComfyUI 任务的状态（queued / running / success / error）与产物。",
+@tool("run_nodes",
+      "批量生成：一次把多个图片节点都提交到 ComfyUI（各用自己的提示词 / 工作流 / 参数），"
+      "返回每个节点的 prompt_id。默认**不等待**——ComfyUI 会排队跑，出图后用 job_status 收，"
+      "浏览器里也会自动出现。要一次出好几张就用它，别连着调 run_node："
+      "逐个等待会把总耗时叠起来，中途一次超时就断在半路，后面的节点永远是空的。",
+      {"nodes": {"type": "array", "items": {"type": "string"},
+                 "description": "图片节点 id 列表，如 [\"i12\",\"i13\"]"},
+       "wait": {"type": "boolean", "description": "是否等全部跑完，默认 false"},
+       "timeout_s": {"type": "number", "description": "wait=true 时最多等多少秒，默认 900"},
+       "project": {"type": "string"}}, ["nodes"])
+def _t_run_nodes(args):
+    pid, canvas = resolve_project(args)
+    ids = [str(x) for x in (args.get("nodes") or []) if str(x or "").strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise ToolError("nodes 不能为空")
+    missing = [i for i in ids if not find_node(canvas, i)]
+    if missing:
+        raise ToolError("没有这些节点：" + "、".join(missing))
+
+    queued, failed = [], []
+    for nid in ids:
+        n = find_node(canvas, nid)
+        if n.get("type") != "image":
+            failed.append({"node": nid, "error": f"{n.get('type')} 节点，只能跑图片节点"})
+            continue
+        try:
+            prepared = _run_prepare(canvas, n)
+            prompt_id, seed = _submit_prompt(prepared["built"])
+        except ToolError as exc:
+            failed.append({"node": nid, "error": str(exc)})
+            continue
+        queued.append({"node": nid, "prompt_id": prompt_id, "seed": seed,
+                       "dims": prepared["dims"], "batch": prepared["batch"],
+                       "use": prepared["use"]})
+
+    def stamp(c):
+        for q in queued:
+            n = find_node(c, q["node"])
+            if not n:
+                continue
+            g = n.setdefault("gen", {})
+            g["pid"] = q["prompt_id"]
+            if q["seed"] is not None:
+                g["seed"] = q["seed"]
+            g["status"] = f"排队中 · {q['dims']['width']}×{q['dims']['height']}"
+            for r in q["use"]:
+                rn = find_node(c, r["node"]["id"])
+                if rn and r["node"].get("uploaded"):
+                    rn["uploaded"] = r["node"]["uploaded"]
+                    rn["subfolder"] = r["node"].get("subfolder") or ""
+                    rn["dataURL"] = r["node"].get("dataURL") or rn.get("dataURL")
+
+    try:
+        mutate(pid, stamp)
+    except ToolError:
+        pass
+
+    if not queued:
+        detail = "；".join(f"{f['node']}：{f['error']}" for f in failed)
+        raise ToolError(f"一个都没提交成功——{detail}")
+
+    wait = args.get("wait") is True
+    done, pending = {}, {q["node"]: q for q in queued}
+    if wait:
+        deadline = time.time() + float(args.get("timeout_s") or 900)
+        while pending and time.time() < deadline:
+            for nid, q in list(pending.items()):
+                st = E().job_status(q["prompt_id"]) or {}
+                if st.get("status") in ("success", "error"):
+                    done[nid] = (q, st)
+                    pending.pop(nid)
+            if pending:
+                time.sleep(1.5)
+        for nid, (q, st) in done.items():
+            if st.get("status") == "success":
+                _settle_node(pid, nid, q["prompt_id"], _gallery_of(st.get("artifacts") or []),
+                             dims=q["dims"], batch=q["batch"], seed=q["seed"])
+
+    lines = [f"已提交 {len(queued)} 个任务" + ("，全部跑完" if wait and not pending else "（ComfyUI 排队跑）")]
+    for q in queued:
+        if q["node"] in done:
+            st = done[q["node"]][1]
+            lines.append(f"- {q['node']} · {st.get('status')} · prompt_id={q['prompt_id']}")
+        elif q["node"] in pending:
+            lines.append(f"- {q['node']} · 还在跑 · prompt_id={q['prompt_id']}")
+        else:
+            lines.append(f"- {q['node']} · 已提交 · prompt_id={q['prompt_id']}")
+    for f in failed:
+        lines.append(f"- {f['node']} · 没提交：{f['error']}")
+    if pending:
+        lines.append("出图后节点会自动补上；要确认进度就 job_status 查上面的 prompt_id。")
+    return {"text": "\n".join(lines),
+            "data": {"project": pid, "queued": queued, "failed": failed,
+                     "done": sorted(done), "pending": sorted(pending)}}
+
+
+@tool("job_status", "查一个 ComfyUI 任务的状态（queued / running / success / error）与产物。"
+                    "任务成功时会把产物自动写回画布上等它的那个节点。",
       {"prompt_id": {"type": "string"}}, ["prompt_id"])
 def _t_job_status(args):
     st = E().job_status(str(args["prompt_id"]))
@@ -2003,7 +2154,21 @@ def _t_job_status(args):
         line += f" · {st['error']}"
     if arts:
         line += f" · {len(arts)} 个产物"
-    return {"text": line, "data": {"prompt_id": args["prompt_id"], **st}}
+    # 成功就把图补写回画布：run_node 超时返回「还在跑」之后，这里是唯一的收尾机会。
+    # 已经写过的（gallery 与这次产物一致）不重复写，否则每查一次就多一条 runs。
+    written = False
+    if status == "success" and arts:
+        pid, node_id = _find_pid_owner(str(args["prompt_id"]))
+        if node_id:
+            gallery = _gallery_of(arts)
+            canvas = load_canvas(pid) or {}
+            n = find_node(canvas, node_id) or {}
+            old = [it.get("filename") for it in ((n.get("gen") or {}).get("gallery") or [])]
+            if old != [it.get("filename") for it in gallery]:
+                written = _settle_node(pid, node_id, str(args["prompt_id"]), gallery)
+                if written:
+                    line += f" · 已写回 {pid}/{node_id}"
+    return {"text": line, "data": {"prompt_id": args["prompt_id"], **st, "written": written}}
 
 
 @tool("cancel_job", "取消任务：给 prompt_id 从队列里删掉；给 node 则取消该节点当前那次。",
