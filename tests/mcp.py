@@ -541,6 +541,19 @@ def main() -> int:
                   and all(q.get("prompt_id") for q in queued),
                   f"{len(queued)} 个 · {[q.get('node') for q in queued]}")
 
+            # 模拟浏览器保存一次：前端存画布时 gen 是白名单字段，pid / status 根本不在里面，
+            # 用户随便拖一下节点、改个标题，MCP 写的 pid 就没了。job_status 不能靠画布上的
+            # pid 找节点——否则「提交时好好的、回来找不到人」，图永远停在 ComfyUI 的 output/。
+            for f in (data_dir / "projects").glob("*.json"):
+                d = json.loads(f.read_text(encoding="utf-8-sig"))
+                hit = False
+                for n in d.get("nodes") or []:
+                    if n.get("id") in ids and (n.get("gen") or {}).get("pid"):
+                        n["gen"]["pid"] = None
+                        hit = True
+                if hit:
+                    f.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+
             for q in queued:
                 for _ in range(60):
                     _o, js = c.tool("job_status", {"prompt_id": q["prompt_id"]})

@@ -1935,9 +1935,54 @@ def _settle_node(pid: str, node_id: str, prompt_id: str, gallery: list, *,
     return bool(res)
 
 
+def _jobs_file() -> Path:
+    return data_dir() / "pending-jobs.json"
+
+
+def _load_jobs() -> dict:
+    return _read_json(_jobs_file()) or {}
+
+
+def _save_jobs(jobs: dict) -> None:
+    f = _jobs_file()
+    tmp = f.with_name(f.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, f)
+    except OSError:
+        pass
+
+
+def _remember_job(prompt_id: str, project: str, node: str) -> None:
+    """记下「这个 prompt_id 是哪个项目哪个节点在等」。
+
+    **不能只靠画布上的 gen.pid**：前端保存画布时 gen 是白名单字段，pid / status
+    根本不在里面——浏览器随便动一下（改标题、拖位置、自动保存）就把 pid 抹掉，
+    job_status 再也找不到该写回谁，图就永远停在 ComfyUI 的 output/ 里。
+    这个表是服务端自己的，前端碰不到。
+    """
+    if not prompt_id:
+        return
+    jobs = _load_jobs()
+    jobs[prompt_id] = {"project": project, "node": node, "at": int(time.time())}
+    if len(jobs) > 200:                      # 只留最近的，别让它无限长
+        for k in sorted(jobs, key=lambda x: (jobs[x] or {}).get("at") or 0)[:-200]:
+            jobs.pop(k, None)
+    _save_jobs(jobs)
+
+
+def _forget_job(prompt_id: str) -> None:
+    jobs = _load_jobs()
+    if jobs.pop(prompt_id, None) is not None:
+        _save_jobs(jobs)
+
+
 def _find_pid_owner(prompt_id: str) -> tuple:
-    """哪个项目的哪个节点在等这个 prompt_id。job_status 只有 prompt_id，得自己找回来。"""
-    for f in projects_dir().glob("*.json"):
+    """哪个项目的哪个节点在等这个 prompt_id。"""
+    rec = _load_jobs().get(prompt_id) or {}
+    if rec.get("project") and rec.get("node"):
+        return str(rec["project"]), str(rec["node"])
+    for f in projects_dir().glob("*.json"):     # 表丢了（老任务 / 手删了文件）再扫画布兜底
         d = _read_json(f) or {}
         for n in d.get("nodes") or []:
             if str(((n.get("gen") or {}).get("pid") or "")) == prompt_id:
@@ -1966,6 +2011,7 @@ def _t_run_node(args):
     prepared = _run_prepare(canvas, node, args.get("prompt"))
     dims, batch, built, use = prepared["dims"], prepared["batch"], prepared["built"], prepared["use"]
     prompt_id, seed = _submit_prompt(built)
+    _remember_job(prompt_id, pid, str(args["node"]))
 
     def stamp(c):
         n = find_node(c, str(args["node"]))
@@ -2080,6 +2126,7 @@ def _t_run_nodes(args):
         queued.append({"node": nid, "prompt_id": prompt_id, "seed": seed,
                        "dims": prepared["dims"], "batch": prepared["batch"],
                        "use": prepared["use"]})
+        _remember_job(prompt_id, pid, nid)
 
     def stamp(c):
         for q in queued:
@@ -2168,6 +2215,8 @@ def _t_job_status(args):
                 written = _settle_node(pid, node_id, str(args["prompt_id"]), gallery)
                 if written:
                     line += f" · 已写回 {pid}/{node_id}"
+        else:
+            _forget_job(str(args["prompt_id"]))     # 节点已经被删了，留着这条映射没意义
     return {"text": line, "data": {"prompt_id": args["prompt_id"], **st, "written": written}}
 
 
