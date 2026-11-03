@@ -928,6 +928,45 @@
     return `${Math.round(w) / g}:${Math.round(h) / g}`;
   }
 
+  // 智能画幅：按「真正送进模型的那张图」的实际宽高比选画幅。
+  // 只吸附到网格里的标准比例——191:200 这种任意比例摆进网格是个谁也对不上的怪格子，
+  // 而输出尺寸本来就要按 16 对齐，取最近的常用比例更实用。
+  function nearestAspect(w, h) {
+    const r = Number(w) / Number(h);
+    if (!r || !isFinite(r)) return '';
+    let best = '', bestD = Infinity;
+    for (const a of ASPECTS) {
+      const [x, y] = a.split(':').map(Number);
+      // 用对数比：2:1 和 1:2 对 1:1 的偏离一样大，用绝对值会偏心横图
+      const d = Math.abs(Math.log((x / y) / r));
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    return best;
+  }
+
+  // 节点上那张图的**实际像素**：只有 naturalWidth 说真话。
+  // gen 里记的宽高是「当时按什么参数生成的」，图被高清化 / 换过之后就对不上了。
+  function imageSizeOf(node) {
+    if (!node) return null;
+    const im = document.querySelector(`#nodes .node[data-id="${node.id}"] .thumb img`);
+    if (im && im.naturalWidth && im.naturalHeight) return { w: im.naturalWidth, h: im.naturalHeight };
+    const md = maskDocOf(node);          // 涂过遮罩的节点，记录里就带着原图尺寸
+    if (md && md.w && md.h) return { w: md.w, h: md.h };
+    return null;
+  }
+
+  // 送进模型的第一张图决定画幅：节点自己的图优先，其次连线进来的参考图
+  // （和 genOne 里 picked 的取图顺序一致，否则「面板写的比例」和「实际喂进去的图」会对不上）
+  function autoAspectFor(n) {
+    const own = n.dataURL ? imageSizeOf(n) : null;
+    if (own) return nearestAspect(own.w, own.h);
+    for (const r of refsOf(n)) {
+      const s = imageSizeOf(r.node);
+      if (s) return nearestAspect(s.w, s.h);
+    }
+    return '';
+  }
+
   // 自定义尺寸下点画幅：长边不动，另一条边按新比例重算（1280×720 点 9:16 → 720×1280）
   function fitCustom(aspect, c) {
     const [a, b] = aspect.split(':').map(Number);
@@ -1687,7 +1726,7 @@
   // 底部原来并排放着「画幅 / 尺寸 / 张数」三个下拉：一行里挤四个控件，每个窄到只能显示两个字，
   // 想选 3:2 得先点开、再在文字列表里找。收成一枚胶囊（16:9 · 标准 · 1 张）+ 一个分组弹层：
   // 比例做成图形网格（胖瘦一眼可比），清晰度带上短边像素，底部实时显示最终出图尺寸。
-  function openGenOpts(anchor, g, sync) {
+  function openGenOpts(anchor, g, sync, owner) {
     closePopMenu();
     const menu = document.createElement('div');
     menu.className = 'popmenu gen-opts';
@@ -1721,7 +1760,16 @@
     });
 
     const paint = (syncInputs = true) => {
-      menu.querySelectorAll('.go-ratio').forEach((b) => b.classList.toggle('on', b.dataset.a === g.aspect));
+      // 智能档：比例是算出来的，不能靠 g.aspect 命中某一格去亮——那会让人以为是自己选的
+      menu.querySelectorAll('.go-ratio').forEach((b) => {
+        const on = b.dataset.a === 'auto'
+          ? !!g.aspectAuto
+          : (!g.aspectAuto && b.dataset.a === g.aspect);
+        b.classList.toggle('on', on);
+      });
+      // 智能格里那行小字报「算成了什么」，没启用时留一个破折号
+      const autoVal = menu.querySelector('.go-auto-val');
+      if (autoVal) autoVal.textContent = g.aspectAuto ? g.aspect : '—';
       menu.querySelectorAll('.go-seg button').forEach((b) => {
         const on = b.dataset.s != null ? b.dataset.s === g.size : Number(b.dataset.b) === Number(g.batch);
         b.classList.toggle('on', on);
@@ -1756,6 +1804,32 @@
     const aBox = sec('画幅');
     const grid = document.createElement('div');
     grid.className = 'go-ratios';
+    // 智能：不自己定比例，读当前那张图的真实宽高比。放在第一格——高清化 / 图生图时
+    // 「跟着原图走」才是默认诉求，手动挑 1:1 反而会把竖图压扁。
+    // 格子里那行小字是识别结果（没启用时是 —）：只写「智能」两个字，用户看不出它算成了什么。
+    const autoBtn = document.createElement('button');
+    autoBtn.type = 'button';
+    autoBtn.className = 'go-ratio go-auto';
+    autoBtn.dataset.a = 'auto';
+    autoBtn.title = '智能：按这张图的实际宽高比选画幅（换图后生成时会跟着变）';
+    const autoVal = document.createElement('b');
+    autoVal.className = 'go-auto-val';
+    autoVal.textContent = '—';
+    const autoLab = document.createElement('span');
+    autoLab.textContent = '智能';
+    autoBtn.append(autoVal, autoLab);
+    autoBtn.onclick = () => {
+      const a = autoAspectFor(owner);
+      if (!a) { flash('这张图还没加载完，画布上也没有参考图——先放一张图再选智能'); return; }
+      // 自定义档下同样要重算像素，否则「比例」和「像素」互相打架
+      if (g.size === 'custom' && g.custom) {
+        g.custom = fitCustom(a, g.custom);
+        pick({ aspect: a, aspectAuto: true, custom: g.custom });
+      } else {
+        pick({ aspect: a, aspectAuto: true });
+      }
+    };
+    grid.appendChild(autoBtn);
     ASPECTS.forEach((a) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -1770,11 +1844,12 @@
       b.append(glyph, lab);
       b.onclick = () => {
         // 自定义档下点画幅：尺寸跟着比例重算（长边不动），否则「比例」和「像素」会互相打架
+        // 手选比例 = 放弃智能档，否则下次换图又被自动改回去，等于白点
         if (g.size === 'custom' && g.custom) {
           g.custom = fitCustom(a, g.custom);
-          pick({ aspect: a, custom: g.custom });
+          pick({ aspect: a, aspectAuto: false, custom: g.custom });
         } else {
-          pick({ aspect: a });
+          pick({ aspect: a, aspectAuto: false });
         }
       };
       grid.appendChild(b);
@@ -2299,7 +2374,8 @@
     //    gallery / prompt 一起冲掉，多图节点会当场变成空图（e2e 抓到的）。
     const g = n.gen || (n.gen = {});
     const DEFAULTS = {
-      prompt: '', wf: pickWorkflow('txt2img'), aspect: '1:1', size: '1k', custom: null,
+      prompt: '', wf: pickWorkflow('txt2img'), aspect: '1:1', aspectAuto: false,
+      size: '1k', custom: null,
       batch: 1, seedMode: 'random', seed: null,
       status: '', busy: false, gallery: [], idx: 0, extras: [],
       style: null,   // {cat, i, cn}：只存指针，提示词在 static/styles/ 里按需读
@@ -2542,10 +2618,11 @@
       optGlyph.style.width = `${w}px`;
       optGlyph.style.height = `${h}px`;
       // 自定义时直接报像素：这时候「1K/2K/4K」已经说明不了什么了
+      const aspLabel = g.aspectAuto ? `智能 ${g.aspect}` : g.aspect;
       optSum.textContent = g.size === 'custom'
         ? `${d.width}×${d.height} · ${g.batch}张`
-        : `${g.aspect} · ${sizeLabel(g.size)} · ${g.batch}张`;
-      optBtn.title = `画幅 / 清晰度 / 张数 / 种子（当前 ${g.aspect} · ${d.width}×${d.height} · ${g.batch} 张`
+        : `${aspLabel} · ${sizeLabel(g.size)} · ${g.batch}张`;
+      optBtn.title = `画幅 / 清晰度 / 张数 / 种子（当前 ${aspLabel} · ${d.width}×${d.height} · ${g.batch} 张`
         + (g.seedMode === 'fixed' ? ` · 固定种子 ${g.seed == null ? '未填' : g.seed}` : ' · 每次随机种子') + '）';
     };
     syncOpts();
@@ -2555,7 +2632,7 @@
       ev.preventDefault();
       ev.stopPropagation();
       if (popAnchor === optBtn) { closePopMenu(); return; }   // 再点一次收起
-      openGenOpts(optBtn, g, syncOpts);
+      openGenOpts(optBtn, g, syncOpts, n);
     };
     bar.appendChild(optBox);
     const status = document.createElement('span');
@@ -2727,6 +2804,12 @@
       const a = await postJson('/api/analyze', { graph });
       // 分析这一步也要几十毫秒到几秒：取消可能就发生在这里
       if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
+      // 智能画幅：出图前按「这次真正要喂进去的图」重算一次。
+      // 只在选中时算一次是不够的——换过图 / 涂过遮罩之后，比例早就不是当初那个了。
+      if (g.aspectAuto) {
+        const auto = autoAspectFor(n);
+        if (auto) g.aspect = auto;
+      }
       const dims = calcDims(g.aspect, g.size, g.custom);
       // 工作流能吃几张图（Qwen 编辑流是 images.image_1..4）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
@@ -6249,6 +6332,7 @@
         prompt: run.prompt || '',
         wf: run.wf || defaultWorkflowId(),
         aspect: (n.gen && n.gen.aspect) || '1:1',
+        aspectAuto: !!(n.gen && n.gen.aspectAuto),
         size: (n.gen && n.gen.size) || '1k',
         custom: (n.gen && n.gen.custom) || null,
         batch: run.batch || 1,
@@ -6552,6 +6636,8 @@
         gen: n.gen ? {
           prompt: n.gen.prompt, wf: n.gen.wf,
           aspect: ob ? ob.aspect : n.gen.aspect, size: ob ? ob.size : n.gen.size,
+          // 智能画幅：不存的话刷新后变 undefined，手选过的比例会被当成「智能」重算一遍
+          aspectAuto: !!(ob ? ob.aspectAuto : n.gen.aspectAuto),
           // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
           // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
           wfAuto: n.gen.wfAuto !== false,
@@ -9019,6 +9105,7 @@
       size: n.gen.size,
       custom: n.gen.custom ? { ...n.gen.custom } : null,
       aspect: n.gen.aspect,
+      aspectAuto: !!n.gen.aspectAuto,   // 智能档也要还原，否则退出扩图后手选的比例被「智能」顶掉
     };
     n.gen.outpaint = { l: 0, t: 0, r: 0, b: 0, w, h };
     syncOutpaintDims(n);
@@ -9053,6 +9140,7 @@
       n.gen.size = bak.size;
       n.gen.custom = bak.custom;
       n.gen.aspect = bak.aspect;
+      n.gen.aspectAuto = !!bak.aspectAuto;
       delete n.gen.opBackup;
     }
     rerenderNode(n.id, true);

@@ -1422,8 +1422,10 @@ try {
     };
   })()`);
   check('参数收成一枚胶囊 + 分组弹层（画幅 / 清晰度 / 张数 / 种子）',
-    opts.open && opts.sections.join(',') === '画幅,清晰度,张数,种子' && opts.ratios.length === 13 && opts.cols === 5,
-    JSON.stringify({ sections: opts.sections, ratios: opts.ratios?.length, cols: opts.cols }));
+    // 13 个固定比例 + 第一格「智能」（按图片实际宽高比算）
+    opts.open && opts.sections.join(',') === '画幅,清晰度,张数,种子'
+    && opts.ratios.length === 14 && opts.ratios[0] === 'auto' && opts.cols === 5,
+    JSON.stringify({ sections: opts.sections, ratios: opts.ratios?.length, first: opts.ratios?.[0], cols: opts.cols }));
   check('比例是图形网格，选中的那格按真实比例变形',
     opts.on === '1:1' && opts.glyphW === opts.glyphH, `1:1 glyph=${opts.glyphW}×${opts.glyphH}`);
   check('清晰度是 1K / 2K / 4K（长边像素）',
