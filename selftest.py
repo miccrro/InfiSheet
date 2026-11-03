@@ -30,7 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "server.py"
-PRESET = "krea2-txt2img.api.json"
+# 不写死预设文件名：它改过一次名（krea2-txt2img → krea2-文生图），写死会让整个
+# 「预设与插槽分析」段落连坐失败，还看不出是测试过期。改为按能力从 /api/library 挑。
 
 # 控制台统一 UTF-8：Windows 默认 GBK，中文断言名会乱码（bat 里也已 chcp 65001）
 for _stream in (sys.stdout, sys.stderr):
@@ -203,11 +204,37 @@ def main() -> int:
         c.check("预设带 kinds 能力标记", isinstance(kinds, list) and "image" in (kinds or []),
                 f"kinds={kinds}")
 
-        status, preset = jget(base, f"/presets/{PRESET}")
+        # 按能力挑，不按名字：预设改名 / 换一个内置流程都不该让这段测试红
+        target = next((p for p in presets if "image" in (p.get("kinds") or [])),
+                      presets[0] if presets else None)
+        if not target:
+            c.check("presets/ 里至少有一个工作流", False, "一个都没有")
+            target = {"file": "", "title": "", "name": ""}
+
+        status, preset = jget(base, "/presets/" + urllib.parse.quote(target["file"]))
         graph = (preset or {}).get("graph")
         c.check("预设文件可读取并含 graph",
                 status == 200 and isinstance(graph, dict) and len(graph) >= 1,
-                f"nodes={len(graph or {})}")
+                f"{target['file']} nodes={len(graph or {}) if isinstance(graph, dict) else 0}")
+        # 读不到也要继续跑：下面每条断言各自报 FAIL，比整段抛 TypeError 崩掉好查
+        graph = graph if isinstance(graph, dict) else {}
+
+        # 改名不该炸老画布：resolve 认文件名 / stem / 改名兼容表 / 标题 / uid
+        q = lambda v: "/api/wf/resolve?id=" + urllib.parse.quote(v, safe="")   # noqa: E731
+        status, res_file = jget(base, q("preset:" + target["file"]))
+        c.check("resolve 按文件名取到图",
+                status == 200 and (res_file or {}).get("ok") is True and (res_file or {}).get("graph"),
+                f"matched={(res_file or {}).get('matched')}")
+        status, res_stem = jget(base, q("preset:" + target["file"].replace(".api.json", "")))
+        c.check("resolve 认去掉 .api.json 的短名（改名的常见写法）",
+                status == 200 and (res_stem or {}).get("ok") is True
+                and (res_stem or {}).get("id") == "preset:" + target["file"],
+                f"id={(res_stem or {}).get('id')} matched={(res_stem or {}).get('matched')}")
+        status, res_miss = jget(base, q("preset:这个预设根本不存在.api.json"))
+        c.check("resolve 找不到时不 500，回候选让人重选",
+                status == 200 and (res_miss or {}).get("ok") is False
+                and len((res_miss or {}).get("candidates") or []) >= 1,
+                f"candidates={len((res_miss or {}).get('candidates') or [])}")
 
         status, analysis = jpost(base, "/api/analyze", {"graph": graph})
         slots = (analysis or {}).get("slots") or []

@@ -4401,7 +4401,13 @@ try {
     const hits = [];
     window.fetch = async (url, opts) => {
       const u = String(url);
+      // 取工作流现在走 /api/wf/resolve（文件名可变，不能直接拼 /presets/<文件>），
+      // 所以两边都记：断言关心的是「挑的是哪个工作流」，不是它从哪个 URL 取。
       if (u.startsWith('/presets/')) hits.push(decodeURIComponent(u));
+      if (u.startsWith('/api/wf/resolve')) {
+        const id = new URL(u, location.origin).searchParams.get('id') || '';
+        hits.push('resolve:' + decodeURIComponent(id));
+      }
       if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'wf-back' });
       if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
       if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });

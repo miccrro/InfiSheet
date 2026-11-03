@@ -2439,7 +2439,7 @@ class Handler(BaseHTTPRequestHandler):
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
                    "features": ["presets", "projects", "canvas_history", "ui_import", "mcp",
                                 "comfy_config", "wf_categories", "wf_meta", "progress_log",
-                                "setup"]}
+                                "setup", "wf_resolve"]}
             # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
@@ -2497,6 +2497,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/wf/categories":
             return self.json_out({"ok": True, "categories": load_categories()})
+
+        if path == "/api/wf/resolve":
+            # 按 id 找图，不靠文件名唯一：老画布里的旧名字、手输的标题、预设的 uid 都认。
+            # 前端只调这一个入口，改预设名就不再让老项目 404。
+            wid = (query.get("id") or [""])[0]
+            kinds = [k for k in (query.get("kinds") or [""])[0].split(",") if k]
+            return self.json_out(resolve_workflow_id(wid, kinds or None))
 
         if path.startswith("/api/library/"):
             name = urllib.parse.unquote(path.split("/api/library/", 1)[1])
@@ -3272,6 +3279,8 @@ def list_presets() -> list[dict]:
         meta = wf_meta_of(g, cat)
         out.append({"name": f.stem, "title": meta["title"] or f.stem,
                     "file": f.name, "nodes": len(g.get("graph") or {}),
+                    # 预设自己写的稳定 id：改名时它不动，画布可以拿它当引用
+                    "uid": str(g.get("uid") or ""),
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],
@@ -3297,6 +3306,202 @@ def list_library() -> list[dict]:
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],
                     **graph_takes(g.get("graph") or {})})
+    return out
+
+
+# 改名兼容表：`旧文件名 → 现文件名`。预设的**文件名**是最不该被当成主键的东西——
+# 它可变，却被写进了每一个画布项目（`gen.wf = "preset:xxx.api.json"`）。
+# 改一次名，所有老画布上那个节点就 404。这张表让旧名字继续指得到东西。
+#
+# 故意**不**放进 presets/：那里「每个 *.json 都是一个工作流」是不变量，
+# 塞一个说明文件进去，任何遍历目录的脚本（含用户自己写的）都会把它当预设。
+ALIASES_FILE = ROOT / "presets-aliases.json"
+
+
+def load_preset_aliases() -> dict[str, str]:
+    """读改名兼容表。键以 `_` 开头的是说明行，不当别名用；读坏了就当没有。"""
+    out: dict[str, str] = {}
+    try:
+        raw = json.loads(ALIASES_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        raw = {}
+    if isinstance(raw, dict):
+        out = {str(k): str(v) for k, v in raw.items()
+               if isinstance(v, str) and not str(k).startswith("_")}
+    # 自动认出来的改名排在后面：手工表写得明确，以它为准
+    for k, v in auto_aliases().items():
+        out.setdefault(k, v)
+    return out
+
+
+# 内容指纹快照：`文件名 → 图的 hash`，外加认出来的自动别名。
+# 手工表迟早会漏——改了名忘了写一行，老画布照样 404。所以再兜一层：
+# 同一张图的文件名变了，靠内容认出来，自动把旧名指到新名。
+SNAPSHOT_FILE = DATA / "preset-snapshot.json"
+_auto_aliases: dict[str, str] | None = None
+_snapshot_lock = threading.Lock()
+
+
+def preset_fingerprint(path: Path) -> str:
+    """只按 graph 算指纹：改标题 / 改分类不算「换了工作流」。"""
+    try:
+        g = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    core = json.dumps(g.get("graph") or {}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(core.encode("utf-8")).hexdigest()
+
+
+def refresh_preset_snapshot() -> dict[str, str]:
+    """比对「上次见到的文件」和「现在有的文件」，把改名认出来记成别名。
+
+    只在第一次用到时跑一次：改名本来就是「改完重启」的动作，不值得每个请求都扫目录。
+    """
+    global _auto_aliases
+    try:
+        old = json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        old = {}
+    if not isinstance(old, dict):
+        old = {}
+    old_files = old.get("files") if isinstance(old.get("files"), dict) else {}
+    aliases = dict(old.get("aliases")) if isinstance(old.get("aliases"), dict) else {}
+
+    PRESETS.mkdir(parents=True, exist_ok=True)
+    now: dict[str, str] = {}
+    for f in sorted(PRESETS.glob("*.json")):
+        fp = preset_fingerprint(f)
+        if fp:
+            now[f.name] = fp
+
+    gone = [n for n in old_files if n not in now]
+    new = [n for n in now if n not in old_files]
+    for name in gone:
+        same = [n for n in new if now[n] == old_files.get(name)]
+        # 只认一对一：两个内容完全相同的文件，挑哪个都是猜
+        if len(same) == 1:
+            aliases[name] = same[0]
+    # 目标文件已经不在的别名没有意义（改过去又改回来会留下这种），顺手清掉，别越积越多
+    aliases = {k: v for k, v in aliases.items() if v in now}
+    _auto_aliases = aliases
+
+    try:
+        SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SNAPSHOT_FILE.write_text(
+            json.dumps({"files": now, "aliases": aliases}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass                      # 写不了快照不影响本次解析，只是下次认不出改名
+    return aliases
+
+
+def auto_aliases() -> dict[str, str]:
+    """惰性初始化：mcp_server 直接 import 本模块时不会走 main()，不能只靠启动钩子。"""
+    global _auto_aliases
+    if _auto_aliases is None:
+        with _snapshot_lock:
+            if _auto_aliases is None:
+                refresh_preset_snapshot()
+    return _auto_aliases or {}
+
+
+def preset_graph(file: str) -> dict:
+    """按文件名读一张预设图（调用方负责确认文件在 presets/ 里）。"""
+    try:
+        return json.loads((PRESETS / file).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def resolve_workflow_id(spec: str, kinds: list[str] | None = None) -> dict:
+    """把 `preset:xxx` / `lib:xxx` 解析成真实的图，**不靠文件名唯一**。
+
+    按「稳定程度」从高到低找，命中就返回：
+        1. 文件名（file）  2. 去掉 .api.json 的 stem  3. 改名兼容表（alias）
+        4. 标题（title）   5. 预设里写的 uid
+    都找不到时**不猜**：把同能力的候选一起回给前端让人重选。
+    换错工作流比报错更难查——Moss_图像编辑 其实是纯文生图，猜错的代价是重画一张。
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return {"ok": False, "error": "缺少工作流 id", "requested": spec}
+    kind, sep, name = spec.partition(":")
+    if not sep:                                  # 只给了名字：按预设找，和旧行为一致
+        kind, name = "preset", spec
+    name = urllib.parse.unquote(name).strip()
+
+    if kind == "lib":
+        target = safe_library_path(name)
+        if target and target.is_file():
+            g = json.loads(target.read_text(encoding="utf-8"))
+            return {"ok": True, "id": "lib:" + name, "graph": g.get("graph") or {},
+                    "label": "库 · " + name, "requested": spec, "matched": "lib"}
+        return {"ok": False, "error": f"工作流库里没有：{name}", "requested": spec,
+                "candidates": [{"id": "lib:" + x["name"], "label": x["title"], "kinds": x["kinds"]}
+                               for x in list_library()[:5]]}
+
+    presets = list_presets()
+    aliases = load_preset_aliases()
+    hit, matched = None, ""
+
+    def stem(s: str) -> str:
+        """`krea2-文生图.api.json` / `krea2-文生图.api` / `krea2-文生图` 都归一到同一个短名。"""
+        s = str(s or "")
+        return s[:-len(".api.json")] if s.endswith(".api.json") else s[:-len(".api")] if s.endswith(".api") else s
+
+    def pick(pred):
+        return next((p for p in presets if pred(p)), None)
+
+    def canon(s: str) -> str:
+        """把分隔符和大小写抹平：`Krea2 · 文生图` / `krea2-文生图` / `krea2_文生图` 归一。
+        改名、手输最常见的差异就是这几种分隔符，不该因为一个 `·` 就找不到。"""
+        s = str(s or "").lower()
+        for ch in "·-_. ":
+            s = s.replace(ch, "")
+        return s
+
+    hit, matched = pick(lambda p: p["file"] == name), "file"
+    if not hit:                                  # 去掉 .api.json 的短名（改名时最常写的形态）
+        hit, matched = pick(lambda p: stem(p["file"]) == stem(name)), "stem"
+    if not hit:                                  # 改过名：旧名（带不带 .api.json 都认）→ 现名
+        # 连改两次名会得到 旧 → 中 → 新 的链，所以一路跟到底（限深度，防环）
+        cur, seen = name, set()
+        for _ in range(5):
+            to = aliases.get(cur) or next((v for k, v in aliases.items() if stem(k) == stem(cur)), None)
+            if not to or to in seen:
+                break
+            seen.add(to)
+            hit = pick(lambda p: p["file"] == to or stem(p["file"]) == stem(to))
+            if hit:
+                matched = "alias"
+                break
+            cur = to
+    if not hit:                                  # 用户看到的是标题，手输多半也是它
+        hit, matched = pick(lambda p: p["title"] == name), "title"
+    if not hit:                                  # 大小写 / 分隔符不一致（Krea2 · 文生图 vs krea2-文生图）
+        # 只在**唯一**命中时才认：两个工作流 canon 后撞车时挑一个等于抛硬币
+        loose = [p for p in presets if canon(p["title"]) == canon(name) or canon(stem(p["file"])) == canon(name)]
+        if len(loose) == 1:
+            hit, matched = loose[0], "title"
+    if not hit:                                  # 预设自己声明的稳定 id
+        hit, matched = pick(lambda p: p.get("uid") and p["uid"] == name), "uid"
+    if not hit and kinds:
+        # 只有「同类恰好一个」才敢替你换：两个同类里挑一个等于抛硬币
+        same = [p for p in presets if set(kinds) <= set(p.get("kinds") or [])]
+        if len(same) == 1:
+            hit, matched = same[0], "kinds"
+
+    if not hit:
+        pool = [p for p in presets if not kinds or set(kinds) <= set(p.get("kinds") or [])] or presets
+        return {"ok": False, "error": f"找不到工作流「{name}」", "requested": spec,
+                "candidates": [{"id": "preset:" + p["file"], "label": p["title"],
+                                "kinds": p["kinds"]} for p in pool[:6]]}
+
+    out = {"ok": True, "id": "preset:" + hit["file"], "graph": preset_graph(hit["file"]).get("graph") or {},
+           "label": hit["title"], "requested": spec, "matched": matched}
+    if matched == "alias":
+        # 前端拿到这个字段就可以把项目里的旧引用悄悄换成新名（惰性迁移）
+        out["aliasedFrom"] = name
     return out
 
 

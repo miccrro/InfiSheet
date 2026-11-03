@@ -841,6 +841,12 @@
 
   async function loadGraphById(id) {
     if (!id) return null;
+    // 不直接拼 /presets/<文件名>：文件名是可变的，却被写进了每个项目。
+    // 服务端 resolve 依次认 文件名 / stem / 改名兼容表 / 标题 / uid，改预设名就不再让老画布 404。
+    const r = await api(`/api/wf/resolve?id=${encodeURIComponent(id)}`);
+    if (r && r.graph && Object.keys(r.graph).length) return r.graph;
+    if (r && r.ok === false && 'candidates' in r) return null;   // 真找不到：让调用方如实报错
+    // 服务端还是旧版本（没有这个接口）→ 退回直连，别把整块画布拖死
     if (id.startsWith('preset:')) return (await api(`/presets/${encodeURIComponent(id.slice(7))}`)).graph;
     if (id.startsWith('lib:')) return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
     return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
