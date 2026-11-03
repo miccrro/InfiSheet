@@ -531,6 +531,19 @@ def comfy_json(path: str, timeout: float = 30.0):
     return json.loads(raw.decode("utf-8"))
 
 
+def comfy_reachable(timeout: float = 3) -> bool:
+    """一次轻量探测：ComfyUI 到底在不在。
+
+    用来区分「没连上」和「这个节点 ComfyUI 不认识」——两者都会让 object_info 拿不到东西，
+    但处理方式相反：前者该整体失败，后者只是少几个插槽。
+    """
+    try:
+        comfy_json("/system_stats", timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def object_info(node_type: str):
     """按节点类型取 object_info。
 
@@ -838,6 +851,7 @@ def analyze_graph(graph: dict) -> dict:
     unknown_types: list[str] = []
     resolved = 0          # 成功拿到 object_info 的节点数
     unresolved = 0        # 这次没取到的节点数（ComfyUI 不可达）
+    reachable: bool | None = None   # 只在真需要区分「没连上 / 不认识」时探一次
 
     for node_id, node in graph.items():
         if not isinstance(node, dict):
@@ -855,6 +869,15 @@ def analyze_graph(graph: dict) -> dict:
         spec = node_spec(ct)
         if spec is None:
             unresolved += 1
+            # 一个都还没取到就先确认「是 ComfyUI 没连上，还是这个节点不认识」：
+            # 连不上时逐节点重试等于每个节点各等一次连接超时（13 节点 ≈ 26 秒），
+            # 用户看到的是「点了生成，卡半分钟才报错」。确认连不上就直接短路。
+            if resolved == 0:
+                if reachable is None:
+                    reachable = comfy_reachable()
+                if not reachable:
+                    raise ConnectionError(
+                        "无法读取 ComfyUI 的节点定义（/object_info 请求失败）——确认 ComfyUI 正在运行后重试")
             spec = {}
         else:
             resolved += 1
