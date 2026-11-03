@@ -1174,6 +1174,14 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .gen-opts .go-seg button em { font-style: normal; font-size: 9px; opacity: 0.55; }
 .gen-opts .go-seg button:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
 .gen-opts .go-seg button.on { color: #fff; border-color: rgba(255, 255, 255, 0.5); background: rgba(255, 255, 255, 0.1); }
+/* 智能档下清晰度不可用：尺寸由原图决定，还能点就会和「智能」自相矛盾 */
+.gen-opts .go-seg button:disabled,
+.gen-opts .go-seg button:disabled:hover {
+  opacity: 0.3; cursor: not-allowed; color: var(--dim); background: rgba(255, 255, 255, 0.02);
+}
+.gen-opts .go-seg button:disabled.on { border-color: rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.04); color: var(--dim); }
+.gen-opts .go-custom.off { opacity: 0.45; }
+.gen-opts .go-custom.off input { cursor: not-allowed; }
 .gen-opts .go-seg button.on em { opacity: 0.8; }
 /* 自定义宽高：两个数字框，改哪个都立刻切到「自定义」档 */
 .gen-opts .go-custom { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 0 2px; }

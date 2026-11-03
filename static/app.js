@@ -957,14 +957,26 @@
 
   // 送进模型的第一张图决定画幅：节点自己的图优先，其次连线进来的参考图
   // （和 genOne 里 picked 的取图顺序一致，否则「面板写的比例」和「实际喂进去的图」会对不上）
-  function autoAspectFor(n) {
-    const own = n.dataURL ? imageSizeOf(n) : null;
-    if (own) return nearestAspect(own.w, own.h);
-    for (const r of refsOf(n)) {
-      const s = imageSizeOf(r.node);
-      if (s) return nearestAspect(s.w, s.h);
+  // 返回实际像素 + 吸附后的比例：智能档要的是「原图多大就出多大」，只给比例是不够的。
+  function autoSizeFor(n) {
+    let src = n.dataURL ? imageSizeOf(n) : null;
+    if (!src) {
+      for (const r of refsOf(n)) {
+        const s = imageSizeOf(r.node);
+        if (s) { src = s; break; }
+      }
     }
-    return '';
+    if (!src) return null;
+    return { w: src.w, h: src.h, aspect: nearestAspect(src.w, src.h) };
+  }
+
+  // 智能档的尺寸就是原图像素（对齐 16），不再走 1K/2K/4K——
+  // 那档位和「跟着原图走」是两套口径，同时生效就会互相打架（选了 4K，1536×2048 变成 3072×4096）。
+  function dimsOf(g) {
+    if (g.aspectAuto && g.autoW && g.autoH) {
+      return { width: snapDim(g.autoW), height: snapDim(g.autoH) };
+    }
+    return calcDims(g.aspect, g.size, g.custom);
   }
 
   // 自定义尺寸下点画幅：长边不动，另一条边按新比例重算（1280×720 点 9:16 → 720×1280）
@@ -1770,13 +1782,22 @@
       // 智能格里那行小字报「算成了什么」，没启用时留一个破折号
       const autoVal = menu.querySelector('.go-auto-val');
       if (autoVal) autoVal.textContent = g.aspectAuto ? g.aspect : '—';
+      // 智能档下尺寸由原图决定，清晰度那三档和自定义宽高都不该还能点——
+      // 留着能点就会出现「写着智能 3:4、实际出 3072×4096」这种自相矛盾的组合。
+      menu.querySelectorAll('.go-seg button[data-s]').forEach((b) => { b.disabled = !!g.aspectAuto; });
+      cW.disabled = !!g.aspectAuto;
+      cH.disabled = !!g.aspectAuto;
+      cBox.classList.toggle('off', !!g.aspectAuto);
       menu.querySelectorAll('.go-seg button').forEach((b) => {
-        const on = b.dataset.s != null ? b.dataset.s === g.size : Number(b.dataset.b) === Number(g.batch);
+        // 智能档下三档全灭：尺寸不由它们决定，留一盏亮着会让人以为「4K 生效了」
+        const on = b.dataset.s != null
+          ? (!g.aspectAuto && b.dataset.s === g.size)
+          : Number(b.dataset.b) === Number(g.batch);
         b.classList.toggle('on', on);
       });
-      const d = calcDims(g.aspect, g.size, g.custom);
+      const d = dimsOf(g);
       const mp = (d.width * d.height) / 1e6;
-      cBox.classList.toggle('on', g.size === 'custom');
+      cBox.classList.toggle('on', g.size === 'custom' && !g.aspectAuto);
       // 种子：随机档把输入框灰掉（它还显示着上次用的数，切「固定」就能直接复现）
       const seedFixed = (g.seedMode || 'random') === 'fixed';
       menu.querySelectorAll('button[data-seed]').forEach((b) => {
@@ -1792,7 +1813,8 @@
       }
       // 4K 一张 10~17MP，本地出图会从「一分半」变成「十几分钟」，先把话说在前面
       foot.textContent = `${g.aspect} · ${d.width} × ${d.height} · ${mp.toFixed(1)}MP`
-        + (mp > 4 ? ' · 本地偏慢' : '')
+        + (g.aspectAuto ? ' · 原图尺寸' : '')
+        + (mp > 4 && !g.aspectAuto ? ' · 本地偏慢' : '')
         + (seedFixed ? '' : ' · 种子随机');
     };
     // 弹层不关：连着调「比例 + 清晰度」时，关一次就得重新点开一次
@@ -1811,7 +1833,7 @@
     autoBtn.type = 'button';
     autoBtn.className = 'go-ratio go-auto';
     autoBtn.dataset.a = 'auto';
-    autoBtn.title = '智能：按这张图的实际宽高比选画幅（换图后生成时会跟着变）';
+    autoBtn.title = '智能：按这张图的实际尺寸出图（比例和像素都跟着原图，换图后生成时会重算）';
     const autoVal = document.createElement('b');
     autoVal.className = 'go-auto-val';
     autoVal.textContent = '—';
@@ -1819,15 +1841,9 @@
     autoLab.textContent = '智能';
     autoBtn.append(autoVal, autoLab);
     autoBtn.onclick = () => {
-      const a = autoAspectFor(owner);
-      if (!a) { flash('这张图还没加载完，画布上也没有参考图——先放一张图再选智能'); return; }
-      // 自定义档下同样要重算像素，否则「比例」和「像素」互相打架
-      if (g.size === 'custom' && g.custom) {
-        g.custom = fitCustom(a, g.custom);
-        pick({ aspect: a, aspectAuto: true, custom: g.custom });
-      } else {
-        pick({ aspect: a, aspectAuto: true });
-      }
+      const s = autoSizeFor(owner);
+      if (!s) { flash('这张图还没加载完，画布上也没有参考图——先放一张图再选智能'); return; }
+      pick({ aspect: s.aspect, aspectAuto: true, autoW: s.w, autoH: s.h });
     };
     grid.appendChild(autoBtn);
     ASPECTS.forEach((a) => {
@@ -2611,17 +2627,21 @@
     optBox.appendChild(optBtn);
 
     const syncOpts = () => {
-      const d = calcDims(g.aspect, g.size, g.custom);
+      const d = dimsOf(g);
       // 自定义尺寸（扩图拖出来的就是这个）时，方块要按**实际宽高**画：
       // 还挂 g.aspect 的话会出现「写着 1344×1200、旁边却是个 1:1 的方疙瘩」。
-      const [w, h] = ratioGlyph(g.size === 'custom' ? `${d.width}:${d.height}` : g.aspect, 12, 12);
+      // 智能档同理：尺寸来自原图，方块也该按实际像素画。
+      const [w, h] = ratioGlyph(
+        g.size === 'custom' || g.aspectAuto ? `${d.width}:${d.height}` : g.aspect, 12, 12);
       optGlyph.style.width = `${w}px`;
       optGlyph.style.height = `${h}px`;
-      // 自定义时直接报像素：这时候「1K/2K/4K」已经说明不了什么了
+      // 自定义 / 智能时直接报像素：这时候「1K/2K/4K」已经说明不了什么了
       const aspLabel = g.aspectAuto ? `智能 ${g.aspect}` : g.aspect;
-      optSum.textContent = g.size === 'custom'
-        ? `${d.width}×${d.height} · ${g.batch}张`
-        : `${aspLabel} · ${sizeLabel(g.size)} · ${g.batch}张`;
+      optSum.textContent = g.aspectAuto
+        ? `${aspLabel} · ${d.width}×${d.height} · ${g.batch}张`
+        : g.size === 'custom'
+          ? `${d.width}×${d.height} · ${g.batch}张`
+          : `${aspLabel} · ${sizeLabel(g.size)} · ${g.batch}张`;
       optBtn.title = `画幅 / 清晰度 / 张数 / 种子（当前 ${aspLabel} · ${d.width}×${d.height} · ${g.batch} 张`
         + (g.seedMode === 'fixed' ? ` · 固定种子 ${g.seed == null ? '未填' : g.seed}` : ' · 每次随机种子') + '）';
     };
@@ -2805,12 +2825,12 @@
       // 分析这一步也要几十毫秒到几秒：取消可能就发生在这里
       if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
       // 智能画幅：出图前按「这次真正要喂进去的图」重算一次。
-      // 只在选中时算一次是不够的——换过图 / 涂过遮罩之后，比例早就不是当初那个了。
+      // 只在选中时算一次是不够的——换过图 / 涂过遮罩之后，尺寸和比例早就不是当初那个了。
       if (g.aspectAuto) {
-        const auto = autoAspectFor(n);
-        if (auto) g.aspect = auto;
+        const s = autoSizeFor(n);
+        if (s) { g.aspect = s.aspect; g.autoW = s.w; g.autoH = s.h; }
       }
-      const dims = calcDims(g.aspect, g.size, g.custom);
+      const dims = dimsOf(g);
       // 工作流能吃几张图（Qwen 编辑流是 images.image_1..4）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
       const cap = (a.slots || []).filter((s) => s.kind === 'image').length;
@@ -6333,6 +6353,8 @@
         wf: run.wf || defaultWorkflowId(),
         aspect: (n.gen && n.gen.aspect) || '1:1',
         aspectAuto: !!(n.gen && n.gen.aspectAuto),
+        autoW: (n.gen && n.gen.autoW) || null,
+        autoH: (n.gen && n.gen.autoH) || null,
         size: (n.gen && n.gen.size) || '1k',
         custom: (n.gen && n.gen.custom) || null,
         batch: run.batch || 1,
@@ -6638,6 +6660,9 @@
           aspect: ob ? ob.aspect : n.gen.aspect, size: ob ? ob.size : n.gen.size,
           // 智能画幅：不存的话刷新后变 undefined，手选过的比例会被当成「智能」重算一遍
           aspectAuto: !!(ob ? ob.aspectAuto : n.gen.aspectAuto),
+          // 智能档出图用的是原图像素，不存就只能退回比例 + 清晰度那套口径
+          autoW: ob ? ob.autoW : n.gen.autoW,
+          autoH: ob ? ob.autoH : n.gen.autoH,
           // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
           // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
           wfAuto: n.gen.wfAuto !== false,
@@ -9106,6 +9131,8 @@
       custom: n.gen.custom ? { ...n.gen.custom } : null,
       aspect: n.gen.aspect,
       aspectAuto: !!n.gen.aspectAuto,   // 智能档也要还原，否则退出扩图后手选的比例被「智能」顶掉
+      autoW: n.gen.autoW,
+      autoH: n.gen.autoH,
     };
     n.gen.outpaint = { l: 0, t: 0, r: 0, b: 0, w, h };
     syncOutpaintDims(n);
@@ -9141,6 +9168,8 @@
       n.gen.custom = bak.custom;
       n.gen.aspect = bak.aspect;
       n.gen.aspectAuto = !!bak.aspectAuto;
+      n.gen.autoW = bak.autoW;
+      n.gen.autoH = bak.autoH;
       delete n.gen.opBackup;
     }
     rerenderNode(n.id, true);
