@@ -992,12 +992,13 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 5px; flex: 1 1 auto; min-width: 0;
 }
-/* 上排按钮：按参考截图那颗「＋ 上传」——胶囊形、实心底、不描边、浅灰字。
-   全局那条 `button:not(...){border-radius:999px}` 把按钮一律做成胶囊，这里靠
-   :not(.chip) 豁免（项目里的老规矩），所以胶囊得在本文件里显式写一次。 */
+/* 上排按钮：按参考截图那颗「＋ 上传」——实心底、不描边、浅灰字。
+   圆角是**圆角矩形**（8px），不是胶囊：这一排和底栏两个下拉、展开键、发送键
+   现在共用同一个 8px，整块面板里不再出现「三种圆角并排」的拼凑感。
+   这条的权重（0,2,0）压得住后面所有 `.chip{...}`（0,1,0），所以只改这里就够。 */
 .gen-chips .chip {
   color: #ccd3de;
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 0 10px;
   background: rgba(255, 255, 255, 0.08);
   border-color: transparent;
@@ -2088,8 +2089,10 @@ button.primary { border-radius: 999px; }
    卡片再做成圆的会跟它打架（也分不清「这是在选比例」）。
    工作流弹窗的左侧导航也是例外：竖排列表用胶囊会像一排药丸，认不出是导航。
    风格格子和它的关闭键同理：缩略图要方方正正地铺成宫格，圆角 999px 会把图裁成圆圈
-   （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb):not(.pc-more):not(.cover-cell) {
+   （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。
+   生成器的发送键（.gen-run）也要进排除名单：它要的是 8px 圆角矩形。以前这里漏了它，
+   于是 `border-radius: 50%` / `8px` 全被这条压掉，实测计算值是 999px。 */
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb):not(.pc-more):not(.cover-cell) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2184,9 +2187,13 @@ button.primary:hover,
   flex: 0 0 1px; width: 1px; height: 12px; align-self: center;
   background: rgba(255, 255, 255, 0.16); margin: 0 2px;
 }
-/* 生成按钮跟着长到 28，和左边两个下拉同高 */
-.gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; }
+/* 生成按钮跟着长到 28，和左边两个下拉同高。
+   圆角从正圆（50%）改成 8px 圆角矩形，和这一排其它控件统一——
+   一颗白圆点挤在三个方角控件中间，看着像从别的设计稿里剪过来的。 */
+.gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px; }
 .gen-bar .gen-run .oi { width: 16px; height: 16px; }
+/* 放大编辑区里那颗发送键是同一个按钮，圆角也得跟着走，不然两处长得不一样 */
+.of-params .gen-run { border-radius: 8px; }
 
 /* =========================================================
    生成器 · 参考图缩略图（连线 / @ 引用）与 @ 选择菜单

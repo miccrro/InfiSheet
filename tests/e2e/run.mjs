@@ -1051,8 +1051,10 @@ try {
     JSON.stringify(pg0));
   check('面板是固定 660 宽的版面（不再跟着节点宽度走）',
     Math.abs(pg0.w - 660) <= 1 && pg0.w - pg0.nodeW >= 32, `${pg0.w} vs 节点 ${pg0.nodeW}`);
-  check('上排按钮：胶囊形、实心底、浅灰字（对齐参考图那颗「＋ 上传」）',
-    pg0.chipRadius === '999px' && pg0.chipColor === 'rgb(204, 211, 222)'
+  // 圆角矩形而不是胶囊：这一排和底栏两个下拉、展开键、发送键共用同一个 8px，
+  // 整块面板里不再有「胶囊 + 正圆 + 方角」三种圆角并排。
+  check('上排按钮：8px 圆角矩形、实心底、浅灰字（对齐参考图那颗「＋ 上传」）',
+    pg0.chipRadius === '8px' && pg0.chipColor === 'rgb(204, 211, 222)'
       && pg0.chipH >= 23 && pg0.chipH <= 27,
     `${pg0.chipRadius} / ${pg0.chipColor} / ${pg0.chipH}px`);
 
@@ -1147,7 +1149,7 @@ try {
   check('底栏顺序：工作流 → 竖线 → 参数 → 状态 → 生成',
     panel && panel.barChildren.join(',') === 'gensel,gen-sep,gensel,gen-status,gen-run',
     panel ? panel.barChildren.join(',') : '');
-  check('生成按钮与胶囊同高、纯白', panel && Math.abs(panel.run.h - panel.pill.h) <= 1 && panel.run.bg === 'rgb(255, 255, 255)' && panel.run.radius === '999px',
+  check('生成按钮与左侧下拉同高、纯白、8px 圆角矩形', panel && Math.abs(panel.run.h - panel.pill.h) <= 1 && panel.run.bg === 'rgb(255, 255, 255)' && panel.run.radius === '8px',
     panel ? JSON.stringify(panel.run) + ' pill=' + panel.pill.h : '');
 
   // 底栏去胶囊：两个下拉以前是「999px + 实心底 + 一圈描边」的药丸，比下面的提示词还抢眼。
@@ -1165,16 +1167,32 @@ try {
     return {
       // 生成按钮的右边缘离底栏右边缘还差多少：应该是 0（状态文字 flex:1 把空位吃满）
       runGap: Math.round(bar.getBoundingClientRect().right - run.getBoundingClientRect().right),
-      // 工作流那颗用的是链环（IconPark LinkOne）：直接跟图标表里的那条路径比对
-      wfIsLink: (() => {
+      // 工作流那颗是手绘的「三个圆环串成一圈」：三个 <circle> + 一条三段弧的 <path>，
+      // 线宽 3.4（比 IconPark 的 4 细一档，参考图本身就是细线）。
+      wf: (() => {
         const svg = root.querySelector('.gen-bar .gensel.wfsel .gensel-icon svg');
-        if (!svg) return false;
-        // 走同一个序列化路径再比：直接跟 ICON_PATHS 里的原始字符串比会因属性顺序/引号格式而假红
+        if (!svg) return null;
+        const path = svg.querySelector('path');
+        const d = path ? path.getAttribute('d') : '';
+        // 顺手确认它不是以前那颗链环：换了图标但忘了改断言的话，这里会红
         const tmp = document.createElement('div');
         tmp.innerHTML = window.icon('link');
-        const want = tmp.firstChild ? tmp.firstChild.innerHTML.trim() : '';
-        return !!want && svg.innerHTML.trim() === want;
+        const link = tmp.firstChild ? svg.innerHTML.trim() === tmp.firstChild.innerHTML.trim() : false;
+        return {
+          circles: svg.querySelectorAll('circle').length,
+          arcs: (d.match(/A/g) || []).length,
+          sw: path ? path.getAttribute('stroke-width') : '',
+          link,
+        };
       })(),
+      // 上排 chips：圆角矩形（8px），不是胶囊
+      chip: (() => {
+        const c = root.querySelector('.gen-chips .chip:not(.icon-only)');
+        if (!c) return null;
+        const cs = getComputedStyle(c);
+        return { radius: cs.borderTopLeftRadius, h: Math.round(c.getBoundingClientRect().height) };
+      })(),
+      runRadius: run ? getComputedStyle(run).borderTopLeftRadius : '',
       // 展开那颗是纯图标按钮：图标必须在方框正中间（四边留白相等）
       expand: (() => {
         const b = root.querySelector('.gen-chips .chip.icon-only');
@@ -1209,8 +1227,16 @@ try {
   // 生成按钮就停在离右边 140px 的地方——看着像没对齐。
   check('生成按钮贴到最右边（状态文字把中间的空位吃满）',
     barLook.runGap === 0, `还差 ${barLook.runGap}px`);
-  check('工作流那颗图标是链环，不再是四层叠纸',
-    barLook.wfIsLink === true, String(barLook.wfIsLink));
+  check('工作流那颗图标：三个圆环 + 三段弧，不再是链环',
+    !!barLook.wf && barLook.wf.circles === 3 && barLook.wf.arcs === 3
+      && barLook.wf.sw === '3.4' && barLook.wf.link === false,
+    JSON.stringify(barLook.wf));
+  // 圆角统一：chips / 两个下拉 / 展开键 / 发送键一律 8px 圆角矩形。
+  // 以前 chips 是胶囊、发送键是正圆、展开键是 8px 方角，三种圆角并排看着像拼起来的。
+  check('圆角统一成圆角矩形：chips 8px、发送键 8px',
+    !!barLook.chip && barLook.chip.radius === '8px' && barLook.chip.h === 26
+      && barLook.runRadius === '8px',
+    JSON.stringify({ chip: barLook.chip, run: barLook.runRadius }));
   // 展开那颗是纯图标按钮：以前 `.gen-chips .chip` 的 `padding: 0 10px` 也套在它身上，
   // 26px 的框减掉左右各 10 只剩 6px 内容宽，14px 的图标向两边各溢出 4px——看着就是「没居中」。
   check('展开按钮：图标在方框正中（四边留白相等），高度和旁边的胶囊一致',

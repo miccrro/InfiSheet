@@ -2416,6 +2416,22 @@
     });
   }
 
+  // 生成面板底栏那颗「工作流」图标：三个圆环落在同一个圆上 120° 均分，三段沿该圆的外弧
+  // 把它们连成一圈——就是「节点串成一条链」最直白的画法。
+  // 没用 IconPark：库里没有这个形状，试过的 LinkOne（链环）读起来像「超链接」，
+  // Layers（四层叠纸）像「图层/素材」，手绘的三框流程图缩到 13px 糊成一团。
+  // 比例是从参考图上量出来的：圆周半径 17、节点外径 5.6（≈R/3）、弧几乎贴着节点外缘
+  // （只留 0.45 的空隙，所以三段弧各占 120°−2×27°）。线宽 3.4 而不是 IconPark 的 4：
+  // 参考图本身是细线，但再细到 2.6 在 13px 下只剩 0.7px，会灰得看不见。
+  // 垂直居中要单独挪：上面顶出去的是节点外缘（R+5.6），下面伸出去的是弧的半线宽（R+1.7），
+  // 不补偿的话整颗图标会偏下 2px。
+  const WF_ICON = '<svg class="oi" viewBox="0 0 48 48" fill="none" aria-hidden="true">'
+    + '<path d="M16.25 10.82A17 17 0 0 0 7.02 26.8M14.77 40.23A17 17 0 0 0 33.23 40.23'
+    + 'M40.98 26.8A17 17 0 0 0 31.75 10.82" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/>'
+    + '<circle cx="24" cy="8.95" r="3.9" stroke="currentColor" stroke-width="3.4"/>'
+    + '<circle cx="9.28" cy="34.45" r="3.9" stroke="currentColor" stroke-width="3.4"/>'
+    + '<circle cx="38.72" cy="34.45" r="3.9" stroke="currentColor" stroke-width="3.4"/></svg>';
+
   function buildGenPanel(n) {
     // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值。
     // **两件事必须同时做到**：
@@ -2458,10 +2474,7 @@
       clear: icon('clear'),
       expand: icon('expand'),
       palette: icon('palette'),
-      // 工作流那颗用「链环」（IconPark 的 LinkOne）：这一行要表达的是「节点串成一条链」。
-      // 试过 Layers（四层叠纸，读起来像「图层/素材」）和手绘的三框流程图——13px 下
-      // 三个以上方框会糊成一团，反而看不出是什么。链环是单一路径，缩到 13px 还认得出。
-      wf: icon('link'),
+      wf: WF_ICON,
       arrow: icon('arrowUpBold'),
     };
 
