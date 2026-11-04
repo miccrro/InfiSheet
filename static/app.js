@@ -741,6 +741,10 @@
   // 清晰度按「长边像素」算：1K=1024 / 2K=2048 / 4K=4096，和相机、显示器说 4K 的口径一致。
   // 旧档位（preview/standard/hd，按短边算）在 OLD_SIZE 里迁过来，见 buildGenPanel。
   const SIZES = [['1k', '1K', 1024], ['2k', '2K', 2048], ['4k', '4K', 4096]];
+  // 智能档的「倍数」：尺寸 = 原图像素 × 倍数。这是**相对**口径，和 1K/2K/4K 的**绝对**口径
+  // 不是一回事——两套同时生效就会互相打架（写着「智能 3:4」，实际出 3072×4096）。
+  // 所以智能档下清晰度那三档原地变成这三档：同一排按钮，换的只是口径。
+  const AUTO_SCALES = [[1, '1×'], [1.5, '1.5×'], [2, '2×']];
   const OLD_SIZE = { preview: '1k', standard: '1k', hd: '2k' };   // 高清 2K：16:9 下 ~2MP，最接近原来那张图的大小
 
   // 生成器下拉只用内置预设：库工作流是「我的存档」，容易和模板混在一起
@@ -970,11 +974,25 @@
     return { w: src.w, h: src.h, aspect: nearestAspect(src.w, src.h) };
   }
 
-  // 智能档的尺寸就是原图像素（对齐 16），不再走 1K/2K/4K——
+  // 智能档的倍数：只认表里那三档，坏值（旧存档 / 手改 JSON）一律按 1× 算——
+  // 倍数是个放大器，读错了直接把 4K 图放大到 8192 才是真的伤。
+  function autoScaleOf(g) {
+    const k = Number(g && g.autoScale);
+    return AUTO_SCALES.some(([v]) => v === k) ? k : 1;
+  }
+
+  function autoScaleLabel(g) {
+    const k = autoScaleOf(g);
+    const hit = AUTO_SCALES.find(([v]) => v === k);
+    return hit ? hit[1] : '1×';
+  }
+
+  // 智能档的尺寸 = 原图像素 × 倍数（对齐 16），不再走 1K/2K/4K——
   // 那档位和「跟着原图走」是两套口径，同时生效就会互相打架（选了 4K，1536×2048 变成 3072×4096）。
   function dimsOf(g) {
     if (g.aspectAuto && g.autoW && g.autoH) {
-      return { width: snapDim(g.autoW), height: snapDim(g.autoH) };
+      const k = autoScaleOf(g);
+      return { width: snapDim(g.autoW * k), height: snapDim(g.autoH * k) };
     }
     return calcDims(g.aspect, g.size, g.custom);
   }
@@ -1782,18 +1800,30 @@
       // 智能格里那行小字报「算成了什么」，没启用时留一个破折号
       const autoVal = menu.querySelector('.go-auto-val');
       if (autoVal) autoVal.textContent = g.aspectAuto ? g.aspect : '—';
-      // 智能档下尺寸由原图决定，清晰度那三档和自定义宽高都不该还能点——
-      // 留着能点就会出现「写着智能 3:4、实际出 3072×4096」这种自相矛盾的组合。
-      menu.querySelectorAll('.go-seg button[data-s]').forEach((b) => { b.disabled = !!g.aspectAuto; });
+      // 智能档下尺寸由原图决定：清晰度那三档原地变成「倍数」（同一排按钮换口径），
+      // 自定义宽高则真的禁用——倍数已经说清尺寸了，再手填宽高又是第三套口径。
+      sTitle.textContent = g.aspectAuto ? '倍数' : '清晰度';
+      const scaleK = autoScaleOf(g);
+      sizeBtns.forEach((b, i) => {
+        const name = b.querySelector('span');
+        const hint = b.querySelector('em');
+        if (g.aspectAuto) {
+          const [sv, sl] = AUTO_SCALES[i];
+          name.textContent = sl;
+          // 报这一档实际会出多大（长边），省得用户在心里乘
+          hint.textContent = `${snapDim((g.autoW || 0) * sv)}px`;
+          b.classList.toggle('on', sv === scaleK);
+        } else {
+          name.textContent = SIZES[i][1];
+          hint.textContent = SIZES[i][2];
+          b.classList.toggle('on', b.dataset.s === g.size);
+        }
+      });
       cW.disabled = !!g.aspectAuto;
       cH.disabled = !!g.aspectAuto;
       cBox.classList.toggle('off', !!g.aspectAuto);
-      menu.querySelectorAll('.go-seg button').forEach((b) => {
-        // 智能档下三档全灭：尺寸不由它们决定，留一盏亮着会让人以为「4K 生效了」
-        const on = b.dataset.s != null
-          ? (!g.aspectAuto && b.dataset.s === g.size)
-          : Number(b.dataset.b) === Number(g.batch);
-        b.classList.toggle('on', on);
+      menu.querySelectorAll('.go-seg button[data-b]').forEach((b) => {
+        b.classList.toggle('on', Number(b.dataset.b) === Number(g.batch));
       });
       const d = dimsOf(g);
       const mp = (d.width * d.height) / 1e6;
@@ -1813,8 +1843,8 @@
       }
       // 4K 一张 10~17MP，本地出图会从「一分半」变成「十几分钟」，先把话说在前面
       foot.textContent = `${g.aspect} · ${d.width} × ${d.height} · ${mp.toFixed(1)}MP`
-        + (g.aspectAuto ? ' · 原图尺寸' : '')
-        + (mp > 4 && !g.aspectAuto ? ' · 本地偏慢' : '')
+        + (g.aspectAuto ? ` · 原图 ${autoScaleLabel(g)}` : '')
+        + (mp > 4 ? ' · 本地偏慢' : '')
         + (seedFixed ? '' : ' · 种子随机');
     };
     // 弹层不关：连着调「比例 + 清晰度」时，关一次就得重新点开一次
@@ -1873,8 +1903,10 @@
     aBox.appendChild(grid);
 
     const sBox = sec('清晰度');
+    const sTitle = sBox.querySelector('.go-title');   // 智能档下改成「倍数」
     const seg = document.createElement('div');
     seg.className = 'go-seg';
+    const sizeBtns = [];
     SIZES.forEach(([v, label, px]) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -1885,7 +1917,10 @@
       const hint = document.createElement('em');
       hint.textContent = px;          // 长边像素：和 1K/2K/4K 同一个口径，改档位就是在改这个数
       b.append(name, hint);
-      b.onclick = () => pick({ size: v });
+      // 同一排按钮，两种口径：智能档读「倍数」，否则读「清晰度」。
+      // 智能档下点这里绝不能再写 g.size——那会把尺寸从「原图×倍数」拽回绝对档位。
+      b.onclick = () => (g.aspectAuto ? pick({ autoScale: AUTO_SCALES[sizeBtns.indexOf(b)][0] }) : pick({ size: v }));
+      sizeBtns.push(b);
       seg.appendChild(b);
     });
     sBox.appendChild(seg);
@@ -2391,6 +2426,7 @@
     const g = n.gen || (n.gen = {});
     const DEFAULTS = {
       prompt: '', wf: pickWorkflow('txt2img'), aspect: '1:1', aspectAuto: false,
+      autoScale: 1,   // 智能档的倍数（原图 ×N）；不在智能档时它不起作用，留着是为了切回来还记得
       size: '1k', custom: null,
       batch: 1, seedMode: 'random', seed: null,
       status: '', busy: false, gallery: [], idx: 0, extras: [],
@@ -2636,7 +2672,8 @@
       optGlyph.style.width = `${w}px`;
       optGlyph.style.height = `${h}px`;
       // 自定义 / 智能时直接报像素：这时候「1K/2K/4K」已经说明不了什么了
-      const aspLabel = g.aspectAuto ? `智能 ${g.aspect}` : g.aspect;
+      // 智能档还要带上倍数——「智能 3:4」只说形状，不说大小
+      const aspLabel = g.aspectAuto ? `智能 ${g.aspect} ${autoScaleLabel(g)}` : g.aspect;
       optSum.textContent = g.aspectAuto
         ? `${aspLabel} · ${d.width}×${d.height} · ${g.batch}张`
         : g.size === 'custom'
@@ -6355,6 +6392,7 @@
         aspectAuto: !!(n.gen && n.gen.aspectAuto),
         autoW: (n.gen && n.gen.autoW) || null,
         autoH: (n.gen && n.gen.autoH) || null,
+        autoScale: (n.gen && n.gen.autoScale) || 1,
         size: (n.gen && n.gen.size) || '1k',
         custom: (n.gen && n.gen.custom) || null,
         batch: run.batch || 1,
@@ -6663,6 +6701,8 @@
           // 智能档出图用的是原图像素，不存就只能退回比例 + 清晰度那套口径
           autoW: ob ? ob.autoW : n.gen.autoW,
           autoH: ob ? ob.autoH : n.gen.autoH,
+          // 倍数不存的话，刷新后 2× 出的图会退回 1× 的尺寸，重跑一次就小一半
+          autoScale: (ob ? ob.autoScale : n.gen.autoScale) || 1,
           // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
           // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
           wfAuto: n.gen.wfAuto !== false,
@@ -9133,6 +9173,7 @@
       aspectAuto: !!n.gen.aspectAuto,   // 智能档也要还原，否则退出扩图后手选的比例被「智能」顶掉
       autoW: n.gen.autoW,
       autoH: n.gen.autoH,
+      autoScale: n.gen.autoScale,
     };
     n.gen.outpaint = { l: 0, t: 0, r: 0, b: 0, w, h };
     syncOutpaintDims(n);
@@ -9170,6 +9211,7 @@
       n.gen.aspectAuto = !!bak.aspectAuto;
       n.gen.autoW = bak.autoW;
       n.gen.autoH = bak.autoH;
+      n.gen.autoScale = bak.autoScale;
       delete n.gen.opBackup;
     }
     rerenderNode(n.id, true);
