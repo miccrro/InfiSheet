@@ -5641,6 +5641,9 @@
     const el = nodesEl.querySelector(`[data-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
     dropNodePorts(id);
+    // 删的是最后一个节点时要把起始页放回来。removeNode 走的是增量删 DOM（不 renderAll），
+    // 以前没人管这里 —— 删光节点后画布一片空白，得刷新才看得到那排能力入口。
+    updateCanvasEmpty();
     renderLinks(); queueSave(); commit();
   }
 
@@ -8499,12 +8502,22 @@
     load(res.canvas || { nodes: [], links: [], groups: [], view: state.view });
     state.hydrated = true;
     applyView(); renderAll(); renderLinks();
-    seedHistory(); lastSavedSnap = '';
     showCanvas();
-    if (workflowId) await addWorkflowStarter(workflowId);
-    else fitView();
+    if (workflowId) {
+      await addWorkflowStarter(workflowId);
+    } else {
+      // 新画布不再停在「双击画布」的空态：直接给一个能用的图片节点（图片 + 生成面板），
+      // 一进来就能写提示词。raw=true 表示它算初始状态的一部分，不进撤销栈——
+      // 否则按一次 Ctrl+Z 就把这个默认节点撤没了。
+      const c = centerOfView();
+      const n = addImageNode(Math.round(c.x - 190), Math.round(c.y - 160), {}, true);
+      // 生成面板只在选中时浮出（.node.selected .gen-panel）。新画布直接选中它，
+      // 一进来就是「图片 + 生成面板」那个样子，不用先猜「要再点一下才有面板」。
+      selectOnly(n.id);
+    }
+    seedHistory(); lastSavedSnap = '';
     queueSave();                                // 新建后立刻保存一次（退出前也不会丢）
-    flash(workflowId ? '已新建项目，并放入工作流' : '已新建项目，双击空白处开始');
+    flash(workflowId ? '已新建项目，并放入工作流' : '已新建画布：写个提示词，点右下角生成');
   }
 
   async function openProject(id) {

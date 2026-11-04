@@ -4971,6 +4971,46 @@ try {
   await page.evaluate(`document.querySelector('#topBar [data-act="home"]').click()`);
   await page.waitFor(`!document.getElementById('home').classList.contains('hidden')`, 8000);
   await page.evaluate(`document.getElementById('newCanvas').click()`);
+  // 别只等「节点数 === 1」：点下去之后旧画布还挂在屏幕上，条件立刻成立，读到的是上一个项目。
+  // 认标题「图片」+ 选中态，才是新建出来的那个节点。
+  await page.waitFor(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    if (nodes.length !== 1) return false;
+    const t = (nodes[0].querySelector('.n-name') || {}).textContent;
+    return t === '图片' && nodes[0].classList.contains('selected');
+  })()`, 15000);
+
+  // 新画布不再停在空态：直接给一个「图片 + 生成面板」的节点，而且它已经是选中态
+  // （面板只在 .node.selected 下浮出，不选中就等于还是空画布）。
+  const fresh = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node');
+    const panel = n && n.querySelector('.gen-panel');
+    return {
+      count: document.querySelectorAll('#nodes .node').length,
+      title: n ? (n.querySelector('.n-name') || {}).textContent : '',
+      selected: !!n && n.classList.contains('selected'),
+      panelShown: !!panel && getComputedStyle(panel).display !== 'none',
+      wf: n ? ((n.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '') : '',
+      emptyShown: !document.getElementById('canvasEmpty').classList.contains('hidden'),
+    };
+  })()`);
+  check('新建画布：直接带一个「图片 + 生成面板」的节点，不停在空态',
+    fresh.count === 1 && fresh.title === '图片' && fresh.selected && fresh.panelShown && !fresh.emptyShown,
+    JSON.stringify(fresh));
+  check('新节点的生成面板里已经选好一个文生图工作流', /文生图/.test(fresh.wf), fresh.wf);
+  // 默认节点是初始状态的一部分：按一次 Ctrl+Z 不能把它撤没
+  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
+  await new Promise((r) => setTimeout(r, 500));
+  const undoDefault = await page.evaluate(`document.querySelectorAll('#nodes .node').length`);
+  check('撤销不会把新画布自带的节点撤掉（它是初始状态，不是一次操作）', undoDefault === 1, String(undoDefault));
+
+  // 删掉它，回到真正的空画布，继续验起始页那排能力入口。
+  // 用节点自带的 × 而不是 Delete 键：焦点可能落在提示词输入框里，按键会被输入框吃掉。
+  await page.evaluate(`(() => {
+    const btn = document.querySelector('#nodes .node .n-del');
+    if (btn) btn.click();
+    return !!btn;
+  })()`);
   await page.waitFor(`(() => {
     const e = document.getElementById('canvasEmpty');
     return !!e && !e.classList.contains('hidden') && document.querySelectorAll('#capRow button').length > 0;
