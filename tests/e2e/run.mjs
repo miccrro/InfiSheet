@@ -1160,7 +1160,13 @@ try {
     const cs = sels.map((el) => getComputedStyle(el));
     const sep = root.querySelector('.gen-bar .gen-sep');
     const sr = sep ? sep.getBoundingClientRect() : null;
+    const bar = root.querySelector('.gen-bar');
+    const run = root.querySelector('.gen-bar .gen-run');
     return {
+      // 生成按钮的右边缘离底栏右边缘还差多少：应该是 0（状态文字 flex:1 把空位吃满）
+      runGap: Math.round(bar.getBoundingClientRect().right - run.getBoundingClientRect().right),
+      // 工作流那颗图标换成了「两个上游 → 一个下游」的流程图（3 个矩形 + 2 条连线）
+      wfRects: root.querySelectorAll('.gen-bar .gensel.wfsel .gensel-icon svg rect').length,
       n: sels.length,
       radius: cs.map((c) => c.borderTopLeftRadius),
       bg: cs.map((c) => c.backgroundColor),
@@ -1177,6 +1183,12 @@ try {
   check('两块之间是一根 1px 竖线（「图标+名字 | 图标+名字」）',
     !!barLook.sep && barLook.sep[0] === 1 && barLook.sep[1] >= 10 && barLook.sepBg !== 'rgba(0, 0, 0, 0)',
     JSON.stringify({ sep: barLook.sep, bg: barLook.sepBg }));
+  // 状态文字以前被 max-width:30% 卡住，空着也占不到整行，右边空出一大截，
+  // 生成按钮就停在离右边 140px 的地方——看着像没对齐。
+  check('生成按钮贴到最右边（状态文字把中间的空位吃满）',
+    barLook.runGap === 0, `还差 ${barLook.runGap}px`);
+  check('工作流那颗图标是流程图（两个上游汇到一个下游），不再是四层叠纸',
+    barLook.wfRects === 3, `${barLook.wfRects} 个矩形`);
 
   const barPt = await page.center('.node.selected .gen-panel .gen-bar .gensel.wfsel');
   await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(barPt.x), y: Math.round(barPt.y) });

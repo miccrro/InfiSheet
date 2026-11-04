@@ -2169,7 +2169,10 @@ button.primary:hover,
 /* 工作流那颗不再拉满整行：名字有多宽就占多宽，右边留给状态文字。
    拉满时 ▾ 会孤零零挂在最右边，和名字隔着一大片空白。 */
 .gen-bar .gensel.wfsel { flex: 0 1 auto; min-width: 0; max-width: 48%; }
-.gen-bar .gen-status { flex: 1 1 auto; min-width: 0; }
+/* 状态文字吃掉中间所有空位：它是 flex:1 之后，生成按钮才会被顶到最右边。
+   只写 flex 不解除 max-width 的话，空状态仍被卡在 30%（190px），
+   右边空出一大截，按钮停在离右边 140px 的地方——看着像没对齐。 */
+.gen-bar .gen-status { flex: 1 1 auto; min-width: 0; max-width: none; }
 /* 「图标 + 名字 | 图标 + 名字」中间那根竖线 */
 .gen-sep {
   flex: 0 0 1px; width: 1px; height: 12px; align-self: center;
