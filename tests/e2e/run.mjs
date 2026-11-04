@@ -3686,16 +3686,41 @@ try {
   await new Promise((r) => setTimeout(r, 350));
   const colorUi = await page.evaluate(`(() => {
     const p = document.getElementById('imgPanel');
+    const sheet = p && p.querySelector('.ip-sheet');
+    const img = document.querySelector('.node[data-id="${pick.img}"] .thumb img');
+    let geo = null;
+    if (sheet && img) {
+      const pr = sheet.getBoundingClientRect(), ir = img.getBoundingClientRect();
+      const ox = Math.max(0, Math.min(pr.right, ir.right) - Math.max(pr.left, ir.left));
+      const oy = Math.max(0, Math.min(pr.bottom, ir.bottom) - Math.max(pr.top, ir.top));
+      geo = {
+        overlap: Math.round(ox * oy),
+        inView: pr.left >= 0 && pr.top >= 0 && pr.right <= innerWidth && pr.bottom <= innerHeight,
+        box: [Math.round(pr.left), Math.round(pr.top), Math.round(pr.width), Math.round(pr.height)],
+      };
+    }
+    const cs = p ? getComputedStyle(p) : null;
     return {
       open: !!p,
       sliders: p ? p.querySelectorAll('.ip-body input[type="range"]').length : 0,
       presets: p ? [...p.querySelectorAll('[data-preset]')].map((b) => b.textContent.trim()) : [],
       toolsHidden: document.getElementById('imgTools').classList.contains('hidden'),
+      dim: cs ? cs.backgroundColor : '',
+      blur: cs ? (cs.backdropFilter || cs.webkitBackdropFilter || 'none') : '',
+      geo,
     };
   })()`);
   check('点「调色」→ 弹层有亮度/对比度/饱和度/色温 + 预设，且工具条让位',
     colorUi.open && colorUi.sliders === 4 && colorUi.presets.length >= 5 && colorUi.toolsHidden,
     JSON.stringify(colorUi));
+  // 调色唯一的意义就是「看着这张图调」：以前是 inset:0 的模态（62% 黑罩 + 3px 模糊），
+  // 还居中压在图上，拖滑杆时画布上根本看不出变化。
+  check('调色面板不是模态：不铺黑罩、不模糊画布（否则「实时预览」等于看不见）',
+    /rgba\(0, 0, 0, 0\)|transparent/.test(colorUi.dim) && (colorUi.blur === 'none' || colorUi.blur === ''),
+    `${colorUi.dim} · blur=${colorUi.blur}`);
+  check('调色面板贴着图片放：不压在图上，且整块都在视口内',
+    !!colorUi.geo && colorUi.geo.overlap === 0 && colorUi.geo.inView,
+    JSON.stringify(colorUi.geo));
   await page.evaluate(`[...document.querySelectorAll('#imgPanel [data-preset]')]
     .find((b) => b.textContent.trim() === '黑白').click()`);
   await new Promise((r) => setTimeout(r, 250));
@@ -3724,6 +3749,18 @@ try {
     colorRes.n === toolBase + 2 && colorRes.title.startsWith('调色') && colorRes.filter === ''
       && !!colorRes.px && Math.abs(colorRes.px[0] - colorRes.px[1]) <= 3 && Math.abs(colorRes.px[1] - colorRes.px[2]) <= 3,
     JSON.stringify(colorRes));
+
+  // 非模态之后没有「点空白处」这层遮罩可点，Esc 得能关（第三个出口：× / 取消 / Esc）
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="color"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const escClosed = await page.evaluate(`(async () => {
+    const before = !!document.getElementById('imgPanel');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+    return { before, after: !!document.getElementById('imgPanel') };
+  })()`);
+  check('调色面板：Esc 能关掉（非模态后没有遮罩可点，键盘是第三个出口）',
+    escClosed.before && !escClosed.after, JSON.stringify(escClosed));
 
   await selectImg();
   await new Promise((r) => setTimeout(r, 250));

@@ -282,6 +282,7 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
+    if (imgPanel) placeImgPanel();         // 调色面板贴着图片，视图一动也要贴回去
     // 扩图时面板贴在画布外框上：外框是世界坐标，但「别顶出屏幕」是屏幕坐标，视图一动就得重算
     if (opSession && opSession.place) opSession.place();
     // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
@@ -7477,6 +7478,9 @@
     // 只有「单按 F」才适配视图；Ctrl/⌘+F 留给浏览器查找
     if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && (ev.key === 'f' || ev.key === 'F')) fitView();
     if (ev.key === 'Escape') {
+      // 调色面板是非模态的浮层（没有遮罩可点），Esc 是它的第三个出口。
+      // 它不属于「大图 → 资产 → 画布」那一叠，先关掉它最不容易误伤。
+      if (imgPanel) { ev.preventDefault(); closeImgPanel(); return; }
       // 逐层关：大图盖在资产面板/画布上面，Esc 只该关最上面那层。
       // 一起关掉的话，用户从资产里点开大图、看完按 Esc，整个资产面板也跟着没了。
       if (!$('#lightbox').classList.contains('hidden')) {
@@ -8713,6 +8717,13 @@
   }
 
   function updateImgTools() {
+    // 面板是「这张图的」：选中换了人就收起，免得对着 A 的滑杆改到 B 身上。
+    // closeImgPanel 里会再调一次本函数，那时 imgPanel 已经是 null，不会绕回来。
+    if (imgPanel && imgPanel.anchor
+      && !(state.selected.size === 1 && state.selected.has(imgPanel.anchor.id))) {
+      closeImgPanel();
+      return;
+    }
     const n = imgToolNode();
     const bar = ensureImgTools();
     // 扩图不再占一层浮层（边框就在节点上），所以它不参与「让位」的判断
@@ -8947,6 +8958,33 @@
     updateImgTools();
   }
 
+  // 面板贴着图片放：优先右侧，右边放不下改左侧，两边都放不下就压在图片下方居中。
+  // 位置按**屏幕坐标**算（和 #alignBar / positionImgTools 同一个路数）：放进 #world
+  // 会跟着画布缩放，200% 时面板比图还大。
+  // 以前这里是全屏模态（inset:0 + 62% 黑罩 + 3px 模糊），还居中压在图上——
+  // 调色唯一的意义就是「看着这张图调」，罩上去等于把预览盖掉了。
+  function placeImgPanel() {
+    if (!imgPanel) return;
+    const a = imgPanel.anchor;
+    const el = a && nodesEl.querySelector(`.node[data-id="${CSS.escape(a.id)}"]`);
+    if (!el) return;
+    const sheet = imgPanel.root.querySelector('.ip-sheet');
+    if (!sheet) return;
+    const r = el.getBoundingClientRect();
+    const w = sheet.offsetWidth || 380;
+    const h = sheet.offsetHeight || 300;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const gap = 16;
+    const edge = 12;
+    let left = r.right + gap;
+    if (left + w > vw - edge) left = r.left - w - gap;                 // 右边放不下 → 挪到左边
+    if (left < edge) left = clamp(r.left + r.width / 2 - w / 2, edge, Math.max(edge, vw - w - edge));
+    const top = clamp(r.top, edge, Math.max(edge, vh - h - edge));
+    imgPanel.root.style.left = `${Math.round(left)}px`;
+    imgPanel.root.style.top = `${Math.round(top)}px`;
+  }
+
   function openImgPanel(title, bodyHtml, opt = {}) {
     closeImgPanel();
     const root = document.createElement('div');
@@ -8961,17 +8999,17 @@
         </footer>
       </div>`;
     const ac = new AbortController();
-    const panel = { root, ac, onClose: opt.onClose || null };
+    const panel = { root, ac, onClose: opt.onClose || null, anchor: opt.node || null };
     imgPanel = panel;
-    // 点空白处 = 取消（和裁剪浮层一致）
-    root.addEventListener('pointerdown', (ev) => {
-      if (ev.target === root) { closeImgPanel(); return; }
-      ev.stopPropagation();
-    });
+    // 面板是**非模态**的：画布照常可见可点，所以没有「点空白处 = 取消」这一层遮罩可点。
+    // 关掉的三个口子：× / 取消 / Esc。
+    root.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); });
     root.querySelector('.x').onclick = () => closeImgPanel();
     root.querySelector('.ip-cancel').onclick = () => closeImgPanel();
     root.querySelector('.ip-apply').onclick = () => opt.onApply && opt.onApply(root);
     document.body.appendChild(root);
+    placeImgPanel();                       // 尺寸要等进了文档才量得到
+    window.addEventListener('resize', placeImgPanel, { signal: ac.signal });
     updateImgTools();
     if (opt.onInput) opt.onInput(root, ac);
     return panel;
@@ -8990,6 +9028,7 @@
       </div>
       <p class="ip-tip">调的是这张图的副本，原图不动。</p>`;
     openImgPanel('调色', body, {
+      node: n,
       onClose: () => { if (target) target.style.filter = ''; },
       onInput(root) {
         const paint = () => { if (target) target.style.filter = colorFilter(v); };

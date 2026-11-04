@@ -2627,15 +2627,16 @@ button.primary:hover,
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* ---------- 调色弹层 ---------- */
-/* 只剩调色在用：扩图已经搬去和裁剪共用 .crop-* 那套外壳（见「图片浮层外壳」） */
+/* ---------- 调色面板 ---------- */
+/* 只剩调色在用：扩图已经搬去和裁剪共用 .crop-* 那套外壳（见「图片浮层外壳」）。
+   这里**不是**模态：以前是 inset:0 + 62% 黑罩 + 3px 模糊，还居中压在图上——
+   调色唯一的意义就是「看着这张图调」，罩上去等于把预览盖掉了。
+   现在面板贴着图片放（位置由 placeImgPanel 按节点屏幕坐标算），画布不压暗、不模糊。 */
 #imgPanel {
-  position: fixed; inset: 0; z-index: 130;
-  display: grid; place-items: center;
-  background: rgba(8, 9, 12, 0.62);
-  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  position: fixed; z-index: 130;
+  /* 不带尺寸，靠 .ip-sheet 撑开；left/top 由 JS 写 */
 }
-#imgPanel .ip-sheet { max-width: 92vw; }
+#imgPanel .ip-sheet { max-width: 92vw; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55); }
 #imgPanel .ip-body { padding: 14px 16px 6px; display: grid; gap: 10px; overflow: auto; min-height: 0; }
 #imgPanel .ip-row {
   display: flex; align-items: center; gap: 10px;
