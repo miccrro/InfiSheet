@@ -5011,7 +5011,7 @@ try {
       && capBase.nativeDisabled === 0 && capBase.ariaOff.includes('视频生成'),
     JSON.stringify(capBase.labels) + ' · ariaOff=' + JSON.stringify(capBase.ariaOff));
   check('起始页：有一句话说明「点上面能干什么」，不是只留一句双击提示',
-    /自动摆好/.test(capBase.sub) && /提示词/.test(capBase.sub), capBase.sub);
+    /直接放下一个/.test(capBase.sub) && /提示词/.test(capBase.sub), capBase.sub);
   // 两种环境都要过：连不上时提示条必须出现且说人话；连得上时它必须收起（别平白吓人）
   check('起始页：连不上 ComfyUI 才出现提示条，且写的是「还没连上」而不是 urlopen 报错',
     comfyOnline
@@ -5045,33 +5045,40 @@ try {
   })()`);
   await new Promise((r) => setTimeout(r, 400));
 
-  // 点「图片生成」：先有动静，再给结果或一句人话
+  // 点「图片生成」：直接放下一个图片节点 + 生成面板。
+  // 图片节点自带面板（提示词 / 参考图 / 工作流胶囊 / 生成按钮），再摆「提示词 → 工作流 → 输出」
+  // 三件套就是多两个要删的节点。所以这里盯的是「一个节点、已选中、面板已浮出」。
   const capClick = await page.evaluate(`(async () => {
     const badge = document.getElementById('queueBadge');
     badge.textContent = ''; badge.classList.add('hidden');
     const b = [...document.querySelectorAll('#capRow button')].find((x) => /图片生成/.test(x.textContent));
     b.click();
-    // 同步读：busy 态是在第一个 await 之前设上的，读晚了就看不到
-    const busy = b.classList.contains('is-busy');
-    const busyLabel = b.querySelector('.cap-label').textContent;
-    const t0 = Date.now();
-    let nodes = 0, msg = '';
-    while (Date.now() - t0 < 15000) {
-      nodes = document.querySelectorAll('#nodes .node').length;
-      if (nodes >= 3) break;
-      if (!badge.classList.contains('hidden') && badge.textContent) { msg = badge.textContent; break; }
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    return { busy, busyLabel, nodes, msg, busyLeft: document.querySelectorAll('#capRow button.is-busy').length };
+    // 同步读：放节点是纯本地动作，不请求 ComfyUI，点完就该有
+    const syncNodes = document.querySelectorAll('#nodes .node').length;
+    await new Promise((r) => setTimeout(r, 400));
+    const n = document.querySelector('#nodes .node');
+    const panel = n && n.querySelector('.gen-panel');
+    return {
+      syncNodes,
+      nodes: document.querySelectorAll('#nodes .node').length,
+      title: n ? (n.querySelector('.n-name') || {}).textContent : '',
+      selected: !!n && n.classList.contains('selected'),
+      panelShown: !!panel && getComputedStyle(panel).display !== 'none',
+      wf: n ? ((n.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '') : '',
+      emptyShown: !document.getElementById('canvasEmpty').classList.contains('hidden'),
+      busyLeft: document.querySelectorAll('#capRow button.is-busy').length,
+      flash: badge.textContent,
+    };
   })()`);
-  check('点「图片生成」立刻有动静（按钮进「准备中 / 检测连接」，不是干等）',
-    capClick.busy === true && /准备中|检测连接/.test(capClick.busyLabel),
-    `${capClick.busy} · ${capClick.busyLabel}`);
-  check('点完要么放出三个节点，要么给一句人话（不能是 object_info / urlopen 那种行话）',
-    capClick.nodes >= 3
-      || (/ComfyUI/.test(capClick.msg) && !/object_info|urlopen|upstream/.test(capClick.msg)),
-    `nodes=${capClick.nodes} · ${capClick.msg}`);
-  check('按钮的「准备中」会自己恢复（不会卡在忙碌态）', capClick.busyLeft === 0, String(capClick.busyLeft));
+  check('点「图片生成」：立刻放下一个图片节点，选中它，生成面板跟着浮出',
+    capClick.syncNodes === 1 && capClick.nodes === 1 && capClick.title === '图片'
+      && capClick.selected && capClick.panelShown && !capClick.emptyShown,
+    JSON.stringify(capClick));
+  check('点「图片生成」只放一个节点（不摆「提示词 → 工作流 → 输出」三件套）',
+    capClick.nodes === 1, String(capClick.nodes));
+  check('图片节点的生成面板里已经选好工作流（不是空壳面板）',
+    /文生图/.test(capClick.wf), capClick.wf);
+  check('按钮点完不会卡在忙碌态', capClick.busyLeft === 0, String(capClick.busyLeft));
 
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。

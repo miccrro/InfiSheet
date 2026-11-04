@@ -8339,6 +8339,12 @@
         btn.title = '放入一个提示词节点，用来写剧本 / 分镜';
       } else if (d.key === 'clip') {
         off('本地画布没有剪辑能力：视频生成后下载，用外部剪辑软件剪');
+      } else if (d.key === 'image') {
+        // 图片生成不走 addWorkflowStarter：那会摆成「提示词 → 工作流 → 输出」三件套，
+        // 而图片节点自己就带生成面板（提示词、参考图、工作流胶囊、生成按钮全在里面），
+        // 再配两个节点只是多两个要删的东西。这里直接给一个选中的图片节点。
+        btn.onclick = () => addImageStarter();
+        btn.title = '放入一个图片节点：直接写提示词，或先上传图片';
       } else {
         const wf = pickWorkflowByKind(d.key);
         if (wf) {
@@ -8389,6 +8395,18 @@
     fitView();
     queueSave();
     flash('已放入提示词节点：写剧本 / 分镜');
+  }
+
+  // 「图片生成」= 一个图片节点 + 它自带的生成面板。
+  // 图片节点是这一屏唯一需要的载体：提示词、参考图、工作流胶囊、生成按钮都在面板里，
+  // 所以不放「提示词 → 工作流 → 输出」三件套（那是给视频/音频那种纯工作流用的）。
+  // 放完直接选中：面板只在 .node.selected 下浮出，不选中就等于只多了一个空图框。
+  function addImageStarter() {
+    const c = centerOfView();
+    // 减掉半个节点尺寸，让节点落在视口正中而不是右下偏
+    const n = addImageNode(Math.round(c.x - 190), Math.round(c.y - 160), {}, false);
+    selectOnly(n.id);
+    flash('已放入图片节点：写提示词，或先点面板里的「上传」');
   }
 
   // 把「提示词 → 工作流 → 图片输出」这一套放进当前画布
