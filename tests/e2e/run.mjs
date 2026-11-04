@@ -68,6 +68,35 @@ try {
     runsOf(manyNode).length === 30 && runsOf(manyNode)[0].prompt === 'p34'
       && runsOf(manyNode)[29].prompt === 'p5', `${runsOf(manyNode).length} 条`);
 
+  // 角标写成「2 次」但只生成了一次：同一次生成被记了两遍。
+  // 根因是 pushRun 以前走 runsOf 的迁移分支，而那时 gen.gallery 已经被这次结果覆盖 ——
+  // 迁移把**刚出的这批图**当成「更早的一次」，再叠上真正那条，历史里两条指向同一张图。
+  // 下面三条：① 写坏的老存档读出来就自愈 ② 追加时不再编造 ③ 别把正常历史去重掉
+  const dupNode = { id: 'd', type: 'image', gen: {
+    gallery: [{ filename: 'k_00022_.png' }],
+    runs: [
+      { at: 1000, w: 1024, h: 1024, seed: 7, items: [{ filename: 'k_00022_.png' }] },
+      { at: 0, legacy: true, w: null, h: null, seed: 7, items: [{ filename: 'k_00022_.png' }] },
+    ],
+  } };
+  const dupRuns = runsOf(dupNode);
+  check('生成历史：同一次生成的重复记录只留一条，留下的是带时间/尺寸的那条（角标不再写成「2 次」）',
+    dupRuns.length === 1 && dupRuns[0].at === 1000 && !dupRuns[0].legacy
+      && dupNode.gen.runs.length === 1,      // 顺手自愈存档，下次保存就是干净的
+    `${dupRuns.length} 条 · ${JSON.stringify(dupRuns[0] && { at: dupRuns[0].at, legacy: !!dupRuns[0].legacy })}`);
+
+  const freshNode = { id: 'f', type: 'image', gen: { gallery: [{ filename: 'old.png' }] } };
+  pushRun(freshNode, { at: 2, prompt: '这次', items: [{ filename: 'new.png' }] });
+  check('生成历史：第一次生成只记一条（不拿刚出的图再造一条「更早」）',
+    freshNode.gen.runs.length === 1 && !freshNode.gen.runs.some((r) => r.legacy),
+    JSON.stringify(freshNode.gen.runs.map((r) => ({ legacy: !!r.legacy, at: r.at }))));
+
+  const twiceNode = { id: 't', type: 'image', gen: { runs: [] } };
+  pushRun(twiceNode, { at: 3, items: [{ filename: 'a.png' }] });
+  pushRun(twiceNode, { at: 2, items: [{ filename: 'b.png' }] });
+  check('生成历史：真生成两次（产物不同）留两条，别把正常历史去重掉',
+    runsOf(twiceNode).length === 2, `${runsOf(twiceNode).length} 条`);
+
   // 生成队列的文案层：面板渲染要 DOM，而「3 个任务同时在跑」这种场景在浏览器里造不出来
   // （得真往 ComfyUI 提交），所以把汇总/条目文案做成纯函数，在这里验。
   const { queueSummary, jobPhaseText, jobMetaText } = new Function(
