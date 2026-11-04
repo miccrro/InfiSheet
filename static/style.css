@@ -2137,10 +2137,16 @@ button.primary:hover,
    这里统一放大一档（宽 +10%、控件 26→28、正文 12.5→13、内边距 10→12），
    只动生成面板内部，节点本身和别的弹窗都不受影响。 */
 .gen-panel { width: min(660px, calc(100vw - 32px)); padding: 12px; }
-.gen-chips { gap: 6px; margin-bottom: 8px; }
+.gen-chips { gap: 6px; margin-bottom: 8px; align-items: center; }
 .gen-chips .chip { height: 26px; padding: 0 10px; font-size: 12px; gap: 6px; }
 .gen-chips .chip .oi { width: 14px; height: 14px; }
-.gen-chips .chip.icon-only { width: 26px; height: 26px; }
+/* 展开那颗是纯图标按钮：必须把上面那条 `padding: 0 10px` 撤掉。
+   26px 的方框减掉左右各 10px 只剩 6px 内容宽，14px 的图标会向两边各溢出 4px，
+   看着就是「图标没在框里居中」。顺便对齐到 8px 圆角，和面板其它方块一致。 */
+.gen-chips .chip.icon-only {
+  width: 26px; height: 26px; padding: 0; border-radius: 8px;
+  align-self: center; place-items: center;
+}
 .gen-panel .gen-prompt {
   font-size: 13px; line-height: 1.62;
   min-height: 92px; max-height: 190px; padding: 8px 2px;

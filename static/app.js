@@ -2416,18 +2416,6 @@
     });
   }
 
-  // 「工作流」这颗图标：IconPark 里最接近的是 Layers（四层叠纸），13px 下读起来像
-  // 「图层 / 素材」，跟这一行要表达的「这次用哪条工作流」对不上。
-  // 这里按同一套规格（48×48 画布、stroke 4、圆头）手绘一个「两条上游汇到一个下游」的流程图。
-  // 不写进 static/icons.js：那份是 tools/icons/gen.cjs 生成的，手改会被下次生成覆盖。
-  const WF_FLOW_ICON = '<svg class="oi" viewBox="0 0 48 48" fill="none" aria-hidden="true">'
-    + '<rect x="4" y="6" width="15" height="12" rx="3" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>'
-    + '<rect x="29" y="6" width="15" height="12" rx="3" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>'
-    + '<rect x="16.5" y="30" width="15" height="12" rx="3" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>'
-    + '<path d="M11.5 18V25H36.5V18" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
-    + '<path d="M24 25V30" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>'
-    + '</svg>';
-
   function buildGenPanel(n) {
     // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值。
     // **两件事必须同时做到**：
@@ -2470,7 +2458,10 @@
       clear: icon('clear'),
       expand: icon('expand'),
       palette: icon('palette'),
-      wf: WF_FLOW_ICON,
+      // 工作流那颗用「链环」（IconPark 的 LinkOne）：这一行要表达的是「节点串成一条链」。
+      // 试过 Layers（四层叠纸，读起来像「图层/素材」）和手绘的三框流程图——13px 下
+      // 三个以上方框会糊成一团，反而看不出是什么。链环是单一路径，缩到 13px 还认得出。
+      wf: icon('link'),
       arrow: icon('arrowUpBold'),
     };
 

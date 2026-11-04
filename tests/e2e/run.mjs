@@ -1165,8 +1165,30 @@ try {
     return {
       // 生成按钮的右边缘离底栏右边缘还差多少：应该是 0（状态文字 flex:1 把空位吃满）
       runGap: Math.round(bar.getBoundingClientRect().right - run.getBoundingClientRect().right),
-      // 工作流那颗图标换成了「两个上游 → 一个下游」的流程图（3 个矩形 + 2 条连线）
-      wfRects: root.querySelectorAll('.gen-bar .gensel.wfsel .gensel-icon svg rect').length,
+      // 工作流那颗用的是链环（IconPark LinkOne）：直接跟图标表里的那条路径比对
+      wfIsLink: (() => {
+        const svg = root.querySelector('.gen-bar .gensel.wfsel .gensel-icon svg');
+        if (!svg) return false;
+        // 走同一个序列化路径再比：直接跟 ICON_PATHS 里的原始字符串比会因属性顺序/引号格式而假红
+        const tmp = document.createElement('div');
+        tmp.innerHTML = window.icon('link');
+        const want = tmp.firstChild ? tmp.firstChild.innerHTML.trim() : '';
+        return !!want && svg.innerHTML.trim() === want;
+      })(),
+      // 展开那颗是纯图标按钮：图标必须在方框正中间（四边留白相等）
+      expand: (() => {
+        const b = root.querySelector('.gen-chips .chip.icon-only');
+        if (!b) return null;
+        const svg = b.querySelector('svg');
+        const br = b.getBoundingClientRect(), sr = svg.getBoundingClientRect();
+        return {
+          pad: getComputedStyle(b).padding,
+          gaps: [Math.round(sr.left - br.left), Math.round(br.right - sr.right),
+                 Math.round(sr.top - br.top), Math.round(br.bottom - sr.bottom)],
+          h: Math.round(br.height),
+          rowH: Math.round(root.querySelector('.gen-chips .chip').getBoundingClientRect().height),
+        };
+      })(),
       n: sels.length,
       radius: cs.map((c) => c.borderTopLeftRadius),
       bg: cs.map((c) => c.backgroundColor),
@@ -1187,8 +1209,15 @@ try {
   // 生成按钮就停在离右边 140px 的地方——看着像没对齐。
   check('生成按钮贴到最右边（状态文字把中间的空位吃满）',
     barLook.runGap === 0, `还差 ${barLook.runGap}px`);
-  check('工作流那颗图标是流程图（两个上游汇到一个下游），不再是四层叠纸',
-    barLook.wfRects === 3, `${barLook.wfRects} 个矩形`);
+  check('工作流那颗图标是链环，不再是四层叠纸',
+    barLook.wfIsLink === true, String(barLook.wfIsLink));
+  // 展开那颗是纯图标按钮：以前 `.gen-chips .chip` 的 `padding: 0 10px` 也套在它身上，
+  // 26px 的框减掉左右各 10 只剩 6px 内容宽，14px 的图标向两边各溢出 4px——看着就是「没居中」。
+  check('展开按钮：图标在方框正中（四边留白相等），高度和旁边的胶囊一致',
+    !!barLook.expand && barLook.expand.pad === '0px'
+      && barLook.expand.gaps.every((g) => Math.abs(g - barLook.expand.gaps[0]) <= 1)
+      && barLook.expand.h === barLook.expand.rowH,
+    JSON.stringify(barLook.expand));
 
   const barPt = await page.center('.node.selected .gen-panel .gen-bar .gensel.wfsel');
   await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(barPt.x), y: Math.round(barPt.y) });
