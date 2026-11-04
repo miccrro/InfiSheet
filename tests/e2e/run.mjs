@@ -4963,6 +4963,99 @@ try {
       + (fractional ? '' : ' · 图片尺寸是整数，这条用例已测不到亚像素，需要换一张图'));
   await page.evaluate(`(() => { const b = document.querySelector('#cropMask [data-act="cancel"]'); if (b) b.click(); return true; })()`);
 
+  // ---- 空画布起始页：新用户进来的第一屏 ----
+  // 这一段以前一条断言都没有。结果是：点「图片生成」在 ComfyUI 没连上时要等几秒、
+  // 弹一句 /object_info 的行话、3.2 秒就消失，看起来就是「点了没反应」——没人发现。
+  // 现在盯三件事：① 灰按钮点得下去且有下一步 ② 点下去立刻有动静 ③ 连不上时说人话。
+  const comfyOnline = !!(await (await fetch(server.base + 'api/health')).json()).comfy;
+  await page.evaluate(`document.querySelector('#topBar [data-act="home"]').click()`);
+  await page.waitFor(`!document.getElementById('home').classList.contains('hidden')`, 8000);
+  await page.evaluate(`document.getElementById('newCanvas').click()`);
+  await page.waitFor(`(() => {
+    const e = document.getElementById('canvasEmpty');
+    return !!e && !e.classList.contains('hidden') && document.querySelectorAll('#capRow button').length > 0;
+  })()`, 12000);
+
+  const capBase = await page.evaluate(`(() => {
+    const btns = [...document.querySelectorAll('#capRow button')];
+    const off = document.getElementById('capOffline');
+    return {
+      labels: btns.map((b) => b.querySelector('.cap-label').textContent.trim()),
+      nativeDisabled: btns.filter((b) => b.disabled).length,
+      ariaOff: btns.filter((b) => b.getAttribute('aria-disabled') === 'true')
+        .map((b) => b.querySelector('.cap-label').textContent.trim()),
+      sub: (document.getElementById('capSub') || {}).textContent || '',
+      offlineShown: !!off && !off.classList.contains('hidden'),
+      offlineText: off ? off.innerText.replace(/\\s+/g, ' ').trim() : '',
+    };
+  })()`);
+  check('起始页：五个能力都在，灰的也能点（用 aria-disabled 而不是原生 disabled）',
+    capBase.labels.join('/') === '图片生成/视频生成/音频生成/剧本生成/智能剪辑'
+      && capBase.nativeDisabled === 0 && capBase.ariaOff.includes('视频生成'),
+    JSON.stringify(capBase.labels) + ' · ariaOff=' + JSON.stringify(capBase.ariaOff));
+  check('起始页：有一句话说明「点上面能干什么」，不是只留一句双击提示',
+    /自动摆好/.test(capBase.sub) && /提示词/.test(capBase.sub), capBase.sub);
+  // 两种环境都要过：连不上时提示条必须出现且说人话；连得上时它必须收起（别平白吓人）
+  check('起始页：连不上 ComfyUI 才出现提示条，且写的是「还没连上」而不是 urlopen 报错',
+    comfyOnline
+      ? capBase.offlineShown === false
+      : (capBase.offlineShown === true && /还没连上 ComfyUI/.test(capBase.offlineText)
+        && !/urlopen|object_info/.test(capBase.offlineText)),
+    `online=${comfyOnline} · ${capBase.offlineText}`);
+
+  // 点灰按钮：必须有可见提示，视频/音频还要把人送到工作流库
+  const capOffClick = await page.evaluate(`(async () => {
+    const badge = document.getElementById('queueBadge');
+    badge.textContent = ''; badge.classList.add('hidden');
+    const b = [...document.querySelectorAll('#capRow button')].find((x) => /视频生成/.test(x.textContent));
+    b.click();
+    await new Promise((r) => setTimeout(r, 350));
+    return {
+      flash: badge.textContent,
+      shown: !badge.classList.contains('hidden'),
+      sheet: !!document.getElementById('appSettings') || !!document.querySelector('.sheet'),
+    };
+  })()`);
+  check('点灰按钮：给出下一步（不是装死），并打开工作流库',
+    capOffClick.shown && /工作流库/.test(capOffClick.flash) && capOffClick.sheet,
+    JSON.stringify(capOffClick));
+
+  // 关掉工作流库，回起始页
+  await page.evaluate(`(() => {
+    const x = document.querySelector('#appSettings .sheet-close, .sheet-close, #sheetClose');
+    if (x) x.click();
+    document.querySelectorAll('[data-close]').forEach((b) => b.click());
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  // 点「图片生成」：先有动静，再给结果或一句人话
+  const capClick = await page.evaluate(`(async () => {
+    const badge = document.getElementById('queueBadge');
+    badge.textContent = ''; badge.classList.add('hidden');
+    const b = [...document.querySelectorAll('#capRow button')].find((x) => /图片生成/.test(x.textContent));
+    b.click();
+    // 同步读：busy 态是在第一个 await 之前设上的，读晚了就看不到
+    const busy = b.classList.contains('is-busy');
+    const busyLabel = b.querySelector('.cap-label').textContent;
+    const t0 = Date.now();
+    let nodes = 0, msg = '';
+    while (Date.now() - t0 < 15000) {
+      nodes = document.querySelectorAll('#nodes .node').length;
+      if (nodes >= 3) break;
+      if (!badge.classList.contains('hidden') && badge.textContent) { msg = badge.textContent; break; }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return { busy, busyLabel, nodes, msg, busyLeft: document.querySelectorAll('#capRow button.is-busy').length };
+  })()`);
+  check('点「图片生成」立刻有动静（按钮进「准备中 / 检测连接」，不是干等）',
+    capClick.busy === true && /准备中|检测连接/.test(capClick.busyLabel),
+    `${capClick.busy} · ${capClick.busyLabel}`);
+  check('点完要么放出三个节点，要么给一句人话（不能是 object_info / urlopen 那种行话）',
+    capClick.nodes >= 3
+      || (/ComfyUI/.test(capClick.msg) && !/object_info|urlopen|upstream/.test(capClick.msg)),
+    `nodes=${capClick.nodes} · ${capClick.msg}`);
+  check('按钮的「准备中」会自己恢复（不会卡在忙碌态）', capClick.busyLeft === 0, String(capClick.busyLeft));
+
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。
   // 这里先验确认条，再真的关一次——e2e 起的就是个临时实例，关掉正好把收尾也验了。

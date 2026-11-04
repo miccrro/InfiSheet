@@ -7888,6 +7888,8 @@
       if (htext) htext.textContent = label;
     }
     updateMcpChip(res);
+    // 空画布上那条「还没连上 ComfyUI」跟着探测结果走：连上就收起，断了就出现
+    updateCapOffline();
   }
 
   /* ---------------- 小地图与视图工具 ---------------- */
@@ -8321,20 +8323,26 @@
       const btn = document.createElement('button');
       btn.className = 'cap-btn';
       btn.innerHTML = `<span class="cap-ico">${CAP_ICONS[d.key] || ''}</span><span class="cap-label">${d.label}</span>`;
+      // 用不了的按钮不再用原生 disabled：点不动的按钮给不出任何解释，
+      // 新用户只看到一排灰块。改成「点得下去，点完告诉你下一步」。
+      const off = (why, act) => {
+        btn.classList.add('is-off');
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = why;
+        btn.onclick = () => { flash(why); if (act) act(); };
+      };
       if (d.key === 'script') {
         btn.onclick = () => addScriptNode();
         btn.title = '放入一个提示词节点，用来写剧本 / 分镜';
       } else if (d.key === 'clip') {
-        btn.disabled = true;
-        btn.title = '本地画布暂无剪辑能力：用视频工作流的产物 + 外部剪辑软件';
+        off('本地画布没有剪辑能力：视频生成后下载，用外部剪辑软件剪');
       } else {
         const wf = pickWorkflowByKind(d.key);
         if (wf) {
-          btn.onclick = () => addWorkflowStarter(wf.id);
+          btn.onclick = () => addWorkflowStarter(wf.id, btn);
           btn.title = `放入「${wf.title}」工作流`;
         } else {
-          btn.disabled = true;
-          btn.title = `还没有能产出 ${d.label.replace('生成', '')} 的工作流：先在 ComfyUI 跑一次，再从「工作流库 → 运行记录」导入`;
+          off(`还没有${d.label.replace('生成', '')}工作流：去「工作流库」导入一个`, () => openSettingsSheet('wf'));
         }
       }
       host.appendChild(btn);
@@ -8348,6 +8356,28 @@
     const empty = state.nodes.length === 0;
     el.classList.toggle('hidden', !empty);
     if (empty) renderCapRow();
+    updateCapOffline();
+  }
+
+  // ComfyUI 离线时，空画布上那排能力按钮点了也出不来节点——原因只写在顶栏一行
+  // 被截断的 `urlopen error` 里，等于没说。这里把它搬到按钮正上方，并给出两个动作。
+  function updateCapOffline() {
+    const el = document.getElementById('capOffline');
+    if (!el) return;
+    const show = state.nodes.length === 0 && state.comfyOnline === false;
+    el.classList.toggle('hidden', !show);
+    if (!show) return;
+    const addr = el.querySelector('[data-co="addr"]');
+    const retry = el.querySelector('[data-co="retry"]');
+    if (addr) addr.onclick = () => openComfyPop(addr);
+    if (retry) {
+      retry.onclick = async () => {
+        retry.disabled = true;
+        retry.textContent = '检测中…';
+        try { await health(); } finally { retry.disabled = false; retry.textContent = '重新检测'; }
+        if (state.comfyOnline) flash('已连上 ComfyUI，可以开始了');
+      };
+    }
   }
 
   function addScriptNode() {
@@ -8359,13 +8389,38 @@
   }
 
   // 把「提示词 → 工作流 → 图片输出」这一套放进当前画布
-  async function addWorkflowStarter(workflowId) {
+  async function addWorkflowStarter(workflowId, btn) {
+    const labelEl = btn && btn.querySelector('.cap-label');
+    const labelText = labelEl ? labelEl.textContent : '';
+    const setBusy = (on, text) => {
+      if (!btn) return;
+      btn.classList.toggle('is-busy', on);
+      if (labelEl) labelEl.textContent = on ? text : labelText;
+    };
     try {
+      // 分析工作流要问 ComfyUI 要节点定义：连不上时要等好几秒才报错，
+      // 而那句报错是 /object_info 之类的行话。先探一次，把「在检测」显示出来。
+      if (state.comfyOnline !== true) {
+        setBusy(true, '检测连接…');
+        await health();
+        if (state.comfyOnline === false) {
+          updateCapOffline();
+          flash('还没连上 ComfyUI：先把本机的 ComfyUI 启动起来，再点一次');
+          return;
+        }
+      }
+      setBusy(true, '准备中…');
       const graph = await loadGraphById(workflowId);
       if (!graph) throw new Error('工作流为空');
       const label = workflowId.startsWith('preset:') ? '工作流' : workflowId.slice(4);
       const node = await addWorkflowNode(graph, label);
-      if (!node) return;
+      if (!node) {
+        if (state.comfyOnline === false) {
+          updateCapOffline();
+          flash('还没连上 ComfyUI：先把本机的 ComfyUI 启动起来，再点一次');
+        }
+        return;
+      }
       const textSlot = (node.slots || []).find((x) => x.kind === 'text');
       if (textSlot) {
         const t = addTextNode(node.x - 330, node.y + 90);
@@ -8378,7 +8433,16 @@
       queueSave();
       flash('已放入工作流：在左侧提示词节点里写内容');
     } catch (err) {
-      flash(`工作流载入失败：${err.message}`);
+      const msg = String((err && err.message) || '');
+      if (/object_info|无法连接 ComfyUI|upstream|urlopen/i.test(msg)) {
+        state.comfyOnline = false;
+        updateCapOffline();
+        flash('还没连上 ComfyUI：先把本机的 ComfyUI 启动起来，再点一次');
+      } else {
+        flash(`工作流载入失败：${msg}`);
+      }
+    } finally {
+      setBusy(false);
     }
   }
 

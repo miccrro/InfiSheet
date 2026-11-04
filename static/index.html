@@ -143,11 +143,19 @@
     </div>
     <!-- 空画布起始页：新建画布后出现，有节点即隐藏 -->
     <div id="canvasEmpty">
+      <!-- ComfyUI 没连上时才出现：能力按钮点下去要等它，先把「为什么点不动」说在明面上 -->
+      <div id="capOffline" class="cap-offline hidden">
+        <span class="dot bad" aria-hidden="true"></span>
+        <span class="co-text"><b>还没连上 ComfyUI</b><span>图片 / 视频生成要它在本机跑起来</span></span>
+        <button type="button" class="co-act" data-co="addr">填地址</button>
+        <button type="button" class="co-act" data-co="retry">重新检测</button>
+      </div>
       <div class="cap-hint">
         <span class="ico" data-icon="pointer" aria-hidden="true"></span>
         <span>双击画布 自由生成节点</span>
       </div>
       <div class="cap-row" id="capRow"></div>
+      <p class="cap-sub" id="capSub">也可以点上面任一可用能力：自动摆好「写提示词 → 生成 → 出图」三个节点</p>
     </div>
     <div id="addMenu" class="hidden"></div>
     <div id="viewTools">
