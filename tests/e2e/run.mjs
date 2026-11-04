@@ -1013,12 +1013,12 @@ try {
     };
   })()`);
   check('生成器面板出现', panel && panel.visible);
-  check('提示词框：无边框、86~168px、透明底',
-    panel && panel.prompt.border === '0px' && panel.prompt.minH === '86px' && panel.prompt.maxH === '168px' && panel.prompt.bg === 'rgba(0, 0, 0, 0)',
+  check('提示词框：无边框、92~190px、透明底',
+    panel && panel.prompt.border === '0px' && panel.prompt.minH === '92px' && panel.prompt.maxH === '190px' && panel.prompt.bg === 'rgba(0, 0, 0, 0)',
     JSON.stringify(panel?.prompt));
   check('长提示词出现底部渐隐', panel && panel.prompt.masked === true);
 
-  // ---- 生成器面板：固定版面（600 宽），贴在节点下沿，且不跟画布缩放 ----
+  // ---- 生成器面板：固定版面（660 宽），贴在节点下沿，且不跟画布缩放 ----
   // 位置切换（上/下/左/右那颗按钮）已按截图标注删掉：四个方向里三个都要挪鼠标找、
   // 还容易把面板顶到画布外，留「贴在下沿」一种就够。所以这里断言的是「按钮没了、位置也不再变」。
   const panelGeom = () => page.evaluate(`(() => {
@@ -1049,14 +1049,14 @@ try {
   check('面板固定在节点下方、水平居中，位置切换按钮与菜单都已移除',
     pg0.side === 'bottom' && pg0.below >= 6 && Math.abs(pg0.center) <= 2 && !pg0.sideBtn && !pg0.sideMenu,
     JSON.stringify(pg0));
-  check('面板是固定 600 宽的版面（不再跟着节点宽度走）',
-    Math.abs(pg0.w - 600) <= 1 && pg0.w - pg0.nodeW >= 32, `${pg0.w} vs 节点 ${pg0.nodeW}`);
+  check('面板是固定 660 宽的版面（不再跟着节点宽度走）',
+    Math.abs(pg0.w - 660) <= 1 && pg0.w - pg0.nodeW >= 32, `${pg0.w} vs 节点 ${pg0.nodeW}`);
   check('上排按钮：胶囊形、实心底、浅灰字（对齐参考图那颗「＋ 上传」）',
     pg0.chipRadius === '999px' && pg0.chipColor === 'rgb(204, 211, 222)'
       && pg0.chipH >= 23 && pg0.chipH <= 27,
     `${pg0.chipRadius} / ${pg0.chipColor} / ${pg0.chipH}px`);
 
-  // 固定版面＝换挡不换尺寸：200% 下还是 600×同样的高，缝还是 10px（间距按 1/k 补偿过）
+  // 固定版面＝换挡不换尺寸：200% 下还是 660×同样的高，缝还是 10px（间距按 1/k 补偿过）
   const setZoom = async (v) => {
     await page.evaluate(`document.getElementById('zoomBtn').click()`);
     await new Promise((r) => setTimeout(r, 120));
@@ -1144,11 +1144,67 @@ try {
   await page.evaluate(`document.querySelectorAll('.gen-panel .gen-chips .chip')[2].click()`);
   await new Promise((r) => setTimeout(r, 200));
   check('底栏只有一行', panel && panel.rows === 1, panel ? panel.barChildren.join(' / ') : '');
-  check('底栏顺序：工作流 → 参数 → 状态 → 生成',
-    panel && panel.barChildren.join(',') === 'gensel,gensel,gen-status,gen-run',
+  check('底栏顺序：工作流 → 竖线 → 参数 → 状态 → 生成',
+    panel && panel.barChildren.join(',') === 'gensel,gen-sep,gensel,gen-status,gen-run',
     panel ? panel.barChildren.join(',') : '');
   check('生成按钮与胶囊同高、纯白', panel && Math.abs(panel.run.h - panel.pill.h) <= 1 && panel.run.bg === 'rgb(255, 255, 255)' && panel.run.radius === '999px',
     panel ? JSON.stringify(panel.run) + ' pill=' + panel.pill.h : '');
+
+  // 底栏去胶囊：两个下拉以前是「999px + 实心底 + 一圈描边」的药丸，比下面的提示词还抢眼。
+  // 现在改成「图标 + 名字 | 图标 + 名字」的平铺文字，底色跟面板一致，只有 hover / 展开时
+  // 给一块**不带描边**的圆角矩形。
+  // 画布上可能同时挂着好几个节点的面板，只看**选中节点**这一个
+  const barLook = await page.evaluate(`(() => {
+    const root = document.querySelector('.node.selected .gen-panel') || document.querySelector('.gen-panel');
+    const sels = [...root.querySelectorAll('.gen-bar .gensel')];
+    const cs = sels.map((el) => getComputedStyle(el));
+    const sep = root.querySelector('.gen-bar .gen-sep');
+    const sr = sep ? sep.getBoundingClientRect() : null;
+    return {
+      n: sels.length,
+      radius: cs.map((c) => c.borderTopLeftRadius),
+      bg: cs.map((c) => c.backgroundColor),
+      border: cs.map((c) => c.borderTopWidth),
+      sep: sr ? [Math.round(sr.width), Math.round(sr.height)] : null,
+      sepBg: sep ? getComputedStyle(sep).backgroundColor : '',
+    };
+  })()`);
+  check('底栏两个下拉不再是胶囊：透明底、无描边、8px 圆角',
+    barLook.n === 2 && barLook.radius.every((r) => r === '8px')
+      && barLook.bg.every((b) => b === 'rgba(0, 0, 0, 0)')
+      && barLook.border.every((b) => b === '0px'),
+    JSON.stringify(barLook));
+  check('两块之间是一根 1px 竖线（「图标+名字 | 图标+名字」）',
+    !!barLook.sep && barLook.sep[0] === 1 && barLook.sep[1] >= 10 && barLook.sepBg !== 'rgba(0, 0, 0, 0)',
+    JSON.stringify({ sep: barLook.sep, bg: barLook.sepBg }));
+
+  const barPt = await page.center('.node.selected .gen-panel .gen-bar .gensel.wfsel');
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(barPt.x), y: Math.round(barPt.y) });
+  await new Promise((r) => setTimeout(r, 220));
+  const barHover = await page.evaluate(`(() => {
+    const el = document.querySelector('.node.selected .gen-panel .gen-bar .gensel.wfsel');
+    const cs = getComputedStyle(el);
+    return { bg: cs.backgroundColor, border: cs.borderTopWidth };
+  })()`);
+  check('鼠标移上去：亮一块圆角矩形，仍然没有描边',
+    /^rgba?\(255, 255, 255, 0\.[0-9]+\)$/.test(barHover.bg) && barHover.border === '0px',
+    JSON.stringify(barHover));
+
+  await page.clickAt(barPt.x, barPt.y);
+  await new Promise((r) => setTimeout(r, 350));
+  const barOpen = await page.evaluate(`(() => {
+    const el = document.querySelector('.node.selected .gen-panel .gen-bar .gensel.wfsel');
+    return { cls: el.className, menu: !!document.querySelector('.popmenu'),
+             bg: getComputedStyle(el).backgroundColor };
+  })()`);
+  check('点开菜单：这颗下拉保持高亮（去胶囊后只剩底色能说明菜单从哪儿弹出来）',
+    /pop-open/.test(barOpen.cls) && barOpen.menu && barOpen.bg === 'rgba(255, 255, 255, 0.1)',
+    JSON.stringify(barOpen));
+  await page.clickAt(barPt.x, barPt.y);          // 再点一次收起，别把菜单留给后面的用例
+  await new Promise((r) => setTimeout(r, 300));
+  check('收起菜单：高亮撤掉',
+    !/pop-open/.test(await page.evaluate(`document.querySelector('.node.selected .gen-panel .gen-bar .gensel.wfsel').className`)),
+    await page.evaluate(`document.querySelector('.node.selected .gen-panel .gen-bar .gensel.wfsel').className`));
 
   // 参考图缩略图：夹具里 i3 →（文本节点 t1）→ i2，所以 i2 面板上应出现 i3 的缩略图
   const refs1 = await page.evaluate(`(() => ({

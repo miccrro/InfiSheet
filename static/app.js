@@ -2648,6 +2648,13 @@
     wfBox.classList.add('wfsel');
     bar.appendChild(wfBox);   // 工作流放在最左，后面接画幅 / 尺寸 / 张数（同一行）
 
+    // 两个下拉之间那根竖线：底栏去胶囊之后，全靠「icon 名称 | icon 名称」这条线
+    // 把两块分开，否则读起来像一串散落的文字。
+    const sep = document.createElement('i');
+    sep.className = 'gen-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    bar.appendChild(sep);
+
     // 参数胶囊：画幅 · 清晰度 · 张数 全在这一颗里，点开是分组弹层
     const optBox = document.createElement('div');
     optBox.className = 'gensel optsel';
@@ -8120,12 +8127,22 @@
 
   function closePopMenu() {
     document.querySelectorAll('.popmenu').forEach((m) => m.remove());
+    // 底栏那两个下拉去掉胶囊后，只剩「底色」能说明菜单是从哪儿弹出来的。
+    // 收菜单时把这盏灯一起关掉，别留一块亮着的空底。
+    const lit = popAnchor && popAnchorBox(popAnchor);
+    if (lit && lit.classList) lit.classList.remove('pop-open');
     refMenu = null;   // 自绘的 @ 引用菜单也走这套关闭逻辑，别留下悬空引用
     popAnchor = null;
     if (popCloseHandler) {
       document.removeEventListener('pointerdown', popCloseHandler, true);
       popCloseHandler = null;
     }
+  }
+
+  // 锚点按钮可能只是外壳（.gensel）里的一颗 button：亮灯要亮在**外壳**上，
+  // 不然只有文字那一小块变色，icon 还在外面，看着像没选中。
+  function popAnchorBox(el) {
+    return (el && el.closest && el.closest('.gensel')) || el;
   }
 
   // 点菜单外面就收起来。两个都是踩过的坑：
@@ -8135,6 +8152,10 @@
   //    会连节点一起取消选中，整个生成器面板跟着消失——用户会以为参数丢了。
   function armPopClose(anchor) {
     if (popCloseHandler) document.removeEventListener('pointerdown', popCloseHandler, true);
+    // 菜单弹出来时给锚点点一盏灯。底栏那两个下拉去掉胶囊后只剩底色能表达
+    // 「这个菜单是从这儿弹的」，而这里正好是所有弹层的**唯一**入口。
+    const lit = popAnchorBox(anchor);
+    if (lit && lit.classList) lit.classList.add('pop-open');
     popCloseHandler = (ev) => {
       const t = ev.target;
       if (!t || !t.closest) return;

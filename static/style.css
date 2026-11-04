@@ -2131,6 +2131,55 @@ button.primary:hover,
 #viewTools { border-radius: 999px; }
 
 /* =========================================================
+   生成器面板 · 整体放大一档 + 底栏去胶囊
+   ========================================================= */
+/* 面板原先 600 宽、控件 26 高、正文 12.5：读得清，但挤在一起显得碎。
+   这里统一放大一档（宽 +10%、控件 26→28、正文 12.5→13、内边距 10→12），
+   只动生成面板内部，节点本身和别的弹窗都不受影响。 */
+.gen-panel { width: min(660px, calc(100vw - 32px)); padding: 12px; }
+.gen-chips { gap: 6px; margin-bottom: 8px; }
+.gen-chips .chip { height: 26px; padding: 0 10px; font-size: 12px; gap: 6px; }
+.gen-chips .chip .oi { width: 14px; height: 14px; }
+.gen-chips .chip.icon-only { width: 26px; height: 26px; }
+.gen-panel .gen-prompt {
+  font-size: 13px; line-height: 1.62;
+  min-height: 92px; max-height: 190px; padding: 8px 2px;
+}
+.gen-bar { gap: 6px; padding-top: 10px; }
+.gen-bar .gen-status { font-size: 12px; }
+
+/* 底栏两个下拉：不再做成胶囊。
+   胶囊（999px + 实心底 + 一圈描边）摆在这一行里像两颗药丸，比下面的提示词还抢眼；
+   改成「图标 + 名字 | 图标 + 名字」的平铺文字，底色跟面板一致（透明），
+   只有 hover / 展开时给一块**不带描边**的圆角矩形做反馈。 */
+.gen-bar .gensel {
+  height: 28px; padding: 0 8px; gap: 5px;
+  background: transparent; border: 0; border-radius: 8px;
+  transition: background 0.14s ease;
+}
+.gen-bar .gensel .gm-btn { font-size: 12.5px; }
+.gen-bar .gensel .gensel-icon svg { width: 13px; height: 13px; }
+.gen-bar .gensel .gm-caret { opacity: 0.5; }
+.gen-bar .gensel:hover { background: rgba(255, 255, 255, 0.07); border: 0; }
+.gen-bar .gensel.pop-open,
+.gen-bar .gensel:focus-within {
+  background: rgba(255, 255, 255, 0.1);
+  border: 0; box-shadow: none;          /* 键盘聚焦也只用底色，不再套一圈蓝框 */
+}
+/* 工作流那颗不再拉满整行：名字有多宽就占多宽，右边留给状态文字。
+   拉满时 ▾ 会孤零零挂在最右边，和名字隔着一大片空白。 */
+.gen-bar .gensel.wfsel { flex: 0 1 auto; min-width: 0; max-width: 48%; }
+.gen-bar .gen-status { flex: 1 1 auto; min-width: 0; }
+/* 「图标 + 名字 | 图标 + 名字」中间那根竖线 */
+.gen-sep {
+  flex: 0 0 1px; width: 1px; height: 12px; align-self: center;
+  background: rgba(255, 255, 255, 0.16); margin: 0 2px;
+}
+/* 生成按钮跟着长到 28，和左边两个下拉同高 */
+.gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; }
+.gen-bar .gen-run .oi { width: 16px; height: 16px; }
+
+/* =========================================================
    生成器 · 参考图缩略图（连线 / @ 引用）与 @ 选择菜单
    ========================================================= */
 .gen-refs { display: flex; flex-wrap: wrap; gap: 6px; margin: 1px 0 7px; }
