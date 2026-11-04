@@ -8487,18 +8487,30 @@
       items.forEach((it) => {
         const card = document.createElement('div');
         card.className = 'proj-card' + (it.id === state.projectId ? ' current' : '');
+        card.dataset.id = it.id;
         const open = document.createElement('button');
         open.className = 'pm';
-        const when = it.savedAt ? new Date(it.savedAt).toLocaleString('zh-CN', { hour12: false }) : '';
-        open.innerHTML = '<b>' + esc(it.name || '未命名画布') + '</b><span>' + it.nodes + ' 节点 · ' + it.links + ' 连线' + (when ? ' · ' + esc(when) : '') + '</span>';
+        // 左边缩略图 = 这个画布「最近生成的那张」。一屏十几个「未命名画布」时，
+        // 名字和日期都长得一样，只有图能让人认出「我要的是哪个」。
+        // 没有图（空画布 / 纯工作流还没跑过）就放一个占位图标，别留一块空白。
+        open.innerHTML = '<span class="pc-thumb">'
+          + (it.cover
+            ? `<img src="${esc(it.cover)}" alt="" loading="lazy">`
+            : `<span class="pc-ph">${icon('image')}</span>`)
+          + '</span>'
+          + '<span class="pc-text">'
+          + `<b class="pc-name">${esc(it.name || '未命名画布')}</b>`
+          + `<span class="pc-date">${cardDate(it.savedAt)}</span>`
+          + '</span>';
         open.onclick = () => openProject(it.id);
-        const del = document.createElement('button');
-        del.className = 'pdel';
-        del.title = '删除这个项目';
-        del.textContent = '×';
-        del.onclick = (ev) => { ev.stopPropagation(); deleteProject(it.id); };
+        const more = document.createElement('button');
+        more.className = 'pc-more';
+        more.title = '更多操作';
+        more.setAttribute('aria-label', '更多操作');
+        more.innerHTML = '<span></span><span></span><span></span>';
+        more.onclick = (ev) => { ev.stopPropagation(); projectMenu(more, it); };
         card.appendChild(open);
-        card.appendChild(del);
+        card.appendChild(more);
         list.appendChild(card);
       });
     }
@@ -8559,6 +8571,183 @@
     }
     initHome();
   }
+
+  /* ---------------- 最近项目卡片：日期 / 「⋯」菜单 / 重命名 / 改封面 ---------------- */
+  // 卡片上的日期只到天：一天里开过十个画布时，秒级时间戳除了让每张卡都长得不一样，
+  // 没有任何用处。格式固定 yyyy-mm-dd，不跟系统区域走（同一个人的卡片要能横向对齐）。
+  function cardDate(ms) {
+    if (!ms) return '';
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  // 卡片右侧「⋯」：四个动作都在这一个菜单里，卡片本身只负责「打开」。
+  // 以前删除是卡片右上角一个 ×，鼠标滑过才看得见，还一点就删（没有二次确认以外的提示）。
+  function projectMenu(btn, it) {
+    openPopMenu(btn, [
+      ['打开', () => openProject(it.id)],
+      ['重命名', () => renameProjectCard(it.id)],
+      ['修改封面', () => openCoverPicker(it)],
+      ['删除项目', () => deleteProject(it.id), 'danger'],
+    ], it.name || '未命名画布');
+  }
+
+  // 重命名就地改：把标题换成输入框，Enter / 失焦保存，Esc 放弃。
+  // 不走 prompt()：弹窗会盖住整页，而且改完看不到卡片上的效果。
+  function renameProjectCard(id) {
+    const card = document.querySelector(`#recentList .proj-card[data-id="${CSS.escape(id)}"]`);
+    const nameEl = card && card.querySelector('.pc-name');
+    if (!nameEl) return;
+    const old = nameEl.textContent;
+    const inp = document.createElement('input');
+    inp.className = 'pc-name-input';
+    inp.value = old;
+    inp.spellcheck = false;
+    nameEl.replaceWith(inp);
+    inp.focus();
+    inp.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const name = (inp.value || '').trim().slice(0, 40);
+      if (save && name && name !== old) {
+        const r = await api(`/api/projects/${encodeURIComponent(id)}/rename`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+        });
+        if (!r.ok) flash(r.error || '重命名失败');
+        else if (state.projectId === id) {
+          state.name = name;                      // 顶栏那份名字跟着改，不用等下次打开
+          const bar = document.getElementById('projectName');
+          if (bar) bar.value = name;
+        }
+      }
+      initHome();
+    };
+    inp.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); done = true; initHome(); }
+    };
+    inp.onblur = () => finish(true);
+  }
+
+  // 项目里所有能当封面的图（新→旧）。产物排在前面，其次才是图片节点本身。
+  function projectShots(canvas) {
+    const out = [];
+    const seen = new Set();
+    const push = (url) => {
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      out.push(url);
+    };
+    (canvas.nodes || []).forEach((n) => {
+      const gen = n.gen;
+      const arts = [...((gen && gen.artifacts) || []), ...(n.artifacts || [])];
+      arts.forEach((a) => {
+        if (!a || a.kind !== 'image' || !a.filename) return;
+        push(`/api/view?filename=${encodeURIComponent(a.filename)}`
+          + `&subfolder=${encodeURIComponent(a.subfolder || '')}`
+          + `&type=${encodeURIComponent(a.type || 'output')}`);
+      });
+      const src = n.dataURL;
+      if (typeof src === 'string' && (src.startsWith('data:image/') || src.startsWith('/api/'))) push(src);
+    });
+    return out.reverse();                         // 最近生成的在最前面
+  }
+
+  // 本机选图当封面：先缩到长边 800 再转 JPEG。原图动辄几 MB，
+  // 存进 covers/ 只为了 64×64 的一格，没必要。
+  function shrinkImage(file, max = 800) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const k = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+          const cv = canvasOf((img.naturalWidth || 1) * k, (img.naturalHeight || 1) * k);
+          const ctx = cv.getContext('2d');
+          ctx.fillStyle = '#111';                 // 透明 PNG 转 JPEG 会变黑，先铺一层底色
+          ctx.fillRect(0, 0, cv.width, cv.height);
+          ctx.drawImage(img, 0, 0, cv.width, cv.height);
+          resolve(cv.toDataURL('image/jpeg', 0.82));
+        };
+        img.onerror = () => reject(new Error('这张图读不出来'));
+        img.src = String(fr.result);
+      };
+      fr.onerror = () => reject(new Error('文件读不出来'));
+      fr.readAsDataURL(file);
+    });
+  }
+
+  let coverPickAc = null;                 // 「修改封面」那张表的 Esc 监听，关表时一起 abort
+
+  function closeCoverPicker() {
+    if (coverPickAc) { try { coverPickAc.abort(); } catch { /* 已经关过 */ } coverPickAc = null; }
+    const el = document.getElementById('coverPick');
+    if (el) el.remove();
+  }
+
+  async function openCoverPicker(it) {
+    closeCoverPicker();
+    const r = await api('/api/projects/' + encodeURIComponent(it.id));
+    if (!r.ok || !r.canvas) { flash(r.error || '读不到这个项目'); return; }
+    const shots = projectShots(r.canvas);
+    const cur = (r.canvas.cover && (r.canvas.cover.src || '')) || '';
+    const box = document.createElement('div');
+    box.id = 'coverPick';
+    box.innerHTML = `
+      <div class="sheet cover-sheet" role="dialog" aria-label="修改封面">
+        <header><strong>修改封面</strong><button type="button" class="x" title="关闭（Esc）">×</button></header>
+        <div class="cover-body">
+          ${shots.length
+            ? `<div class="cover-grid">${shots.map((u, i) => `<button type="button" class="cover-cell${u === cur ? ' on' : ''}" data-i="${i}" title="用这张当封面"><img src="${esc(u)}" alt="" loading="lazy"></button>`).join('')}</div>`
+            : '<p class="cover-empty">这个项目里还没有图。可以从本机选一张当封面。</p>'}
+        </div>
+        <footer class="cover-foot">
+          <button type="button" class="cover-auto">恢复自动（用最近生成的图）</button>
+          <span class="spacer"></span>
+          <button type="button" class="cover-up">从本机选一张…</button>
+        </footer>
+      </div>`;
+    const setCover = async (src) => {
+      const res = await api(`/api/projects/${encodeURIComponent(it.id)}/cover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ src }),
+      });
+      if (!res.ok) { flash(res.error || '封面没改成'); return; }
+      closeCoverPicker();
+      flash(src ? '封面已更新' : '封面已恢复成「最近生成」');
+      initHome();
+    };
+    box.querySelector('.x').onclick = closeCoverPicker;
+    box.addEventListener('pointerdown', (ev) => { if (ev.target === box) closeCoverPicker(); });
+    box.querySelectorAll('.cover-cell').forEach((b) => {
+      b.onclick = () => setCover(shots[Number(b.dataset.i)] || '');
+    });
+    box.querySelector('.cover-auto').onclick = () => setCover('');
+    box.querySelector('.cover-up').onclick = () => {
+      const f = document.createElement('input');
+      f.type = 'file';
+      f.accept = 'image/*';
+      f.onchange = async () => {
+        const file = f.files && f.files[0];
+        if (!file) return;
+        try { setCover(await shrinkImage(file)); } catch (err) { flash(err.message || '这张图读不出来'); }
+      };
+      f.click();
+    };
+    document.body.appendChild(box);
+    // Esc 单独挂一层：画布那套键盘处理在首页会整段 return（首页不该响应 F / Delete），
+    // 所以不能指望它来关这张表。signal 跟着面板一起 abort，不会留下野监听。
+    coverPickAc = new AbortController();
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      closeCoverPicker();
+    }, { signal: coverPickAc.signal });
+  }
+
   /* ---------------- 图片工具条：裁剪 / 高清 ---------------- */
   // 图片节点选中时，在节点标题上方浮出一排后续操作。位置按**屏幕坐标**算（和 #alignBar、
   // #linkDel 同一个路数）：放进 #world 会跟着画布缩放，200% 时工具条比图还大、25% 时点不着。

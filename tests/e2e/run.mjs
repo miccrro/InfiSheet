@@ -1820,6 +1820,89 @@ try {
   check('返回首页并改写 hash', backHome.hash === '#home' && backHome.home, JSON.stringify(backHome));
   check('最近项目里有夹具画布', backHome.cards >= 1 && /e2e 夹具画布/.test(backHome.name), backHome.name);
 
+  // ---- 最近项目卡片：左边缩略图 / 右边名称 + 日期 / 最右「⋯」 ----
+  const cardUi = await page.evaluate(`(() => {
+    const c = [...document.querySelectorAll('#recentList .proj-card')]
+      .find((x) => /e2e 夹具画布/.test(x.textContent));
+    if (!c) return { found: false };
+    const thumb = c.querySelector('.pc-thumb img');
+    return {
+      found: true,
+      name: (c.querySelector('.pc-name') || {}).textContent || '',
+      date: (c.querySelector('.pc-date') || {}).textContent || '',
+      hasThumb: !!thumb,
+      thumbOk: thumb ? (thumb.complete && thumb.naturalWidth > 0) : null,
+      dots: c.querySelectorAll('.pc-more span').length,
+    };
+  })()`);
+  check('最近项目卡片：缩略图 + 画布名 + yyyy-mm-dd 日期 + 最右三个点',
+    cardUi.found && /e2e 夹具画布/.test(cardUi.name) && /^\d{4}-\d{2}-\d{2}$/.test(cardUi.date)
+      && cardUi.dots === 3 && (!cardUi.hasThumb || cardUi.thumbOk === true),
+    JSON.stringify(cardUi));
+
+  const openCardMenu = `(() => {
+    const c = [...document.querySelectorAll('#recentList .proj-card')]
+      .find((x) => /e2e 夹具画布/.test(x.textContent));
+    if (!c) return false;
+    c.querySelector('.pc-more').click();
+    return true;
+  })()`;
+  await page.evaluate(openCardMenu);
+  await new Promise((r) => setTimeout(r, 350));
+  const projMenu = await page.evaluate(`(() => [...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()))()`);
+  check('卡片「⋯」菜单：打开 / 重命名 / 修改封面 / 删除项目',
+    projMenu.join('/') === '打开/重命名/修改封面/删除项目', JSON.stringify(projMenu));
+
+  // 重命名：标题就地变输入框，Enter 保存（不是 prompt 弹窗，也不是跳页）
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')].find((b) => b.textContent === '重命名').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const renOld = await page.evaluate(`(() => { const i = document.querySelector('.pc-name-input'); return i ? i.value : ''; })()`);
+  check('重命名：卡片标题就地变成输入框，预填当前名字', renOld === 'e2e 夹具画布', renOld);
+  await page.evaluate(`(() => {
+    const i = document.querySelector('.pc-name-input');
+    i.value = 'e2e 夹具画布 改名';
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const renNew = await page.evaluate(`(() => [...document.querySelectorAll('#recentList .pc-name')].map((x) => x.textContent).join('|'))()`);
+  check('重命名：回车后卡片上立刻是新名字', /e2e 夹具画布 改名/.test(renNew), renNew);
+  // 改回去：后面的用例还要按「e2e 夹具画布」找这个夹具
+  await page.evaluate(`(() => {
+    const c = [...document.querySelectorAll('#recentList .proj-card')].find((x) => /改名/.test(x.textContent));
+    c.querySelector('.pc-more').click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')].find((b) => b.textContent === '重命名').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  await page.evaluate(`(() => {
+    const i = document.querySelector('.pc-name-input');
+    i.value = 'e2e 夹具画布';
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+
+  // 修改封面：列出这个项目里的图 + 两个出口（恢复自动 / 从本机选）
+  await page.evaluate(openCardMenu);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')].find((b) => b.textContent === '修改封面').click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const coverUi = await page.evaluate(`(() => {
+    const p = document.getElementById('coverPick');
+    return {
+      open: !!p,
+      cells: p ? p.querySelectorAll('.cover-cell').length : 0,
+      imgsOk: p ? [...p.querySelectorAll('.cover-cell img')].every((i) => i.complete && i.naturalWidth > 0) : false,
+      actions: p ? [...p.querySelectorAll('.cover-foot button')].map((b) => b.textContent.trim()) : [],
+    };
+  })()`);
+  check('修改封面：列出项目里的图，底部有「恢复自动 / 从本机选一张」',
+    coverUi.open && coverUi.cells >= 1 && coverUi.imgsOk && coverUi.actions.length === 2,
+    JSON.stringify(coverUi));
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 300));
+  check('修改封面：Esc 关掉，不动项目',
+    !(await page.evaluate(`!!document.getElementById('coverPick')`)), 'coverPick 已关');
+
   // ---- 回首页要把画布那套浮层收干净 ----
   // 这些浮层都挂在 body 上、position:fixed，z-index 比 #home(45) 高：图片工具条 46、对齐条 45、
   // 连线删除 46、任务面板 60、资产抽屉 62。画布本身被首页整块盖住了，它们却照旧钉在视口上——

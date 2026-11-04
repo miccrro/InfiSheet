@@ -702,8 +702,24 @@ def main() -> int:
         check("读取项目", status == 200 and got.get("ok") is True and canvas.get("name") == "smoke 测试项目",
               str(canvas.get("name")))
 
+        status, raw = request(base, f"/api/projects/{pid}/rename", "POST", {"name": "smoke 改名"})
+        renamed = json.loads(raw or b"{}")
+        check("重命名项目", status == 200 and renamed.get("name") == "smoke 改名", str(renamed.get("name")))
+
+        # 封面：没图就没有封面；data: 图要落成文件再发地址（首页一次列 30 个项目，
+        # 把 base64 直接塞进列表响应就是几十 MB）
+        status, raw = request(base, f"/api/projects/{pid}/cover", "POST",
+                              {"src": "data:image/png;base64,iVBORw0KGgo="})
+        cover = json.loads(raw or b"{}")
+        cover_url = cover.get("cover") or ""
+        check("设置封面：回一个能直接 <img src> 的地址", status == 200 and "/cover?v=" in cover_url, cover_url)
+        status, blob = request(base, cover_url)
+        check("封面能取回来（PNG 魔数对得上）", status == 200 and (blob or b"")[:4] == b"\x89PNG",
+              str(len(blob or b"")))
+
         status, _ = request(base, f"/api/projects/{pid}", "DELETE")
         check("删除项目", status == 200)
+        check("删项目顺手删封面文件", not (data_dir / "covers" / f"{pid}.img").exists())
 
         status, raw = request(base, "/api/health")
         check("跑完仍健康", status == 200)

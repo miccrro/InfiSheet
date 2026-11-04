@@ -26,7 +26,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
 | 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅。ws 一个数都没有时，`/api/job` 退一步去读 ComfyUI 控制台日志（`/internal/logs/raw`）里 tqdm 的百分比兜底 |
-| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `assets/`（资产库的图片本体，默认在程序目录下，可换到别的盘；生成完自动存一份，按时间+序号命名） |
+| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/covers/<id>.img`（项目封面，首页缩略图用）、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `assets/`（资产库的图片本体，默认在程序目录下，可换到别的盘；生成完自动存一份，按时间+序号命名） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
 几个不显眼但重要的点：

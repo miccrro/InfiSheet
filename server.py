@@ -2545,9 +2545,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_out({"ok": True, "items": list_projects()})
 
         if path.startswith("/api/projects/"):
-            pid = urllib.parse.unquote(path.split("/api/projects/", 1)[1])
+            rest = urllib.parse.unquote(path.split("/api/projects/", 1)[1])
+            pid, _, sub = rest.partition("/")
             if not PROJECT_ID_RE.fullmatch(pid):
                 return self.fail("项目 id 非法", 400)
+            if sub == "cover":
+                blob, mime = cover_bytes(pid)
+                if blob is None:
+                    return self.fail("没有封面", 404)
+                return self._send(200, blob, mime)
+            if sub:
+                return self.fail("接口不存在", 404)
             f = DATA / "projects" / f"{pid}.json"
             if not f.exists():
                 return self.fail("项目不存在", 404)
@@ -2851,9 +2859,45 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_out({"ok": True, "id": pid, "canvas": canvas})
 
         if path.startswith("/api/projects/"):
-            pid = urllib.parse.unquote(path.split("/api/projects/", 1)[1])
+            rest = urllib.parse.unquote(path.split("/api/projects/", 1)[1])
+            pid, _, sub = rest.partition("/")
             if not PROJECT_ID_RE.fullmatch(pid):
                 return self.fail("项目 id 非法", 400)
+            # 重命名 / 改封面都只动项目文件里的一个字段，不该让前端把整份画布再 POST 一遍
+            # （那份画布可能是几 MB 的 base64，而且容易把另一个标签页的新改动盖掉）。
+            if sub in ("rename", "cover"):
+                f = DATA / "projects" / f"{pid}.json"
+                if not f.exists():
+                    return self.fail("项目不存在", 404)
+                payload = self.read_json() or {}
+                try:
+                    canvas = json.loads(f.read_text(encoding="utf-8-sig"))
+                except Exception:  # noqa: BLE001
+                    return self.fail("项目文件读不出来", 500)
+                now = int(time.time() * 1000)
+                if sub == "rename":
+                    name = str(payload.get("name") or "").strip()[:40] or "未命名画布"
+                    canvas["name"] = name
+                else:
+                    src = str(payload.get("src") or "")
+                    if not src:
+                        canvas.pop("cover", None)          # 空 = 回到「最近生成」
+                    elif src.startswith("data:"):
+                        url = store_cover(pid, src)
+                        if not url:
+                            return self.fail("封面图读不出来", 400)
+                        canvas["cover"] = {"file": url.rsplit("v=", 1)[-1], "at": now}
+                    else:
+                        canvas["cover"] = {"src": src, "at": now}
+                canvas["rev"] = int(canvas.get("rev") or 0) + 1
+                canvas["lastWriter"] = "canvas"
+                canvas["savedAt"] = now
+                f.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
+                return self.json_out({"ok": True, "id": pid, "rev": canvas["rev"],
+                                      "name": canvas.get("name"),
+                                      "cover": cover_url(pid, canvas)})
+            if sub:
+                return self.fail("接口不存在", 404)
             payload = self.read_json() or {}
             canvas = payload.get("canvas")
             if not isinstance(canvas, dict):
@@ -2968,6 +3012,7 @@ class Handler(BaseHTTPRequestHandler):
             f = DATA / "projects" / f"{pid}.json"
             if f.exists():
                 f.unlink()
+            drop_cover(pid)                      # 封面文件跟着走，不然会留一堆孤儿图
             return self.json_out({"ok": True, "deleted": True})
         if path == "/api/canvas":
             f = DATA / "canvas.json"
@@ -3100,10 +3145,124 @@ def list_projects() -> list[dict]:
             "links": len(d.get("links") or []),
             "savedAt": d.get("savedAt") or 0,
             "mtime": int(f.stat().st_mtime),
+            "cover": cover_url(f.stem, d),
         })
         if len(out) >= 30:
             break
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 项目封面：首页「最近项目」卡片左边那张缩略图
+#
+# 口径：默认取**最近生成的那张图**。节点数组和每个节点的产物数组都是按创建 /
+# 生成顺序追加的，所以「倒序第一个」就是最新的，不需要额外记时间戳。
+# 显式设置过的封面（canvas["cover"]）优先。
+#
+# data: 图要落成文件再发地址：首页一次列 30 个项目，把 base64 直接塞进列表响应
+# 就是几十 MB；换成 <img src> 走一次 GET，浏览器还能自己缓存。
+# --------------------------------------------------------------------------- #
+def covers_dir() -> Path:
+    d = DATA / "covers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def artifact_image_url(a) -> str:
+    if not isinstance(a, dict) or a.get("kind") != "image":
+        return ""
+    fn = str(a.get("filename") or "")
+    if not fn:
+        return ""
+    return ("/api/view?filename=" + urllib.parse.quote(fn)
+            + "&subfolder=" + urllib.parse.quote(str(a.get("subfolder") or ""))
+            + "&type=" + urllib.parse.quote(str(a.get("type") or "output")))
+
+
+def cover_source(canvas: dict) -> str:
+    """这张封面用哪张图：显式设置的优先，否则取最近生成的那张。"""
+    cv = canvas.get("cover")
+    if isinstance(cv, dict):
+        src = str(cv.get("src") or "")
+        if src:
+            return src
+    for n in reversed(canvas.get("nodes") or []):
+        if not isinstance(n, dict):
+            continue
+        gen = n.get("gen")
+        if isinstance(gen, dict):
+            for a in reversed(gen.get("artifacts") or []):
+                u = artifact_image_url(a)
+                if u:
+                    return u
+        for a in reversed(n.get("artifacts") or []):
+            u = artifact_image_url(a)
+            if u:
+                return u
+        src = n.get("dataURL")
+        if isinstance(src, str) and src.startswith(("data:image/", "/api/")):
+            return src
+    return ""
+
+
+def cover_url(pid: str, canvas: dict) -> str:
+    cv = canvas.get("cover")
+    if isinstance(cv, dict) and cv.get("file"):
+        if (DATA / "covers" / f"{pid}.img").exists():
+            return f"/api/projects/{pid}/cover?v={cv['file']}"
+    src = cover_source(canvas)
+    if not src:
+        return ""
+    return store_cover(pid, src) if src.startswith("data:") else src
+
+
+def store_cover(pid: str, data_url: str) -> str:
+    """把 data: 图落成 covers/<pid>.img，回一个带版本号的地址（同内容不重写）。"""
+    h = hashlib.sha1(data_url.encode("utf-8", "ignore")).hexdigest()[:12]
+    d = covers_dir()
+    img = d / f"{pid}.img"
+    mark = d / f"{pid}.hash"
+    fresh = img.exists() and mark.exists()
+    if fresh:
+        try:
+            fresh = mark.read_text(encoding="utf-8").strip() == h
+        except Exception:  # noqa: BLE001
+            fresh = False
+    if not fresh:
+        try:
+            blob = base64.b64decode(data_url.split(",", 1)[1])
+        except Exception:  # noqa: BLE001
+            return ""
+        if not blob or len(blob) > 24 * 1024 * 1024:
+            return ""
+        img.write_bytes(blob)
+        mark.write_text(h, encoding="utf-8")
+    return f"/api/projects/{pid}/cover?v={h}"
+
+
+COVER_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"),
+               (b"GIF8", "image/gif"), (b"RIFF", "image/webp"))
+
+
+def cover_bytes(pid: str):
+    f = DATA / "covers" / f"{pid}.img"
+    if not f.exists():
+        return None, ""
+    blob = f.read_bytes()
+    for magic, mime in COVER_MAGIC:
+        if blob.startswith(magic):
+            return blob, mime
+    return blob, "image/png"
+
+
+def drop_cover(pid: str) -> None:
+    for name in (f"{pid}.img", f"{pid}.hash"):
+        f = DATA / "covers" / name
+        try:
+            if f.exists():
+                f.unlink()
+        except Exception:  # noqa: BLE001
+            pass
 
 def safe_library_path(name: str):
     name = (name or "").strip()
