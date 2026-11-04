@@ -1441,11 +1441,21 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 .pc-thumb {
   width: 64px; height: 64px; flex: 0 0 auto; border-radius: 9px; overflow: hidden;
-  border: 1px solid var(--line); background: var(--panel-2);
+  border: 1px solid var(--line);
+  /* 点阵底和画布同一套视觉语言：没图的卡片一眼看出「这是一块空画布」，
+     而不是像图加载失败留下一个空框。有图时 <img> 整个盖住，看不见。 */
+  background-color: #1a1a1a;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.13) 1px, transparent 1px);
+  background-size: 10px 10px;
   display: grid; place-items: center; color: var(--faint);
 }
 .pc-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.pc-thumb .pc-ph { display: grid; place-items: center; opacity: 0.55; }
+.pc-thumb .pc-ph {
+  display: grid; place-items: center; gap: 3px;
+  text-align: center; line-height: 1; color: var(--dim);
+}
+.pc-thumb .pc-ph svg { width: 17px; height: 17px; opacity: 0.75; }
+.pc-thumb .pc-ph em { font-style: normal; font-size: 9.5px; letter-spacing: 0.02em; opacity: 0.85; }
 .pc-text { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .pc-name {
   font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3;

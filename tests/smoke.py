@@ -854,6 +854,30 @@ def main() -> int:
             banner = stop(dproc)
         warn = next((ln for ln in banner.splitlines() if "没有访问令牌" in ln), "")
         check("没令牌时启动横幅里写明「同网段都能访问」", bool(warn), warn.strip() or "无输出")
+
+        # ④ 老版本的 canvas.json 只迁一次。
+        #    以前每次列项目都问「projects/ 是不是空的」，于是最后一个项目删掉后，
+        #    下一次列表又从 canvas.json 变出一个 legacy 来——用户看到的就是「这个项目删不掉」。
+        ldata = multi / "legacy-data"
+        (ldata / "projects").mkdir(parents=True, exist_ok=True)
+        (ldata / "canvas.json").write_text(json.dumps(
+            {"version": 2, "name": "老画布", "nodes": [], "links": []}, ensure_ascii=False), encoding="utf-8")
+        lport = free_port()
+        lproc = spawn(lport, ["--data", str(ldata)], {})
+        lbase = f"http://127.0.0.1:{lport}/"
+        try:
+            check("老数据目录（只有 canvas.json）能起来", wait_health(lbase))
+            _, raw = request(lbase, "/api/projects")
+            ids = [it.get("id") for it in (json.loads(raw or b"{}").get("items") or [])]
+            check("第一次列项目：canvas.json 变成 legacy 项目", ids == ["legacy"], str(ids))
+            status, _ = request(lbase, "/api/projects/legacy", "DELETE")
+            _, raw = request(lbase, "/api/projects")
+            ids = [it.get("id") for it in (json.loads(raw or b"{}").get("items") or [])]
+            check("删掉最后一个项目后不会从 canvas.json 复活（否则就是「删不掉」）",
+                  status == 200 and ids == [], f"HTTP {status} · 还剩 {ids}")
+        finally:
+            stop(lproc)
+
         if not keep:
             import shutil as _sh
 

@@ -1826,18 +1826,27 @@ try {
       .find((x) => /e2e 夹具画布/.test(x.textContent));
     if (!c) return { found: false };
     const thumb = c.querySelector('.pc-thumb img');
+    const ph = c.querySelector('.pc-thumb .pc-ph');
+    const tile = c.querySelector('.pc-thumb');
     return {
       found: true,
       name: (c.querySelector('.pc-name') || {}).textContent || '',
       date: (c.querySelector('.pc-date') || {}).textContent || '',
       hasThumb: !!thumb,
       thumbOk: thumb ? (thumb.complete && thumb.naturalWidth > 0) : null,
+      phText: ph ? (ph.querySelector('em') || {}).textContent || '' : '',
+      dotBg: tile ? /radial-gradient/.test(getComputedStyle(tile).backgroundImage) : false,
       dots: c.querySelectorAll('.pc-more span').length,
     };
   })()`);
   check('最近项目卡片：缩略图 + 画布名 + yyyy-mm-dd 日期 + 最右三个点',
     cardUi.found && /e2e 夹具画布/.test(cardUi.name) && /^\d{4}-\d{2}-\d{2}$/.test(cardUi.date)
-      && cardUi.dots === 3 && (!cardUi.hasThumb || cardUi.thumbOk === true),
+      && cardUi.dots === 3,
+    JSON.stringify(cardUi));
+  // 没封面的画布（新画布、只有空节点）以前是一块纯色 + 一个几乎看不见的图标，
+  // 和图加载失败长得一模一样。现在画点阵底 + 「空画布」两个字，说清楚是没内容，不是坏了。
+  check('卡片缩略图：有图就真显示图，没图就画点阵 + 「空画布」（不留空框）',
+    cardUi.hasThumb ? cardUi.thumbOk === true : (cardUi.phText === '空画布' && cardUi.dotBg),
     JSON.stringify(cardUi));
 
   const openCardMenu = `(() => {

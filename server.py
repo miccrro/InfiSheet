@@ -3112,18 +3112,30 @@ def projects_dir() -> Path:
 
 
 def ensure_legacy_project() -> None:
-    """老版本只有一个 canvas.json：第一次列项目时把它变成 legacy 项目。"""
+    """老版本只有一个 canvas.json：把它变成 legacy 项目——**只做一次**。
+
+    以前这里每次列项目都问「projects/ 是不是空的」，于是把最后一个项目删掉后，
+    下一次列表又从 canvas.json 里变出一个 legacy 来，卡片当场复活：
+    用户看到的就是「这个项目删不掉」。迁移完写一个标记，之后 projects/ 空着也不管。
+    """
+    mark = DATA / "legacy-migrated"
+    if mark.exists():
+        return
     pd = projects_dir()
-    if any(pd.glob("*.json")):
-        return
     legacy = DATA / "canvas.json"
-    if not legacy.exists():
-        return
+    # 已经有项目 = 这台机器早就迁过了，只补标记，别再动
+    if not any(pd.glob("*.json")) and legacy.exists():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8-sig"))
+        except Exception:  # noqa: BLE001
+            data = None
+        if data is not None:
+            (pd / "legacy.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     try:
-        data = json.loads(legacy.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return
-    (pd / "legacy.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        mark.write_text("1", encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass                                     # 写不了标记就下次再试，不影响本次结果
 
 
 def list_projects() -> list[dict]:

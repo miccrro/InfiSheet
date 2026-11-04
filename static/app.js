@@ -8492,11 +8492,12 @@
         open.className = 'pm';
         // 左边缩略图 = 这个画布「最近生成的那张」。一屏十几个「未命名画布」时，
         // 名字和日期都长得一样，只有图能让人认出「我要的是哪个」。
-        // 没有图（空画布 / 纯工作流还没跑过）就放一个占位图标，别留一块空白。
+        // 没有图（空画布 / 纯工作流还没跑过）就画一块**点阵**底 + 「空画布」，
+        // 而不是一个几乎看不见的图标——后者和「图挂了」长得一样，用户分不出是没图还是坏了。
         open.innerHTML = '<span class="pc-thumb">'
           + (it.cover
             ? `<img src="${esc(it.cover)}" alt="" loading="lazy">`
-            : `<span class="pc-ph">${icon('image')}</span>`)
+            : `<span class="pc-ph">${icon('image')}<em>空画布</em></span>`)
           + '</span>'
           + '<span class="pc-text">'
           + `<b class="pc-name">${esc(it.name || '未命名画布')}</b>`
@@ -8562,14 +8563,23 @@
 
   async function deleteProject(id) {
     if (!confirm('删除这个项目？存档会从本机移除，无法恢复。')) return;
-    try { await api('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' }); } catch { /* noop */ }
+    // api() 对 4xx/5xx 不抛异常，只把错误塞进 body：以前这里 try/catch 完就当成功，
+    // 服务端拒了也照常刷新列表，用户看到卡片还在，只能说「删不掉」。
+    let res;
+    try {
+      res = await api('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' });
+    } catch (e) {
+      flash('删除失败：' + (e && e.message ? e.message : '服务没响应'));
+      return;
+    }
+    if (!res || !res.ok) { flash('删除失败：' + ((res && res.error) || '服务没有确认')); return; }
     if (state.projectId === id) {
       state.projectId = null;
       clearTimeout(saveTimer);
       lastSavedSnap = JSON.stringify(serialize());   // 别让排队中的自动保存把删掉的项目又写回去
       try { localStorage.removeItem('infisheet-project'); } catch { /* noop */ }
     }
-    initHome();
+    await initHome();
   }
 
   /* ---------------- 最近项目卡片：日期 / 「⋯」菜单 / 重命名 / 改封面 ---------------- */
