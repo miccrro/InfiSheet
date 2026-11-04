@@ -3804,6 +3804,49 @@ try {
   check('调色面板贴着图片放：不压在图上，且整块都在视口内',
     !!colorUi.geo && colorUi.geo.overlap === 0 && colorUi.geo.inView,
     JSON.stringify(colorUi.geo));
+
+  // 打开时四个滑杆全 0 —— 这就是「原图」。以前七个预设一个都不亮（看不出当前是哪档），
+  // 而且点「应用」会新建一张和原图逐像素一样的副本。两件事都得盯住。
+  const colorInit = await page.evaluate(`(() => {
+    const p = document.getElementById('imgPanel');
+    const apply = p.querySelector('.ip-apply');
+    return {
+      on: [...p.querySelectorAll('[data-preset].on')].map((b) => b.textContent.trim()),
+      disabled: apply.disabled,
+      tip: (p.querySelector('.ip-tip').textContent || '').trim(),
+    };
+  })()`);
+  check('调色面板：打开时「原图」高亮、应用禁用（全 0 应用出来就是同一张图）',
+    colorInit.on.length === 1 && colorInit.on[0] === '原图' && colorInit.disabled,
+    JSON.stringify(colorInit));
+
+  const colorDrag = await page.evaluate(`(async () => {
+    const p = document.getElementById('imgPanel');
+    const sl = p.querySelector('.ip-body input[data-k="bright"]');
+    const apply = p.querySelector('.ip-apply');
+    const fire = () => sl.dispatchEvent(new Event('input', { bubbles: true }));
+    sl.value = '24'; fire();
+    await new Promise((r) => setTimeout(r, 80));
+    const moved = {
+      on: [...p.querySelectorAll('[data-preset].on')].map((b) => b.textContent.trim()),
+      disabled: apply.disabled,
+      filter: document.querySelector('.node[data-id="${pick.img}"] .thumb img').style.filter,
+    };
+    sl.value = '0'; fire();
+    await new Promise((r) => setTimeout(r, 80));
+    const back = {
+      on: [...p.querySelectorAll('[data-preset].on')].map((b) => b.textContent.trim()),
+      disabled: apply.disabled,
+    };
+    return { moved, back };
+  })()`);
+  check('拖滑杆 → 预设高亮清空、应用可点、图上真的套了滤镜',
+    colorDrag.moved.on.length === 0 && !colorDrag.moved.disabled
+      && /brightness\(1\.24/.test(colorDrag.moved.filter),
+    JSON.stringify(colorDrag.moved));
+  check('拖回全 0 → 「原图」重新高亮、应用又禁用（高亮跟数值走，不跟最后点的按钮走）',
+    colorDrag.back.on.length === 1 && colorDrag.back.on[0] === '原图' && colorDrag.back.disabled,
+    JSON.stringify(colorDrag.back));
   await page.evaluate(`[...document.querySelectorAll('#imgPanel [data-preset]')]
     .find((b) => b.textContent.trim() === '黑白').click()`);
   await new Promise((r) => setTimeout(r, 250));

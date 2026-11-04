@@ -9124,6 +9124,12 @@
     ['胶片', { bright: -4, contrast: 14, satur: -14, warm: 12 }],
   ];
 
+  // 四个滑杆全 0 时 colorFilter 出来是恒等串（brightness(1) contrast(1) saturate(1)），
+  // 画出来和原图逐像素一样。以前这时点「应用」照样新建一个副本，纯属多一张一样的图。
+  function isNeutralColor(v) {
+    return !v.bright && !v.contrast && !v.satur && !v.warm;
+  }
+
   function colorFilter(v) {
     const f = [
       `brightness(${(1 + v.bright / 100).toFixed(3)})`,
@@ -9215,17 +9221,38 @@
       <div class="ip-presets">
         ${COLOR_PRESETS.map(([name], i) => `<button type="button" data-preset="${i}">${name}</button>`).join('')}
       </div>
-      <p class="ip-tip">调的是这张图的副本，原图不动。</p>`;
+      <p class="ip-tip"></p>`;
     openImgPanel('调色', body, {
       node: n,
       onClose: () => { if (target) target.style.filter = ''; },
       onInput(root) {
-        const paint = () => { if (target) target.style.filter = colorFilter(v); };
+        const applyBtn = root.querySelector('.ip-apply');
+        const tip = root.querySelector('.ip-tip');
+        const same = (a, b) => rows.every(([k]) => a[k] === b[k]);
+        // 高亮跟着数值走，而不是跟着「最后点了哪个按钮」走：
+        // 打开时全 0 本来就是「原图」，手拖回全 0 也该重新亮起来；否则面板上没有任何选中态，
+        // 看不出当前是哪一档。
+        const syncPreset = () => {
+          const hit = COLOR_PRESETS.findIndex(([, pv]) => same(pv, v));
+          root.querySelectorAll('[data-preset]').forEach((x, i) => x.classList.toggle('on', i === hit));
+        };
+        // 没变化时「应用」是死路：会新建一张和原图一模一样的副本。禁用 + 一句话说明原因，
+        // 比让用户点完再发现「怎么多了一张一样的」要好。
+        const syncApply = () => {
+          const neutral = isNeutralColor(v);
+          applyBtn.disabled = neutral;
+          applyBtn.title = neutral ? '现在是原图，没有要应用的变化' : '';
+          tip.textContent = neutral ? '现在是原图，没有要应用的变化。' : '调的是这张图的副本，原图不动。';
+        };
+        const paint = () => {
+          if (target) target.style.filter = colorFilter(v);
+          syncPreset();
+          syncApply();
+        };
         root.querySelectorAll('.ip-body input[type="range"]').forEach((el) => {
           el.oninput = () => {
             v[el.dataset.k] = Number(el.value);
             root.querySelector(`[data-v="${el.dataset.k}"]`).textContent = el.value;
-            root.querySelectorAll('[data-preset]').forEach((x) => x.classList.remove('on'));
             paint();
           };
         });
@@ -9236,13 +9263,14 @@
               el.value = v[el.dataset.k];
               root.querySelector(`[data-v="${el.dataset.k}"]`).textContent = v[el.dataset.k];
             });
-            root.querySelectorAll('[data-preset]').forEach((x) => x.classList.toggle('on', x === b));
             paint();
           };
         });
-        paint();
+        paint();                            // 首帧：原图高亮 + 应用禁用
       },
       onApply: async () => {
+        // 按钮已经禁用了，这里再兜一层：回车 / 脚本点到也不该凭空多一张一样的图。
+        if (isNeutralColor(v)) { closeImgPanel(); return; }
         let img;
         try { img = await loadImageEl(n.dataURL); } catch { flash('图片加载失败，没法调色'); return; }
         const cv = canvasOf(img.naturalWidth, img.naturalHeight);

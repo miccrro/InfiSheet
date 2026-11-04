@@ -2724,6 +2724,13 @@ button.primary:hover,
 #imgPanel .ip-foot .prime {
   background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600;
 }
+/* 全 0（原图）时「应用」是死路：会新建一张一模一样的副本，所以直接禁用。
+   全局 button:disabled 只写了 opacity，而 .ip-foot button 带 id 选择器、优先级更高，
+   cursor 会被它改回 pointer——这里得单独压回来。 */
+#imgPanel .ip-foot .prime:disabled {
+  background: rgba(255, 255, 255, 0.06); border-color: var(--line);
+  color: var(--faint); font-weight: 500; cursor: not-allowed; opacity: 1;
+}
 
 
 /* ---------- 图片浮层外壳（裁剪 / 扩图共用） ---------- */
