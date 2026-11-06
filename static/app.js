@@ -3126,12 +3126,12 @@
           // 反过来做的话，迁移会把这次刚出的图当成「更早的一次」，和下面 pushRun 那条重复——
           // 一次生成就在角标上写成「2 次」（实测踩到过：历史里两条指向同一个 krea2_0002x.png）。
           runsOf(n);
-          // 出图不再覆盖原节点：原节点摆的是这一轮的初始图，覆盖掉就再也回不到改之前的样子。
-          // 每张产物各建一个纯图片节点摆在右侧，并连回原节点当参考输入（接着图生图不用再拖线）。
-          // 新节点把这次的**整套参数**带上（提示词 / 风格 / 种子 / 尺寸 / 张数 / 工作流），
-          // 图片详情里就能看到这张是用什么词出的；点「生成」开面板时也直接是这套参数。
+          // 节点上**本来就没有图**（纯文生图的空节点，或图被清空过）：直接把结果填进它自己，
+          // 不再另起一个节点——空节点本身就是这块结果的落点，凭空多一个空壳节点只会让人以为
+          // 「生成没生效」。节点上已经有初始图时才另起节点，把原图留着不动。
+          const hadImage = !!n.dataURL;
           const batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
-          const born = spawnResultNodes(n, batchItems, {
+          const born = hadImage ? spawnResultNodes(n, batchItems, {
             prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
             wf: g.wf || '', wfAuto: !!g.wfAuto,
             style: g.style ? { ...g.style } : null,
@@ -3140,7 +3140,13 @@
             autoW: g.autoW, autoH: g.autoH, autoScale: g.autoScale,
             size: g.size, custom: g.custom ? { ...g.custom } : null,
             batch: Number(g.batch) || 1,
-          });
+          }) : [];
+          if (!hadImage) {
+            g.gallery = batchItems.slice();
+            g.idx = 0;
+            n.dataURL = batchItems[0].url;
+            n.uploaded = null;
+          }
           // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
           // 这里记的是「这次用的什么参数、出了哪几张」。原节点的图不再被这一批顶掉，
           // 所以 gallery 也不再改——历史里存的是这一批的完整清单。

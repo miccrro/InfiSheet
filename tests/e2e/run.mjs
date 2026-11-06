@@ -6160,6 +6160,53 @@ try {
     /文生图/.test(capClick.wf), capClick.wf);
   check('按钮点完不会卡在忙碌态', capClick.busyLeft === 0, String(capClick.busyLeft));
 
+  // 空节点（节点上还没有图）生成：结果直接填进这个节点，不再多出一个。
+  // 以前是「不管有没有初始图都新建一个」，于是空节点永远是空的，旁边多出一个产物节点，
+  // 用户看到的就是「我在这上面生成，图却跑到别处去了」。
+  const emptyGen = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'empty-node' });
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
+      if (u.startsWith('/api/job') && u.includes('empty-node')) {
+        return json({ ok: true, status: 'success', progress: 100, artifacts: [
+          { kind: 'image', filename: 'e2e-empty.png', subfolder: '', type: 'output' }] });
+      }
+      return real(url, opts);
+    };
+    const before = document.querySelectorAll('#nodes .node').length;
+    const ta = document.querySelector('.gen-prompt');
+    if (ta) { ta.focus(); ta.textContent = 'empty node'; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+    let clicked = false;
+    for (let k = 0; k < 40; k++) {
+      const b = document.querySelector('.gen-run');
+      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      await sleep(100);
+    }
+    let status = '';
+    for (let k = 0; k < 120; k++) {
+      await sleep(100);
+      const st = document.querySelector('.gen-status');
+      status = st ? st.textContent.trim() : '';
+      if (/完成|失败|错误/.test(status)) break;
+    }
+    await sleep(300);
+    window.fetch = real;
+    const node = document.querySelector('#nodes .node');
+    const im = node ? node.querySelector('.thumb img') : null;
+    return { before, clicked, status,
+             after: document.querySelectorAll('#nodes .node').length,
+             src: im ? (im.getAttribute('src') || '') : '',
+             count: node ? ((node.querySelector('.img-count') || {}).textContent || '') : '' };
+  })()`);
+  check('空节点生成：结果直接填进这个节点，不再凭空多出一个',
+    emptyGen.clicked && emptyGen.after === emptyGen.before && !!emptyGen.src,
+    JSON.stringify(emptyGen));
+
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。
   // 这里先验确认条，再真的关一次——e2e 起的就是个临时实例，关掉正好把收尾也验了。
