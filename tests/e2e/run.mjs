@@ -5644,6 +5644,12 @@ try {
     // 上一个用例刚在这个节点上收尾，按钮可能还禁用着；而且面板会随进度重渲染，
     // 抓到的元素随时会脱离文档——所以每一轮都重新查、拿到活的再点。
     let clicked = false;
+    // 出图前后各拍一张快照：这次生成要验「原节点的图不被覆盖、结果落到新节点上」
+    const shot = () => ({
+      nodes: document.querySelectorAll('#nodes .node').length,
+      src: (document.querySelector('#nodes .node[data-id="i2"] .thumb img') || { getAttribute: () => '' }).getAttribute('src') || '',
+    });
+    const before = shot();
     for (let k = 0; k < 40; k++) {
       const b = document.querySelector('[data-panel-for="i2"] .gen-run');
       if (b && !b.disabled) { b.click(); clicked = true; break; }
@@ -5658,7 +5664,7 @@ try {
       await sleep(100);
     }
     window.fetch = real;
-    return { libCalls, status, clicked, hits,
+    return { libCalls, status, clicked, hits, before, after: shot(),
              prompt: ta ? String(ta.textContent || '').slice(0, 30) : '(无输入框)' };
   })()`);
   const impCall = (autoImp.libCalls || [])[0] || {};
@@ -5671,6 +5677,13 @@ try {
     hideCall.op === 'hide' && hideCall.hidden === true
       && (hideCall.keys || []).includes('output:/e2e-auto.png'),
     JSON.stringify(hideCall));
+  // 出图的落点：以前是 n.dataURL 直接被这批图顶掉，原图再也找不回来
+  check('生成完在原节点之外新建图片节点（画布多出一个）',
+    autoImp.after && autoImp.before && autoImp.after.nodes === autoImp.before.nodes + 1,
+    JSON.stringify({ before: autoImp.before, after: autoImp.after }));
+  check('生成完原节点的图原样留着（不被这次的产物覆盖）',
+    !!autoImp.after && !!autoImp.before && autoImp.after.src === autoImp.before.src,
+    JSON.stringify({ before: autoImp.before, after: autoImp.after }));
 
   // ---- 连点生成只提交一次 ----
   // 准备阶段（上传参考图 / 烘焙遮罩 / 读风格）是一串 await，一次几秒。以前 busy 要等

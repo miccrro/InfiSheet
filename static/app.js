@@ -3122,27 +3122,28 @@
             refreshGenPanel(n);
             return;
           }
-          // 先把**上一批图**结算成一条历史（老存档没有 runs 时靠这一步迁移），再覆盖 gallery。
+          // 先把**上一批图**结算成一条历史（老存档没有 runs 时靠这一步迁移），再记这一次。
           // 反过来做的话，迁移会把这次刚出的图当成「更早的一次」，和下面 pushRun 那条重复——
           // 一次生成就在角标上写成「2 次」（实测踩到过：历史里两条指向同一个 krea2_0002x.png）。
           runsOf(n);
-          g.gallery = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
-          g.idx = 0;
-          n.dataURL = g.gallery[0].url;
-          n.uploaded = null;
+          // 出图不再覆盖原节点：原节点摆的是这一轮的初始图，覆盖掉就再也回不到改之前的样子。
+          // 每张产物各建一个纯图片节点摆在右侧，并连回原节点当参考输入（接着图生图不用再拖线）。
+          const batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
+          const born = spawnResultNodes(n, batchItems);
           // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
-          // 这里记的是「这次用的什么参数、出了哪几张」，gallery 仍然是「当前显示的那一批」。
+          // 这里记的是「这次用的什么参数、出了哪几张」。原节点的图不再被这一批顶掉，
+          // 所以 gallery 也不再改——历史里存的是这一批的完整清单。
           pushRun(n, {
             at: Date.now(), prompt: rawPrompt || '', seed: built.seed ? built.seed.value : null,
             w: dims.width, h: dims.height, batch: Number(g.batch) || 1, wf: g.wf || '',
             // 风格记成和节点上一样的 {cat,i,cn}：派生 / 复现时能原样套回去，
             // 光记一个中文名就只能看了
             style: g.style ? { ...g.style } : null,
-            items: g.gallery.slice(),
+            items: batchItems.slice(),
           });
           // 自动存一份进资产库（时间+序号命名）。放在 pushRun 之后、状态文案之前：
           // 不 await，出图该立刻显示，存库慢不该拖着界面；失败也只是没存下，不影响这次生成。
-          autoImportAssets(g.gallery);
+          autoImportAssets(batchItems);
           g.status = `完成 · ${secs}s · ${imgs.length} 张`;
           // 面板上选了 4 张、图里只回来 1 张：这不是"多图生成坏了"，而是**图提交上去了、
           // 工作流自己把批量抹平了**（二次采样链、ImageBatch、单张后处理之类）。不吭声的话
@@ -3156,6 +3157,8 @@
           finishProgress(n);
           rerenderNode(n.id, true);
           queueSave();
+          // 新节点摆在右侧，可能正好在视口外：说一句，免得用户以为没出图
+          if (born.length && !short) flash(`已生成 ${born.length} 个图片节点（在右侧，原节点保留原图）`);
         });
     } catch (err) {
       g.busy = false;
@@ -6673,6 +6676,35 @@
   /* ---------------- 产物 ---------------- */
   function artifactURL(a) {
     return `/api/view?filename=${encodeURIComponent(a.filename)}&subfolder=${encodeURIComponent(a.subfolder || '')}&type=${encodeURIComponent(a.type || 'output')}`;
+  }
+
+  // 生成完成后产物的落点：每张图各建一个**纯图片节点**（plain，不带生成面板），
+  // 摆在原节点右侧一行，并连回原节点的 `in` 口——新图直接成为它的参考输入，
+  // 想接着图生图不用再手动拖线。原节点的图一动不动：它是这一轮用的初始图，
+  // 覆盖掉就再也回不到「改之前」的样子（以前 n.dataURL 直接被这批图顶掉）。
+  // 步长用固定宽度 380（图片节点宽固定），按行排就不会叠；多张时左右铺开而不是往下堆，
+  // 竖图最高能到 760px，往下堆按固定步长一定会压到下一张。
+  function spawnResultNodes(src, items) {
+    if (!src || !items || !items.length) return [];
+    const stepX = 380 + 40;
+    const x0 = Math.round(src.x + nodeWidth(src) + 60);
+    // 连着生成第二、第三批时不能落在同一处：把这一列里已有节点的底边让出来（高度取实测值，
+    // 竖图能到 760px，按固定值估一定会压上），新的一批从它下面开始排。
+    const y0 = state.nodes
+      .filter((o) => o !== src && o.x < x0 + 380 && o.x + nodeWidth(o) > x0)
+      .reduce((m, o) => {
+        const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(o.id)}"]`);
+        return Math.max(m, o.y + ((el && el.offsetHeight) || 420) + 40);
+      }, Math.round(src.y));
+    const born = items.map((it, i) => addImageNode(x0 + i * stepX, y0, {
+      dataURL: it.url, filename: it.filename || '', uploaded: null,
+      title: '图片（生成）', plain: true,
+    }, true));
+    born.forEach((nd) => {
+      state.links.push({ id: uid('l'), from: nd.id, to: src.id, toKey: 'in' });
+    });
+    renderAll(); queueSave(); commit();
+    return born;
   }
 
   async function pinArtifact(srcNode, a, url) {
