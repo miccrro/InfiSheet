@@ -17,7 +17,8 @@
     view: { x: 80, y: 60, k: 0.85 },
     seq: 1,
     selected: new Set(),
-    linkSel: null,
+    // 选中的连线。以前是单个 id，框选要能一次选中一片，所以改成 Set。
+    linkSel: new Set(),
     projectId: null,
     rev: 0,            // 服务端给的存档版本号：保存时回传，落后就说明有人（MCP）改过
     groups: [],
@@ -256,6 +257,12 @@
   // 焦点在输入控件 / 富文本里时，全局快捷键（Delete、空格平移、F 适配…）都要放行
   const FIELD_SEL = 'input, textarea, select, [contenteditable="true"]';
   const isFieldTarget = (t) => !!(t && typeof t.matches === 'function' && t.matches(FIELD_SEL));
+  // 只读的提示词框不是「正在打字」：它平时就是一块字，点一下不该把 Delete / 空格平移吃掉。
+  // 滚轮那条仍然用 isFieldTarget（长提示词要能自己滚），两者不能混。
+  const isTypingTarget = (t) => isFieldTarget(t) && !(t.tagName === 'TEXTAREA' && t.readOnly);
+  // 每个文本节点当前的编辑器（重建时覆盖）。格式条要往「选中那个节点」的编辑器里发命令，
+  // 而不是往全屏编辑区里发——两者可能同时存在。
+  const textEditors = new Map();
 
   async function api(path, opts = {}) {
     const res = await fetch(path, opts);
@@ -282,6 +289,7 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
+    positionTextTools();                   // 提示词格式条同理
     if (imgPanel) placeImgPanel();         // 调色面板贴着图片，视图一动也要贴回去
     // 扩图时面板贴在画布外框上：外框是世界坐标，但「别顶出屏幕」是屏幕坐标，视图一动就得重算
     if (opSession && opSession.place) opSession.place();
@@ -420,8 +428,25 @@
     if (n.type !== 'image') {
       const handle = document.createElement('div');
       handle.className = 'node-resize';
-      handle.title = '拖动调整大小';
+      // 不写 title：那是原生 tooltip，鼠标一靠近右下角就弹一条黑框盖在画布上。
+      // 手柄本身也是隐藏式的（平时 opacity 0），提示只能靠 aria-label 留给读屏
+      handle.setAttribute('aria-label', n.type === 'text' ? '拖动调整提示词框大小' : '拖动调整节点大小');
       handle.onpointerdown = (ev) => { ev.preventDefault(); ev.stopPropagation(); startResize(ev, n); };
+      // 文本节点手动拉过高度后，双击手柄退回「按内容自动长高」
+      if (n.type === 'text') {
+        handle.ondblclick = (ev) => {
+          ev.stopPropagation();
+          if (n.h == null) { flash('提示词框已经是自动高度'); return; }
+          delete n.h;
+          // 必须 force：双击手柄时 textarea 可能还留着焦点（pointerdown 里 preventDefault
+          // 挡住了焦点转移），rerenderNode 的「打字中不重建」保护会把这次重建整个跳过，
+          // 结果 n.h 删了但 DOM 还是旧高度。
+          rerenderNode(n.id, true);
+          scheduleLayout();
+          queueSave(); commit();
+          flash('提示词框已恢复自动高度');
+        };
+      }
       card.appendChild(handle);
     }
     // 顶部进度条：生成/运行时显示百分比。
@@ -437,20 +462,70 @@
     el.appendChild(card);
 
     if (n.type === 'text') {
-      const ta = document.createElement('textarea');
-      ta.value = n.value || '';
-      ta.placeholder = '写提示词…';
+      // 底色：默认 #262626，可以按节点改（工具栏第一个「颜色」）
+      card.style.background = n.bg || TEXT_BG_DEFAULT;
+      // 富文本编辑器。以前是 textarea，只能写纯文本；标题 / 列表 / 加粗 / 分割线
+      // 这些排不上，所以换成 contenteditable —— 对外仍然是纯文本（richToText 剥回来），
+      // 存档里 html 和 value 各存一份，送进模型、连线取值全走 value。
+      const ta = document.createElement('div');
+      ta.className = 'text-body';
+      ta.spellcheck = false;
+      ta.setAttribute('role', 'textbox');
+      ta.setAttribute('aria-multiline', 'true');
+      ta.dataset.ph = '写提示词…';
+      ta.innerHTML = n.html != null ? n.html : textToHtml(n.value || '');
+      const syncEmpty = () => ta.classList.toggle('is-empty', !richToText(ta).length);
       const autoGrow = () => {
+        // 手动拉过高度就听用户的：再按内容算高度，一打字框就弹回去
+        if (n.h) { ta.style.height = `${n.h}px`; ta.style.overflowY = 'auto'; return; }
         ta.style.height = 'auto';
-        ta.style.height = `${Math.min(420, Math.max(88, ta.scrollHeight + 2))}px`;
+        // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
+        // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
+        const floor = ta.classList.contains('is-empty') ? 88 : 0;
+        ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
+        ta.style.overflowY = 'hidden';
       };
-      ta.oninput = () => {
-        n.value = ta.value;
+      const absorb = () => {
+        n.html = ta.innerHTML;
+        n.value = richToText(ta);
+        syncEmpty();
         autoGrow();
         scheduleLayout();          // 打字时每帧重排一次连线，别每个字符都全量测一遍
         queueSave();
       };
+      ta.oninput = absorb;
+      // 双击才编辑：平时只读。画布上滚轮、拖动、点选都要经过这块字，
+      // 以前一碰就进输入态，滚动一下就把光标插进提示词里，改错了还看不出来。
+      // 只读时不给光标（caret-color 透明），键盘快捷键走 isTypingTarget 放行，
+      // 所以「看着是字、点下去不是输入框」——想改必须双击。
+      const setEditing = (on) => {
+        if (ta.isContentEditable === on) return;      // 已经是这个状态了
+        ta.contentEditable = on ? 'true' : 'false';
+        el.classList.toggle('editing', on);
+        ta.title = on ? '' : '双击编辑提示词';
+        if (!on) return;
+        ta.focus();
+        const r = document.createRange();
+        r.selectNodeContents(ta);
+        r.collapse(false);                             // 光标落到末尾
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      };
+      ta.contentEditable = 'false';
+      ta.title = '双击编辑提示词';
+      ta.ondblclick = (ev) => { ev.stopPropagation(); setEditing(true); };
+      ta.onblur = () => setEditing(false);
+      ta.onkeydown = (ev) => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        setEditing(false);
+        ta.blur();
+      };
       body.appendChild(ta);
+      textEditors.set(n.id, { ed: ta, setEditing, absorb });
+      syncEmpty();
       requestAnimationFrame(() => { autoGrow(); scheduleLayout(); });
       // 文本节点也能接一张图：作为参考图，随提示词一起送进下游图片节点
       const textIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接图片（参考图，随提示词一起送入；可连多张）', inPortTitle);
@@ -521,28 +596,15 @@
         im.addEventListener('load', fit);
       } else {
         thumb.classList.add('is-empty');
+        // 空节点平时只放一个占位图标：不摆「尝试：上传图片 / 文本生图」那种常驻推荐
+        // （用户说「在没有任何操作的情况下会显示推荐内容」），但也别让它变成死区——
+        // 悬停才浮出一行提示，双击这块空位直接选图，拖图进来也会落在这个节点上。
         thumb.innerHTML = `
           <div class="thumb-empty">
             <span class="ph-big">${NODE_ICON.image}</span>
-            <div class="try">
-              <div class="try-label">尝试：</div>
-              <button class="try-item" data-try="upload">
-                ${icon('upload')}
-                <span>上传图片</span>
-              </button>
-              ${n.plain ? '' : `<button class="try-item" data-try="generate">
-                ${icon('magic')}
-                <span>文本生图</span>
-              </button>`}
-            </div>
+            <div class="thumb-hint">双击上传图片，或把图片拖进来</div>
           </div>`;
-        thumb.querySelector('[data-try="upload"]').onclick = (ev) => { ev.stopPropagation(); pickImage(n); };
-        const tryGen = thumb.querySelector('[data-try="generate"]');
-        if (tryGen) tryGen.onclick = (ev) => {
-          ev.stopPropagation();
-          const panel = card.parentElement.querySelector('.gen-prompt');
-          if (panel) panel.focus();
-        };
+        thumb.ondblclick = (ev) => { ev.stopPropagation(); pickImage(n); };
       }
       // 图片上的生成中遮罩：显示「生成中 42%」，进度由 websocket 的百分比驱动
       const overlay = document.createElement('div');
@@ -646,7 +708,12 @@
 
     el.onpointerdown = (ev) => {
       if (state.panMode) return;
-      if (ev.target.closest('button, input, textarea, select, .port, [contenteditable]')) return;
+      // 注意 [contenteditable="true"]：只写 [contenteditable] 会把 contenteditable="false"
+      // 的只读提示词框也当成输入控件，结果整块字点不中、拖不动
+      if (ev.target.closest('button, input, select, .port, [contenteditable="true"]')) return;
+      // 只读的提示词框不算输入控件：点/拖它跟拖卡片其余部分一样，别让「一块字」变成拖不动的死区
+      const ta = ev.target.closest('textarea, .text-body');
+      if (ta && (ta.isContentEditable || (!ta.readOnly && ta.tagName === 'TEXTAREA'))) return;
       if (ev.shiftKey) toggleSelect(n.id);
       else if (!state.selected.has(n.id)) selectOnly(n.id);
       const moving = state.selected.has(n.id) ? state.nodes.filter((x) => state.selected.has(x.id)) : [n];
@@ -661,7 +728,8 @@
   }
 
 
-  // 右下角手柄：拖拽改节点大小（宽度通用；图片节点同时改高度）
+  // 右下角手柄：拖拽改节点大小。宽度通用；图片节点改缩略图高度，
+  // 文本节点改提示词框高度（无边框文本框，宽高都能随便拉）。
   function startResize(ev, n) {
     const rect0 = stage.getBoundingClientRect();   // 手势内复用：pointermove 里读布局会强制重排
     const start = screenToWorld(ev.clientX, ev.clientY, rect0);
@@ -669,14 +737,19 @@
     const el0 = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
     if (!el0) return;
     const thumb0 = el0.querySelector('.thumb');
-    const h0 = n.h || (thumb0 ? thumb0.clientHeight : 0);
+    const ta0 = n.type === 'text' ? el0.querySelector('.text-body') : null;
+    const isText = !!ta0;
+    const h0 = n.h || (thumb0 ? thumb0.clientHeight : (ta0 ? ta0.clientHeight : 0));
     const minW = n.type === 'image' ? 260 : 200;
+    const minH = isText ? 60 : 140;
+    const maxH = isText ? 1400 : 900;
     el0.classList.add('resizing');
     document.body.classList.add('resizing');
     const move = (e) => {
       const p = screenToWorld(e.clientX, e.clientY, rect0);
       n.w = clamp(Math.round(w0 + (p.x - start.x)), minW, 760);
-      if (thumb0 && h0) n.h = clamp(Math.round(h0 + (p.y - start.y)), 140, 900);
+      if (isText) n.h = clamp(Math.round(h0 + (p.y - start.y)), minH, maxH);
+      else if (thumb0 && h0) n.h = clamp(Math.round(h0 + (p.y - start.y)), minH, maxH);
       applyNodeSize(n, el0);
       scheduleLayout();                            // 连线/分组/小地图每帧最多算一次
     };
@@ -698,13 +771,25 @@
     if (n.w) el.style.width = `${n.w}px`;
     const thumb = el.querySelector('.thumb');
     if (thumb && n.h) thumb.style.height = `${n.h}px`;
+    // 文本节点的高度落在提示词框上：设了固定高就自己滚，没设就按内容长
+    const ta = el.querySelector('.node-body > .text-body');
+    if (ta) {
+      if (n.h) { ta.style.height = `${n.h}px`; ta.style.overflowY = 'auto'; }
+      else { ta.style.height = ''; ta.style.overflowY = 'hidden'; }
+    }
   }
 
   function setLinkHint(on) {
     const b = document.getElementById('queueBadge');
     if (!b) return;
     if (on) {
-      b.textContent = '拖到目标节点即可连线（圆点或卡片任意处） · 拖到空白处松手可新建节点';
+      // 多选时把「会一起接上」说清楚：不然用户不知道这次拖动是批量，
+      // 松手看到多出好几条线会以为点错了。
+      const fromId = drag && drag.mode === 'link' ? drag.from : null;
+      const n = fromId && state.selected.has(fromId) ? state.selected.size : 1;
+      b.textContent = n > 1
+        ? `已选 ${n} 个节点：拖到目标上会一起接上 · 拖到空白处松手可新建节点`
+        : '拖到目标节点即可连线（圆点或卡片任意处） · 拖到空白处松手可新建节点';
       b.classList.remove('hidden');
     } else {
       b.classList.add('hidden');
@@ -1472,6 +1557,47 @@
       if (m) { el.appendChild(makeChip(m[1], owner)); return; }
       el.appendChild(document.createTextNode(p));   // white-space:pre-wrap 下 \n 就是换行
     });
+  }
+
+  // ---------- 提示词节点：富文本 ----------
+  // 底色默认 #262626（用户定的），可以按节点单独改
+  const TEXT_BG_DEFAULT = '#262626';
+  const TEXT_BG_SWATCHES = [
+    ['#262626', '默认'], ['#000000', '纯黑'], ['#1b1b1b', '深灰'], ['#333333', '中灰'],
+    ['#22303c', '深蓝'], ['#1f2f24', '墨绿'], ['#2f2436', '深紫'], ['#33211f', '酒红'],
+  ];
+  // 老存档里只有纯文本：转富文本时按行拆，换行用 <br>（和生成面板里的提示词一个口径）
+  function textToHtml(t) {
+    return String(t || '').split('\n').map((line) => esc(line)).join('<br>');
+  }
+  const TEXT_BLOCK = /^(DIV|P|H1|H2|H3|H4|LI|BLOCKQUOTE|PRE)$/;
+  // 富文本 → 纯文本（送进模型的那一份）。块级各占一行，有序列表补回「1. 」，
+  // 分割线算一个空行。少这一步，标题和正文会粘成一句，提示词就乱了。
+  function richToText(root) {
+    let out = '';
+    const walk = (node) => {
+      node.childNodes.forEach((c) => {
+        if (c.nodeType === 3) { out += c.nodeValue; return; }
+        if (c.nodeType !== 1) return;
+        if (c.tagName === 'BR') { out += '\n'; return; }
+        if (c.tagName === 'HR') {
+          if (out && !out.endsWith('\n')) out += '\n';
+          out += '\n';
+          return;
+        }
+        const block = TEXT_BLOCK.test(c.tagName);
+        if (block && out && !out.endsWith('\n')) out += '\n';
+        if (c.tagName === 'LI') {
+          const p = c.parentElement;
+          if (p && p.tagName === 'OL') out += `${[...p.children].indexOf(c) + 1}. `;
+        }
+        walk(c);
+        if (block && !out.endsWith('\n')) out += '\n';
+      });
+    };
+    walk(root);
+    return out.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').trimEnd();
   }
 
   function caretAfterToken(el, token) {
@@ -3304,6 +3430,7 @@
     box.id = 'assetPane';
     box.innerHTML = `
       <aside class="asset-pane" role="dialog" aria-label="资产库">
+        <div class="asset-grip" title="拖动调整宽度（双击复位）"></div>
         <header>
           <strong>资产库</strong>
           <span class="asset-n"></span>
@@ -3338,8 +3465,7 @@
           <p class="asset-hint">
             <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
             <button type="button" class="asset-restore"></button>
-          </p>
-        </div>
+          </p>        </div>
       </aside>`;
     document.body.appendChild(box);
     box.querySelector('.x').onclick = closeAssetSheet;
@@ -3642,75 +3768,171 @@
       assetPicked.clear();
       assetLastIdx = -1;
       pickBtn.classList.toggle('on', on);
+      // 多选态里把「选择」收起来：退出交给动作条的「完成」，两个「完成」并排会让人犹豫；
+      // 让出来的宽度正好给搜索框（「搜一下再全选」是多选态下最常见的动作）。
+      pickBtn.classList.toggle('gone', on);
       pickBtn.textContent = on ? '完成' : '选择';
-      paint();
+      // 进出多选态只改 class：勾选框是 CSS 画的，不需要重建格子
+      cellByKey.forEach((rec) => {
+        rec.cell.classList.toggle('pick', on);
+        if (!on) rec.cell.classList.remove('on');
+      });
+      paintActions();
+    };
+
+    /* ---------- 选中态：只切 class，不重建宫格 ----------
+       以前每次勾选都走 paint()，581 个格子连同 <img> 全部重建一遍——浏览器要把
+       看得见的那十几张大图重新解码，点一下卡一下。选中只是加个 class，改这个就够了。 */
+    const paintSelection = () => {
+      // 不做「值没变就不写」的短路：classList.toggle 传同一个值本来就不会触发样式重算，
+      // 而短路反而会让外部（脚本 / 框选）改过 class 之后对不上。
+      cellByKey.forEach((rec, k) => rec.cell.classList.toggle('on', assetPicked.has(k)));
+      paintActions();
+    };
+
+    const setPickedAll = (on) => {
+      const list = assetFiltered();
+      assetPicked = on ? new Set(list.map(assetKeyOf)) : new Set();
+      paintSelection();
     };
 
     const paintActions = () => {
-      actions.innerHTML = '';
       actions.classList.toggle('on', assetPicking);
       hintEl.classList.toggle('hidden', assetPicking);
       footEl.classList.toggle('picking', assetPicking);
-      if (!assetPicking) return;
+      if (!assetPicking) { actions.innerHTML = ''; return; }
       const n = assetPicked.size;
-      // 分两行：抽屉只有 392px，五个控件挤一行会被挤成两个字的宽度。
-      // 上行说「选了几张 + 全选」，下行是「对它们做什么」。
-      const row1 = document.createElement('div');
-      row1.className = 'asset-arow';
-      const sel = document.createElement('span');
-      sel.className = 'asset-sel';
-      sel.textContent = `已选 ${n} 项`;
-      const all = document.createElement('button');
-      all.type = 'button';
-      all.textContent = '全选';
-      all.onclick = () => {
-        const list = assetFiltered();
-        const every = list.length > 0 && list.every((it) => assetPicked.has(assetKeyOf(it)));
-        assetPicked = new Set(every ? [] : list.map(assetKeyOf));
-        paint();
-      };
-      row1.append(sel, all);
-
-      const row2 = document.createElement('div');
-      row2.className = 'asset-arow';
-      const imp = document.createElement('button');
-      imp.type = 'button';
-      imp.className = 'asset-imp';
-      imp.textContent = '收进库';
-      imp.title = '把选中的库外图片复制一份到资产库（ComfyUI 那边不动）';
-      imp.disabled = !n;
-      imp.onclick = () => importPicked();
-      const move = document.createElement('select');
-      move.className = 'asset-move';
-      move.title = '把选中的移到分组';
-      const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; };
-      move.append(opt('', '移动到…'), opt('__none__', '未分组'));
-      assetGroups.forEach((g) => move.append(opt(g.id, g.name)));
-      move.append(opt('__new__', '＋ 新建分组…'));
+      // 两行，但按「先选、再动手」排：
+      //   上行 = 选了谁（计数 + 全选 / 清空 + 退出）；
+      //   下行 = 对它们做什么（收进库 / 移动到 / 删除）。
+      // 「完成」以前和「删除」挤在一行，手一滑就删了；现在它在上行最右，离危险操作最远。
+      if (!actions.firstChild) {
+        actions.innerHTML = `
+          <div class="asset-arow">
+            <span class="asset-sel"></span>
+            <button type="button" class="asset-all">全选</button>
+            <button type="button" class="asset-none">清空</button>
+            <button type="button" class="asset-done">完成</button>
+          </div>
+          <div class="asset-arow">
+            <button type="button" class="asset-imp">收进库</button>
+            <select class="asset-move"></select>
+            <button type="button" class="asset-del">删除</button>
+          </div>`;
+        const all = actions.querySelector('.asset-all');
+        all.onclick = () => {
+          const list = assetFiltered();
+          const every = list.length > 0 && list.every((it) => assetPicked.has(assetKeyOf(it)));
+          setPickedAll(!every);
+        };
+        actions.querySelector('.asset-none').onclick = () => setPickedAll(false);
+        actions.querySelector('.asset-done').onclick = () => setPicking(false);
+        const imp = actions.querySelector('.asset-imp');
+        imp.title = '把选中的库外图片复制一份到资产库（ComfyUI 那边不动）';
+        imp.onclick = () => importPicked();
+        const del = actions.querySelector('.asset-del');
+        del.onclick = () => removePicked();
+        const move = actions.querySelector('.asset-move');
+        move.title = '把选中的移到分组';
+        move.onchange = async () => {
+          const v = move.value;
+          move.value = '';
+          if (!v) return;
+          if (v === '__new__') await newAssetGroup(true);
+          else await assignTo(v === '__none__' ? '' : v);
+        };
+      }
+      const move = actions.querySelector('.asset-move');
+      const want = ['', '__none__', ...assetGroups.map((g) => g.id), '__new__'];
+      const have = [...move.options].map((o) => o.value);
+      if (want.join('|') !== have.join('|')) {
+        // 分组变了才重建下拉（每次重排都重建会让已经展开的下拉闪一下）
+        const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; };
+        move.innerHTML = '';
+        move.append(opt('', '移动到…'), opt('__none__', '未分组'));
+        assetGroups.forEach((g) => move.append(opt(g.id, g.name)));
+        move.append(opt('__new__', '＋ 新建分组…'));
+      }
       move.value = '';
       move.disabled = !n;
-      move.onchange = async () => {
-        const v = move.value;
-        move.value = '';
-        if (!v) return;
-        if (v === '__new__') await newAssetGroup(true);
-        else await assignTo(v === '__none__' ? '' : v);
-      };
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'asset-del';
-      del.textContent = '删除';
-      del.disabled = !n;
-      del.onclick = () => removePicked();
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = '取消';
-      cancel.onclick = () => setPicking(false);
-      row2.append(imp, move, del, cancel);
-      actions.append(row1, row2);
+      actions.querySelector('.asset-sel').textContent = n ? `已选 ${n} 项` : '拖动框选，或点一下要选的图';
+      actions.querySelector('.asset-imp').disabled = !n;
+      actions.querySelector('.asset-del').disabled = !n;
+      const every = (() => {
+        const list = assetFiltered();
+        return list.length > 0 && list.every((it) => assetPicked.has(assetKeyOf(it)));
+      })();
+      actions.querySelector('.asset-all').textContent = every ? '取消全选' : '全选';
     };
 
-    /* ---------- 宫格 ---------- */
+    /* ---------- 宫格：复用格子 ---------- */
+    // key → { cell, img, on, idx }
+    // 只增删变化的那几个，剩下的原地挪位置。滚动 / 勾选 / 切分组都靠这一条才不卡。
+    let suppressClick = false;      // 框选刚松手，别把这一下当成点击
+    const cellByKey = new Map();
+    const thumbURL = (item) => {
+      const u = String(item.url || '');
+      // 画布上的图是 dataURL，服务端缩不了，直接用；其余走缩略图接口
+      if (!u.startsWith('/api/')) return u;
+      return `/api/thumb?w=320&src=${encodeURIComponent(u)}`;
+    };
+
+    const buildCell = (item) => {
+      const cell = document.createElement('div');
+      cell.className = 'asset-cell';
+      cell.setAttribute('role', 'button');
+      cell.tabIndex = 0;
+      const img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.draggable = false;          // 拖拽留给框选，别让浏览器拖起图片影子
+      const name = document.createElement('span');
+      name.className = 'asset-name';
+      const badge = document.createElement('span');
+      badge.className = `asset-badge ${item.source}`;
+      badge.textContent = item.source === 'lib' ? '库'
+        : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
+      const add = document.createElement('span');
+      add.className = 'asset-add';
+      add.title = '放入画布';
+      add.textContent = '＋';
+      add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
+      const tick = document.createElement('span');
+      tick.className = 'asset-tick';
+      cell.append(img, badge, name, add, tick);
+      const rec = { cell, img, idx: -1 };
+      cell.onclick = (ev) => {
+        if (suppressClick) { suppressClick = false; return; }
+        if (!assetPicking) { openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item)); return; }
+        const key = assetKeyOf(item);
+        if (ev.shiftKey && assetLastIdx >= 0) {
+          // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
+          const list = assetFiltered();
+          const [a, b] = [assetLastIdx, rec.idx].sort((x, y) => x - y);
+          const on = !assetPicked.has(key);
+          for (let j = a; j <= b && j < list.length; j++) {
+            const k = assetKeyOf(list[j]);
+            if (on) assetPicked.add(k); else assetPicked.delete(k);
+          }
+        } else if (assetPicked.has(key)) assetPicked.delete(key);
+        else assetPicked.add(key);
+        assetLastIdx = rec.idx;
+        paintSelection();
+      };
+      cell.ondblclick = (ev) => {
+        ev.stopPropagation();
+        if (!assetPicking) putAssetOnCanvas(item);
+      };
+      cell.onkeydown = (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        if (assetPicking) cell.onclick({ shiftKey: false });
+        else putAssetOnCanvas(item);
+      };
+      return rec;
+    };
+
     const paint = () => {
       const list = assetFiltered();
       const hiddenN = assetHiddenKeys().length;
@@ -3724,8 +3946,10 @@
       restoreBtn.classList.toggle('hidden', !hiddenN);
       paintPath();
 
-      grid.innerHTML = '';
+      grid.querySelectorAll('.asset-tip').forEach((p) => p.remove());
       if (!list.length) {
+        cellByKey.forEach((rec) => rec.cell.remove());
+        cellByKey.clear();
         const why = assetQuery ? '没有匹配的文件'
           : curGid() ? '这个分组还是空的：回「全部」选几张，用「移动到」放进来'
             : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
@@ -3735,90 +3959,194 @@
         paintActions();
         return;
       }
-      list.forEach((item, i) => {
+      const groupOf = (item) => groupName(item.group || (assetMeta[assetKeyOf(item)] || {}).group || '');
+      // 复用 + 按顺序就位：cursor 走到哪儿，新格子就插到哪儿
+      let cursor = grid.firstElementChild;
+      const keep = new Set();
+      for (let i = 0; i < list.length; i++) {
+        const item = list[i];
         const key = assetKeyOf(item);
-        // 用 div 而不是 button：格子尺寸靠 CSS 的 height:0 + padding-bottom:100% 撑正方形，
-        // button 在 Chromium 里是表单控件（内部强制 flow-root），这套撑高法不可靠。
-        const cell = document.createElement('div');
-        cell.className = 'asset-cell'
-          + (assetPicking ? ' pick' : '')
-          + (assetPicked.has(key) ? ' on' : '');
-        cell.setAttribute('role', 'button');
-        cell.tabIndex = 0;
+        keep.add(key);
+        let rec = cellByKey.get(key);
+        if (!rec) { rec = buildCell(item); cellByKey.set(key, rec); }
+        rec.idx = i;
+        rec.item = item;
+        if (rec.cell === cursor) cursor = cursor.nextElementSibling;
+        else grid.insertBefore(rec.cell, cursor || null);
         const where = item.source === 'lib' ? '资产库（存放目录里的文件）'
           : item.source === 'canvas' ? '画布上的图'
             : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
-        cell.title = `${item.filename}\n${where}\n分组：${groupName(item.group || (assetMeta[key] || {}).group || '')}`;
-        const img = document.createElement('img');
-        img.src = item.url;
-        img.alt = '';
-        img.loading = 'lazy';
-        const name = document.createElement('span');
-        name.className = 'asset-name';
-        name.textContent = item.filename || '（未命名）';
-        const badge = document.createElement('span');
-        badge.className = `asset-badge ${item.source}`;
-        badge.textContent = item.source === 'lib' ? '库'
-          : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
-        const add = document.createElement('span');
-        add.className = 'asset-add';
-        add.title = '放入画布';
-        add.textContent = '＋';
-        add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
-        const tick = document.createElement('span');
-        tick.className = 'asset-tick';
-        cell.append(img, badge, name, add, tick);
+        rec.cell.title = `${item.filename}\n${where}\n分组：${groupOf(item)}`;
+        // 原图地址单独记一份：格子里的 <img> 现在是缩略图（/api/thumb?src=…），
+        // 想拿「这一格到底是哪张图」的地方（大图、断言、以后的重命名）都读这个。
+        rec.cell.dataset.src = String(item.url || '');
+        rec.img.src = thumbURL(item);
+        rec.cell.querySelector('.asset-name').textContent = item.filename || '（未命名）';
+        rec.cell.classList.toggle('pick', assetPicking);
+        rec.cell.classList.toggle('on', assetPicked.has(key));
         // 库内文件才能改名：库外的是 ComfyUI 的产物，改名字等于把它从历史里改名，
         // 下次 /history 一读又变回去了。
-        if (item.source === 'lib') {
-          const rn = document.createElement('span');
-          rn.className = 'asset-add asset-rn';
-          rn.title = '改名';
-          rn.textContent = '✎';
-          rn.onclick = (ev) => { ev.stopPropagation(); renameAsset(item); };
-          cell.append(rn);
-        }
-
-        cell.onclick = (ev) => {
-          // 多选态下点击 = 勾选，不再是看大图（否则永远选不中）
-          if (!assetPicking) { openLightbox(item.url, list, i, assetImageInfo(item)); return; }
-          if (ev.shiftKey && assetLastIdx >= 0) {
-            // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
-            const [a, b] = [assetLastIdx, i].sort((x, y) => x - y);
-            const on = !assetPicked.has(key);
-            for (let j = a; j <= b; j++) {
-              const k = assetKeyOf(list[j]);
-              if (on) assetPicked.add(k); else assetPicked.delete(k);
-            }
-          } else if (assetPicked.has(key)) assetPicked.delete(key);
-          else assetPicked.add(key);
-          assetLastIdx = i;
-          paint();
-        };
-        cell.ondblclick = (ev) => {
-          ev.stopPropagation();
-          if (!assetPicking) putAssetOnCanvas(item);
-        };
-        cell.onkeydown = (ev) => {
-          if (ev.key !== 'Enter' && ev.key !== ' ') return;
-          ev.preventDefault();
-          if (assetPicking) cell.onclick({ shiftKey: false });
-          else putAssetOnCanvas(item);
-        };
-        grid.appendChild(cell);
-      });
+        const wantRn = item.source === 'lib';
+        const rn = rec.cell.querySelector('.asset-rn');
+        if (wantRn && !rn) {
+          const b = document.createElement('span');
+          b.className = 'asset-add asset-rn';
+          b.title = '改名';
+          b.textContent = '✎';
+          b.onclick = (ev) => { ev.stopPropagation(); renameAsset(item); };
+          rec.cell.append(b);
+        } else if (!wantRn && rn) rn.remove();
+      }
+      for (const [k, rec] of cellByKey) {
+        if (!keep.has(k)) { rec.cell.remove(); cellByKey.delete(k); }
+      }
       paintActions();
+    };
+
+    /* ---------- 框选：在多选态下按住拖动，框到谁选谁 ----------
+       以前只能一张一张点（或者 Shift 连选），几百张里挑二十张要点二十次。
+       现在：拖动出一块框，和框相交的格子一次全选中；按住 Shift 拖动 = 追加。
+       点在格子上的那一下如果没拖动，仍然是一次普通点击（勾选 / 取消勾选）。 */
+    let marquee = null;
+    const clearMarquee = () => {
+      if (!marquee) return;
+      marquee.el.remove();
+      marquee = null;
+      grid.classList.remove('marquee-on');
+    };
+    const marqueeApply = (ev) => {
+      const gr = grid.getBoundingClientRect();
+      const x = ev.clientX - gr.left + grid.scrollLeft;
+      const y = ev.clientY - gr.top + grid.scrollTop;
+      const box = {
+        l: Math.min(x, marquee.x0), r: Math.max(x, marquee.x0),
+        t: Math.min(y, marquee.y0), b: Math.max(y, marquee.y0),
+      };
+      marquee.el.style.left = `${box.l}px`;
+      marquee.el.style.top = `${box.t}px`;
+      marquee.el.style.width = `${box.r - box.l}px`;
+      marquee.el.style.height = `${box.b - box.t}px`;
+      // 命中判定用「拖动开始时抓下来的矩形」：拖动过程中格子不会动，
+      // 每一帧重新量 581 个 getBoundingClientRect 才是真卡的原因。
+      const next = new Set(marquee.base);
+      marquee.rects.forEach((r) => {
+        if (r.r < box.l || r.l > box.r || r.b < box.t || r.t > box.b) return;
+        next.add(r.k);
+      });
+      let changed = next.size !== assetPicked.size;
+      if (!changed) {
+        for (const k of next) if (!assetPicked.has(k)) { changed = true; break; }
+      }
+      if (!changed) return;
+      assetPicked = next;
+      paintSelection();
+    };
+
+    grid.addEventListener('pointerdown', (ev) => {
+      if (!assetPicking || ev.button !== 0) return;
+      if (ev.target.closest('.asset-tip')) return;
+      const gr = grid.getBoundingClientRect();
+      const rects = [];
+      cellByKey.forEach((rec, k) => {
+        const r = rec.cell.getBoundingClientRect();
+        rects.push({ k, l: r.left - gr.left + grid.scrollLeft, r: r.right - gr.left + grid.scrollLeft,
+          t: r.top - gr.top + grid.scrollTop, b: r.bottom - gr.top + grid.scrollTop });
+      });
+      const x0 = ev.clientX - gr.left + grid.scrollLeft;
+      const y0 = ev.clientY - gr.top + grid.scrollTop;
+      const start = { x: ev.clientX, y: ev.clientY };
+      const base = ev.shiftKey ? new Set(assetPicked) : new Set();
+      let dragging = false;
+      const onMove = (e) => {
+        if (!dragging) {
+          if (Math.abs(e.clientX - start.x) < 5 && Math.abs(e.clientY - start.y) < 5) return;
+          dragging = true;
+          const el = document.createElement('div');
+          el.className = 'asset-marquee';
+          grid.appendChild(el);
+          marquee = { el, rects, base, x0, y0 };
+          grid.classList.add('marquee-on');
+        }
+        e.preventDefault();
+        marqueeApply(e);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        if (dragging) {
+          suppressClick = true;
+          // 松手后浏览器还会补一次 click（可能落在另一格上），下一帧再放开
+          setTimeout(() => { suppressClick = false; }, 0);
+        }
+        clearMarquee();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    });
+    // 滚动时把框收掉：坐标是相对内容的，滚走之后框和格子就对不上了
+    grid.addEventListener('scroll', clearMarquee, { passive: true });
+
+    /* ---------- 抽屉宽度：拖左边沿 ---------- */
+    // 392px 只放得下 3 列，长文件名全被截断。宽度记在 localStorage 里，
+    // 宫格用 auto-fill，拉宽就自动多排几列。
+    const paneEl = box.querySelector('.asset-pane');
+    const grip = box.querySelector('.asset-grip');
+    const W_MIN = 320, W_MAX = () => Math.min(1100, Math.max(W_MIN, window.innerWidth - 120));
+    const applyPaneW = (w) => {
+      const v = Math.round(Math.max(W_MIN, Math.min(W_MAX(), w)));
+      paneEl.style.width = `${v}px`;
+      return v;
+    };
+    try {
+      const saved = Number(localStorage.getItem('infisheet-asset-w') || 0);
+      if (saved) applyPaneW(saved);
+    } catch { /* 隐私模式读不了，用默认宽度 */ }
+    grip.onpointerdown = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const startW = paneEl.getBoundingClientRect().width;
+      const x0 = ev.clientX;
+      document.body.classList.add('asset-resizing');
+      const onMove = (e) => applyPaneW(startW - (e.clientX - x0));
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        document.body.classList.remove('asset-resizing');
+        try { localStorage.setItem('infisheet-asset-w', String(Math.round(paneEl.getBoundingClientRect().width))); } catch { /* 忽略 */ }
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+    grip.ondblclick = (ev) => {
+      ev.stopPropagation();
+      paneEl.style.width = '';
+      try { localStorage.removeItem('infisheet-asset-w'); } catch { /* 忽略 */ }
     };
 
     const reload = async (force) => {
       grid.innerHTML = '<p class="asset-tip">读取中…</p>';
+      cellByKey.clear();          // 重新扫盘之后 key 可能整批换掉，别留着旧格子
       await loadAssets(force);
       paintGroups();
       paint();
     };
 
-    q.oninput = () => { assetQuery = q.value; paint(); };
-    q.onkeydown = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); closeAssetSheet(); } };
+    // 搜索防抖：每敲一个字就重排一遍宫格，几百个格子会一顿一顿的
+    let qTimer = 0;
+    q.oninput = () => {
+      assetQuery = q.value;
+      clearTimeout(qTimer);
+      qTimer = setTimeout(paint, 120);
+    };
+    q.onkeydown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.stopPropagation();
+      // Esc 先退多选态，再按一次才关抽屉——不然选到一半手一抖整个面板都没了
+      if (assetPicking) { setPicking(false); return; }
+      closeAssetSheet();
+    };
     box.querySelectorAll('.asset-tabs button').forEach((b) => {
       b.onclick = () => {
         assetTab = b.dataset.k;
@@ -4980,7 +5308,7 @@
       const b = portCenter(l.to, l.toKey);
       if (!a || !b) return;
       const d = linkPath(a, b);
-      paths.push(`<path class="link-line${state.linkSel === l.id ? ' sel' : ''}" d="${d}" data-link="${l.id}" />`);
+      paths.push(`<path class="link-line${state.linkSel.has(l.id) ? ' sel' : ''}" d="${d}" data-link="${l.id}" />`);
       paths.push(`<path class="link-hit" d="${d}" data-link="${l.id}" />`);
     });
     if (linkTemp) paths.push(`<path class="temp" d="${linkPath(linkTemp.a, linkTemp.b)}" />`);
@@ -4997,7 +5325,9 @@
     // 顶部取会拿到 null（对齐浮条 #alignBar 也是同一个原因才懒查）。
     const btn = $('#linkDel');
     if (!btn) return;
-    const id = state.linkSel;
+    // 只选了一条才挂那颗按钮：选中一片时它不知道该停在哪条线上，
+    // 这时删就走 Delete 键（见 keydown），别让按钮乱飘。
+    const id = state.linkSel.size === 1 ? [...state.linkSel][0] : null;
     const path = id && !state.linksHidden
       ? linksEl.querySelector(`.link-line[data-link="${CSS.escape(id)}"]`)
       : null;
@@ -5108,6 +5438,8 @@
     }
     // 图片工具条：单选一张有图的节点时浮在它上方（裁剪 / 高清）
     updateImgTools();
+    // 提示词格式条：单选一个文本节点时浮在它上方（标题 / 列表 / 加粗 / 底色）
+    updateTextTools();
   }
 
   function selectOnly(id) {
@@ -5374,6 +5706,56 @@
     return best;
   }
 
+  // 松手判定要比抓取严。端口外面那圈 6px 的隐形命中区（.port::before）是给「抓」用的：
+  // 有了它不用像素级瞄准就能把线拎起来。但松手也认它的话，两个挨着的节点之间
+  // 整片都会变成「连接区」——用户从端口拖出去想新建节点，落点被旁边那个节点的口
+  // 抢走，菜单根本不弹（用户报的「拖出去自动吸住」）。所以：
+  //   抓 = 视觉圆点 + 6px；松手 = 圆点周围 PORT_DROP_R。
+  const PORT_DROP_R = 10;
+  function portNear(el, x, y) {
+    const r = el.getBoundingClientRect();
+    return Math.hypot(x - (r.left + r.width / 2), y - (r.top + r.height / 2)) <= PORT_DROP_R;
+  }
+  // 落点是否真的压在节点本体上（标题条 / 卡片 / 生成面板），而不是压在端口外扩的抓取区里。
+  // 端口是 .node 的后代，所以只能按几何判，不能用 closest('.node')。
+  function pointInNodeBody(nodeEl, x, y) {
+    const parts = nodeEl.querySelectorAll('.node-card, .node-title, .gen-panel');
+    for (const el of parts) {
+      const r = el.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+    }
+    return false;
+  }
+
+  /* ---------------- 多选拖线：一次把选中的节点全接到同一个目标 ---------------- */
+  // 用户要的是「多选之后拖一次，选中的都连到同一个节点」。
+  // 只在「你拖的这个节点本身也在选中集里」时才批量——从一个没选中的节点拖出去，
+  // 语义仍然是「只连它」，否则手一抖就把别的节点也连上了。
+  function linkSources(fromId) {
+    const sel = [...state.selected].filter((id) => id !== fromId && getNode(id) && portCache.get(`${id}:out`));
+    if (!state.selected.has(fromId) || !sel.length) return [fromId];
+    // 顺序就是选中的先后（Set 保插入序）：图片节点靠这个排「图1 / 图2」，
+    // 用画布顺序会把用户挑图的先后打乱。
+    return [fromId, ...sel];
+  }
+
+  // 把来源（可能多个）接到同一个目标。目标能吃多路才批量：
+  // 图片 / 文本节点的 in 是「一批参考素材」，工作流是多个插槽；
+  // 单入口（图片输出、单个插槽）保持原样只接一个，免得「怎么只连上一个」变成新问题。
+  function connectSources(toId, key, fromId) {
+    const dst = getNode(toId);
+    const multi = !!dst && (isMultiIn(dst, key) || dst.type === 'wf');
+    const list = multi ? linkSources(fromId) : [fromId];
+    let ok = 0;
+    for (const id of list) {
+      // 已经连过的不重复接：addLink 会 flash「这个节点已经连上它了」，批量时刷屏
+      if (multi && state.links.some((l) => l.to === toId && l.from === id)) continue;
+      if (addLink(id, toId, key)) ok += 1;
+    }
+    if (ok > 1) flash(`已连上 ${ok} 个节点`);
+    return ok;
+  }
+
   function startLink(ev, fromId) {
     const src = getNode(fromId);
     const kindWanted = src.type === 'text' ? 'text' : src.type === 'wf' ? 'media' : 'image';
@@ -5403,34 +5785,37 @@
       const target = document.elementFromPoint(e.clientX, e.clientY);
       const inPort = target && target.closest ? target.closest('.port.in') : null;
 
-      if (inPort) {
+      // 松手判定比抓取严：见 portNear 的注释
+      if (inPort && portNear(inPort, e.clientX, e.clientY)) {
         const [toId, key] = splitPort(inPort.dataset.port);
-        if (linkAllows(kindWanted, inPort.dataset.kind)) addLink(fromId, toId, key);
+        if (linkAllows(kindWanted, inPort.dataset.kind)) connectSources(toId, key, fromId);
         else flash(`连线类型不匹配：${kindWanted} → ${inPort.dataset.kind}`);
         finish();
         return;
       }
 
-      // 松手在目标节点上：直接接它的第一个兼容插槽（不用精确点中小圆点）
+      // 松手在目标节点本体上：直接接它的第一个兼容插槽（不用精确点中小圆点）。
+      // 判「本体」要看几何，不能只看 DOM 祖先：端口外面那圈 6px 的隐形抓取区
+      // 仍然挂在 .node 里面，靠 closest('.node') 会把两个节点中间的缝也算成节点。
       const nodeEl = target && target.closest ? target.closest('.node') : null;
-      if (nodeEl && nodeEl.dataset.id === fromId) {
-        flash('松手在别的节点上才能连线');
-        finish();
-        return;
-      }
-      if (nodeEl) {
+      if (nodeEl && pointInNodeBody(nodeEl, e.clientX, e.clientY)) {
+        if (nodeEl.dataset.id === fromId) {
+          flash('松手在别的节点上才能连线');
+          finish();
+          return;
+        }
         const key = firstCompatiblePort(nodeEl.dataset.id, kindWanted);
-        if (key) { addLink(fromId, nodeEl.dataset.id, key); finish(); return; }
+        if (key) { connectSources(nodeEl.dataset.id, key, fromId); finish(); return; }
         flash(kindWanted === 'media' ? '这个节点接不了结果：请用「图片输出」节点' : '这个节点没有可接的对应插槽');
         finish();
         return;
       }
 
-      // 没点中：吸附到 26px 内最近的兼容端口
-      const near = nearestCompatiblePort(e.clientX, e.clientY, kindWanted, 26, fromId);
-      if (near) { addLink(fromId, near.to, near.key); finish(); return; }
+      // 没点中：吸附到 10px 内最近的兼容端口（原来 26px，两个挨着的节点之间整片都会被吸住）
+      const near = nearestCompatiblePort(e.clientX, e.clientY, kindWanted, PORT_DROP_R, fromId);
+      if (near) { connectSources(near.to, near.key, fromId); finish(); return; }
 
-      if (!(target && target.closest && target.closest('.node, .group-head, .popmenu'))) {
+      if (!(target && target.closest && target.closest('.group-head, .popmenu'))) {
         // 拖到空白处松手：就地新建并连上
         openLinkMenu(fromId, e.clientX, e.clientY);
       }
@@ -5505,13 +5890,29 @@
     if (!ctx) return;
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
     const outPort = target && target.closest ? target.closest('.port.out') : null;
-    if (outPort) {
+    if (outPort && portNear(outPort, ev.clientX, ev.clientY)) {
       const fromId = splitPort(outPort.dataset.port)[0];
       addLink(fromId, ctx.toId, ctx.key);
       return;
     }
     // 没拖动就松手 = 点了一下：把这一口上挂着的线全断开
-    if (ctx.clickToClear && !ctx.moved) removeLink(ctx.toId, ctx.key);
+    if (ctx.clickToClear && !ctx.moved) { removeLink(ctx.toId, ctx.key); return; }
+    // 松手落在别的节点本体上（没精确点中它那个小圆点）：直接用它的输出口。
+    // 正向拖线（输出口→节点）一直有这条兜底，反向没有，于是「往节点上拖」也像没反应。
+    // 和正向一样按几何判本体：端口那圈外扩的抓取区不算「压在节点上」。
+    const nodeEl = target && target.closest ? target.closest('.node') : null;
+    if (nodeEl && nodeEl.dataset.id !== ctx.toId && pointInNodeBody(nodeEl, ev.clientX, ev.clientY)) {
+      const src = getNode(nodeEl.dataset.id);
+      if (src && src.type !== 'out') { addLink(src.id, ctx.toId, ctx.key); return; }
+      flash('这个节点没有输出，接不上');
+      return;
+    }
+    // 拖到空白处松手：就地新建一个「上下文」节点并接上。
+    // 右侧输出口拖到空白会弹「接一个节点」（建下游），左侧输入口以前拖到空白什么都不发生——
+    // 用户的原话是「该节点拖拽无反应」。左侧语义是「添加上下文」，所以这里弹的是上游。
+    if (!(target && target.closest && target.closest('.group-head, .popmenu'))) {
+      openSourceMenu(ctx.toId, ctx.key, ev.clientX, ev.clientY);
+    }
   }
 
   function startReverseLink(ev, toId, key, opts = {}) {
@@ -5550,15 +5951,22 @@
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   }
-  function removeLinkById(id) {
-    const l = state.links.find((x) => x.id === id);
-    if (!l) { state.linkSel = null; renderLinks(); return; }
-    state.links = state.links.filter((x) => x.id !== id);
-    state.linkSel = null;
-    const dst = getNode(l.to);
-    if (dst && dst.type === 'out') dst.linked = false;
-    rerenderNode(l.to);
-    refreshRefsFor(l.to);
+  function removeLinkById(id) { removeLinksByIds([id]); }
+
+  // 批量删连线：框选可能一次选中一片，逐条走 removeLinkById 会把节点重建 N 遍。
+  function removeLinksByIds(ids) {
+    const want = new Set(ids);
+    const gone = state.links.filter((l) => want.has(l.id));
+    if (!gone.length) { ids.forEach((id) => state.linkSel.delete(id)); renderLinks(); return; }
+    state.links = state.links.filter((l) => !want.has(l.id));
+    gone.forEach((l) => state.linkSel.delete(l.id));
+    // 受影响的终点重算一次（图片输出节点的「已连接」态、参考图缩略图）
+    new Set(gone.map((l) => l.to)).forEach((id) => {
+      const dst = getNode(id);
+      if (dst && dst.type === 'out') dst.linked = state.links.some((x) => x.to === id);
+      rerenderNode(id);
+      refreshRefsFor(id);
+    });
     renderLinks(); queueSave(); commit();
   }
   function splitPort(v) {
@@ -5580,34 +5988,37 @@
     if (n.type === 'image' && n.gen) renderRefs(n);
     const port = portCache.get(`${id}:in`);
     if (port) {
-      const count = state.links.filter((l) => l.to === id && l.toKey === 'in').length;
+      // 数「这个节点收到几条线」，不是「有几条线的 toKey 正好叫 in」：
+      // 工作流节点的线落在插槽上（toKey = 插槽名，比如 positive），按 'in' 数会得到 0，
+      // 于是刚接上的工作流节点输入口反而被摘掉高亮、标题退回未连接的样子。
+      const count = state.links.filter((l) => l.to === id).length;
       port.classList.toggle('linked', count > 0);
       if (count) port.title = count > 1 ? `已连 ${count} 张 · 点击断开全部` : '点击断开连线';
     }
   }
 
   function addLink(from, to, key) {
-    if (from === to) { flash('不能把节点连到自己'); return; }   // 自己连自己会让提交图出现无用连线
+    if (from === to) { flash('不能把节点连到自己'); return false; }   // 自己连自己会让提交图出现无用连线
     const a = (portCache.get(`${from}:out`) || {}).dataset;
     const dst = getNode(to);
     if (dst && dst.type === 'wf') {
       const srcKind = a && a.kind;
       if (key === 'in') {
         const free = wfFreeSlot(dst, srcKind);
-        if (!free) { flash('没有空闲的对应插槽，先在「设置」里断开一条'); return; }
+        if (!free) { flash('没有空闲的对应插槽，先在「设置」里断开一条'); return false; }
         key = free.key;
       }
       const slot = (dst.slots || []).find((s) => s.key === key);
-      if (!slot || slot.kind !== srcKind) { flash('这个插槽的类型不匹配'); return; }
+      if (!slot || slot.kind !== srcKind) { flash('这个插槽的类型不匹配'); return false; }
     } else {
       const b = (portCache.get(`${to}:${key}`) || {}).dataset;
-      if (a && b && !linkAllows(a.kind, b.kind)) { flash(`连线类型不匹配：${a.kind} → ${b.kind}`); return; }
+      if (a && b && !linkAllows(a.kind, b.kind)) { flash(`连线类型不匹配：${a.kind} → ${b.kind}`); return false; }
     }
     if (isMultiIn(dst, key)) {
       // 同一个来源连两次没意义（两条线会精确重叠，看起来像什么都没发生）
       if (state.links.some((l) => l.to === to && l.toKey === key && l.from === from)) {
         flash('这个节点已经连上它了');
-        return;
+        return false;
       }
     } else {
       state.links = state.links.filter((l) => !(l.to === to && l.toKey === key));
@@ -5624,6 +6035,7 @@
     refreshRefsFor(to);
     renderLinks();
     queueSave(); commit();
+    return true;
   }
 
   function removeLink(toId, key) {
@@ -5650,6 +6062,7 @@
     renderLinks();
     // 节点被重建后尺寸/图可能变了（生成结果回来、换图），工具条要重新贴一次
     updateImgTools();
+    updateTextTools();
   }
 
   function removeNode(id) {
@@ -6282,6 +6695,21 @@
     }
   }
 
+  // 把一张本地图填进**已有**节点。双击空节点选图、把图拖到空节点上，都走这一条，
+  // 别再各写一份（面板上的「上传」原来就有一份几乎一样的）。
+  async function fillImageNode(n, file) {
+    n.filename = file.name;
+    n.uploaded = null;
+    if (n.gen) { n.gen.gallery = []; n.gen.idx = 0; n.gen.status = ''; }
+    n.dataURL = await new Promise((res) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.readAsDataURL(file);
+    });
+    rerenderNode(n.id);
+    try { await ensureUploaded(n); } catch (err) { flash(err.message); }
+  }
+
   function pickImage(n) {
     const inp = document.createElement('input');
     inp.type = 'file';
@@ -6289,16 +6717,7 @@
     inp.onchange = async () => {
       const file = inp.files && inp.files[0];
       if (!file) return;
-      n.filename = file.name;
-      n.uploaded = null;
-      if (n.gen) { n.gen.gallery = []; n.gen.idx = 0; n.gen.status = ''; }
-      n.dataURL = await new Promise((res) => {
-        const fr = new FileReader();
-        fr.onload = () => res(fr.result);
-        fr.readAsDataURL(file);
-      });
-      rerenderNode(n.id);
-      try { await ensureUploaded(n); } catch (err) { flash(err.message); }
+      await fillImageNode(n, file);
     };
     inp.click();
   }
@@ -6712,6 +7131,9 @@
         return {
         id: n.id, type: n.type, title: n.title, x: n.x, y: n.y, w: n.w, h: n.h,
         value: n.value, dataURL: n.dataURL, uploaded: n.uploaded, filename: n.filename,
+        // 文本节点：富文本 HTML + 底色。value 仍然存一份纯文本，老版本读档也不会空
+        html: n.type === 'text' ? n.html : undefined,
+        bg: n.type === 'text' ? n.bg : undefined,
         graph: n.graph, slots: n.slots, outputs: n.outputs, values: n.values,
         nodeCount: n.nodeCount, unknownTypes: n.unknownTypes,
         artifacts: n.artifacts, status: 'idle', statusText: n.statusText,
@@ -6757,7 +7179,12 @@
     closeBigEditor();       // 换画布/撤销时别让放大编辑区挂在一个已经不存在的节点上
     assetItems = null;      // 换了画布，「画布上的图」这一半就变了，下次打开资产面板重算
     const beforeLinks = (data.links || []).length;
-    state.nodes = data.nodes.map((n) => ({ ...n, status: 'idle', timer: null }));
+    state.nodes = data.nodes.map((n) => {
+      const node = { ...n, status: 'idle', timer: null };
+      // 提示词节点改富文本之后，老存档只有纯文本 value：补一份 html 出来
+      if (node.type === 'text' && node.html == null) node.html = textToHtml(node.value || '');
+      return node;
+    });
     // 旧存档迁移：图片节点曾有过 in / ref 两种"参考图"连线，现在统一成「节点自己的图片」
     state.links = (data.links || []).map((l) => {
       const src = state.nodes.find((x) => x.id === l.from);
@@ -7160,7 +7587,7 @@
       return;
     }
 
-    if (state.linkSel) { state.linkSel = null; renderLinks(); }
+    // 连线的选中在 startMarquee 里清（Shift 加选要先留住旧的一份）
     // 默认：拖空白 = 框选（按住 Shift 为加选）；右键/侧键不参与，避免右键拖出个选框
     if (ev.button !== 0) return;
     startMarquee(ev);
@@ -7172,7 +7599,14 @@
     if (!hit) return;
     ev.stopPropagation();
     ev.preventDefault();
-    state.linkSel = state.linkSel === hit.dataset.link ? null : hit.dataset.link;
+    const id = hit.dataset.link;
+    // Shift / Ctrl 点：加减选；直接点：只选这一条，再点一次取消
+    if (ev.shiftKey || ev.ctrlKey || ev.metaKey) {
+      if (state.linkSel.has(id)) state.linkSel.delete(id); else state.linkSel.add(id);
+    } else {
+      const only = state.linkSel.size === 1 && state.linkSel.has(id);
+      state.linkSel = only ? new Set() : new Set([id]);
+    }
     renderLinks();
   });
 
@@ -7182,12 +7616,15 @@
   document.addEventListener('click', (ev) => {
     if (!ev.target.closest || !ev.target.closest('#linkDel')) return;
     ev.stopPropagation();
-    if (state.linkSel) removeLinkById(state.linkSel);
+    if (state.linkSel.size) removeLinksByIds([...state.linkSel]);
   });
 
-  // 框选：拖出矩形，松手时选中与其相交的节点
+  // 框选：拖出矩形，松手时选中与其相交的节点**和连线**
   function startMarquee(ev) {
     const additive = ev.shiftKey;
+    // 连线选择在 startMarquee 里清：Shift 加选要先把旧的一份留住再合并
+    const prevLinks = additive ? new Set(state.linkSel) : new Set();
+    if (!additive && state.linkSel.size) { state.linkSel.clear(); renderLinks(); }
     if (!additive) selectOnly(null);
     const base = additive ? new Set(state.selected) : new Set();
     const box = document.createElement('div');
@@ -7218,11 +7655,39 @@
         const hit = nb.x < r.x + r.w && nb.x + nb.w > r.x && nb.y < r.y + r.h && nb.y + nb.h > r.y;
         if (hit) state.selected.add(n.id);
       });
+      const hitLinks = marqueeLinks(r);
+      state.linkSel = additive ? new Set([...prevLinks, ...hitLinks]) : hitLinks;
       paintSelection();
-      if (state.selected.size > 1) flash(`已框选 ${state.selected.size} 个节点`);
+      renderLinks();
+      if (hitLinks.size && state.selected.size) {
+        flash(`已框选 ${state.selected.size} 个节点 · ${hitLinks.size} 条连线`);
+      } else if (hitLinks.size) {
+        flash(`已框选 ${hitLinks.size} 条连线（Delete 删除）`);
+      } else if (state.selected.size > 1) {
+        flash(`已框选 ${state.selected.size} 个节点`);
+      }
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+  }
+
+  // 框到哪些连线：贝塞尔曲线没有简单的矩形相交判定，沿着路径采样取点，
+  // 只要有一个点落在框里就算命中。步长按路径长度给（约每 14 世界像素一个点，
+  // 最少 12 个、最多 96 个），既能抓住细长的弧线，也不会在连线多时卡住。
+  function marqueeLinks(r) {
+    const hit = new Set();
+    if (state.linksHidden || !state.links.length) return hit;
+    const x2 = r.x + r.w, y2 = r.y + r.h;
+    linksEl.querySelectorAll('.link-line').forEach((p) => {
+      const len = p.getTotalLength();
+      if (!len) return;
+      const steps = Math.max(12, Math.min(96, Math.ceil(len / 14)));
+      for (let i = 0; i <= steps; i += 1) {
+        const pt = p.getPointAtLength((len * i) / steps);
+        if (pt.x >= r.x && pt.x <= x2 && pt.y >= r.y && pt.y <= y2) { hit.add(p.dataset.link); return; }
+      }
+    });
+    return hit;
   }
 
   // ---- 双击空白：新建节点菜单 ----
@@ -7373,6 +7838,18 @@
     const jsons = files.filter((f) => /\.json$/i.test(f.name) || f.type === 'application/json');
     if (!images.length && !jsons.length) { flash('拖入图片，或 API 格式的 .json 工作流'); return; }
     const p = screenToWorld(ev.clientX, ev.clientY);
+    // 拖到空图片节点上：直接填进那个节点。用户的动作是「把这张图给它」，
+    // 在它旁边再造一个节点等于把他刚摆好的位置又占一块。
+    if (images.length) {
+      const over = document.elementFromPoint(ev.clientX, ev.clientY);
+      const nodeEl = over && over.closest ? over.closest('.node') : null;
+      const dst = nodeEl && getNode(nodeEl.dataset.id);
+      if (dst && dst.type === 'image' && !dst.dataURL) {
+        const f = images.shift();
+        await fillImageNode(dst, f);
+        flash(`已放入「${f.name}」`);
+      }
+    }
     let i = 0;
     for (const f of jsons) {
       await addWorkflowFromFile(f, p.x + i * 40, p.y + i * 40);
@@ -7414,7 +7891,7 @@
     if (homeEl && !homeEl.classList.contains('hidden')) return;
     if (ev.code !== 'Space') return;
     const t = ev.target;
-    const typing = isFieldTarget(t);
+    const typing = isTypingTarget(t);
     // 焦点在按钮/链接上时，空格应该「按下它」，而不是被当成平移修饰键吞掉
     const activatable = t && typeof t.closest === 'function'
       && t.closest('button, a, [role="button"], summary');
@@ -7445,7 +7922,7 @@
     const homeEl = document.getElementById('home');
     if (homeEl && !homeEl.classList.contains('hidden')) return;
     const tag = ev.target;
-    if (isFieldTarget(tag)) return;
+    if (isTypingTarget(tag)) return;
     if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
       const k = ev.key.toLowerCase();
       if (k === 'z') { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); return; }
@@ -7484,11 +7961,17 @@
       }
     }
     if (ev.key === 'Delete' || ev.key === 'Backspace') {
-      if (state.linkSel) { ev.preventDefault(); removeLinkById(state.linkSel); return; }
-      if (state.selected.size) {
+      // 框选能同时选中节点和连线，Delete 就一起删：只删线、节点留在原地会很怪。
+      if (state.linkSel.size || state.selected.size) {
         ev.preventDefault();
-        [...state.selected].forEach((id) => removeNode(id));
-        state.selected = new Set();
+        if (state.linkSel.size) removeLinksByIds([...state.linkSel]);
+        if (state.selected.size) {
+          [...state.selected].forEach((id) => removeNode(id));
+          state.selected = new Set();
+          state.linkSel.clear();     // 节点带走的连线可能也在选中集里，别留悬空 id
+          renderLinks();
+        }
+        return;
       }
     }
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'g' || ev.key === 'G')) {
@@ -8088,6 +8571,33 @@
     }
   }
 
+  // 从输入口拖出来松手在空白处：列出可以喂给它的上游（「添加上下文」）。
+  // 和右边 openLinkMenu 是镜像关系——那边建下游，这边建上游，两边的菜单都得真的建节点并接上。
+  // 只摆**真会生效**的那几种：参考图是 refsOf 从「连进来的图片节点」里收的，
+  // 文本节点的输入口也只吃图片，所以文本节点不提供「文本节点」这一项——
+  // 摆上去能连上，但连完什么都不会变，等于又造了一个「没用处的按钮」。
+  function openSourceMenu(toId, key, clientX, clientY) {
+    const dst = getNode(toId);
+    if (!dst) return;
+    const items = [];
+    if (dst.type === 'image' || dst.type === 'wf') {
+      items.push(['文本节点（当提示词）', () => createLinkedSource(toId, key, 'text', clientX, clientY)]);
+    }
+    items.push(['图片节点（当参考图）', () => createLinkedSource(toId, key, 'image', clientX, clientY)]);
+    openPopMenu({ x: clientX, y: clientY }, items, '添加上下文');
+  }
+
+  function createLinkedSource(toId, key, kind, clientX, clientY) {
+    const p = screenToWorld(clientX, clientY);
+    if (kind === 'text') {
+      const n = addTextNode(Math.round(p.x - 60), Math.round(p.y - 40));
+      if (addLink(n.id, toId, key)) flash('已新建文本节点并接上');
+      return;
+    }
+    const n = addImageNode(Math.round(p.x - 60), Math.round(p.y - 60));
+    if (addLink(n.id, toId, key)) flash('已新建图片节点并接上');
+  }
+
   // 从端口拖出来松手在空白处：列出可以接上的节点类型
   function openLinkMenu(fromId, clientX, clientY) {
     const src = getNode(fromId);
@@ -8104,16 +8614,26 @@
     openPopMenu({ x: clientX, y: clientY }, items, '接一个节点');
   }
 
+  // 从「接一个节点」菜单建节点：建完必须把线接上。
+  // 以前只有「图片输出」和「工作流」两支接了线，文本 / 图片节点建完就散在画布上——
+  // 用户是从端口一路拖出来松手的，看到的是一个没连上的新节点，等于白拖一次。
   async function createLinkedNode(fromId, kind, clientX, clientY) {
     const p = screenToWorld(clientX, clientY);
-    const src = getNode(fromId);
-    if (kind === 'text') { addTextNode(p.x - 60, p.y - 40); return; }
-    if (kind === 'image') { addImageNode(p.x - 60, p.y - 60); return; }
+    // 接的时候统一走 connectSources：多选状态下拖出来建节点，选中的那些也一起接进来
+    // （和直接拖到已有节点上同一个口径）。
+    if (kind === 'text') {
+      const n = addTextNode(p.x - 60, p.y - 40);
+      if (connectSources(n.id, 'in', fromId)) flash('已新建文本节点并接上');
+      return;
+    }
+    if (kind === 'image') {
+      const n = addImageNode(p.x - 60, p.y - 60);
+      if (connectSources(n.id, 'in', fromId)) flash('已新建图片节点并接上');
+      return;
+    }
     if (kind === 'out') {
       const out = addOutNode(p.x - 40, p.y - 50, { linked: true }, true);
-      state.links.push({ id: uid('l'), from: fromId, to: out.id, toKey: 'in' });
-      renderAll(); queueSave(); commit();
-      flash('已新建图片输出并接上');
+      if (connectSources(out.id, 'in', fromId)) flash('已新建图片输出并接上');
       return;
     }
     if (kind === 'wf') {
@@ -8122,17 +8642,15 @@
       const graph = await loadGraphById(wfId);
       const node = await addWorkflowNode(graph, '工作流', true);
       if (!node) return;
-      node.x = p.x - 90;
-      node.y = p.y - 80;
-      const wantKind = src && src.type === 'image' ? 'image' : 'text';
-      const slot = (node.slots || []).find((x) => x.kind === wantKind);
-      if (slot) {
-        state.links.push({ id: uid('l'), from: fromId, to: node.id, toKey: slot.key });
-        renderAll(); queueSave(); commit();
-        flash('已新建工作流并接上');
+      node.x = Math.round(p.x - 90);
+      node.y = Math.round(p.y - 80);
+      // 先重排一次：addLink 要读端口上记的类型（text / image）来挑插槽，
+      // 端口是 buildNode 时才生成的，位置也得靠这次重建落到松手点。
+      renderAll();
+      if (!connectSources(node.id, 'in', fromId)) {
+        flash('工作流节点已建，但没有能接上的空闲插槽');
       } else {
-        renderAll(); queueSave(); commit();
-        flash(wantKind === 'image' ? '这个工作流没有图片插槽，节点已建但未连线' : '这个工作流没有文本插槽，节点已建但未连线');
+        flash('已新建工作流并接上');
       }
     }
   }
@@ -8309,7 +8827,7 @@
   function leaveCanvasChrome() {
     let dirty = false;
     if (state.selected.size) { state.selected = new Set(); dirty = true; }
-    if (state.linkSel) { state.linkSel = null; dirty = true; }
+    if (state.linkSel.size) { state.linkSel.clear(); dirty = true; }
     if (dirty) paintSelection();       // 里面会一并处理 #alignBar 与 #imgTools
     positionLinkDel();                 // linkSel 已清，这一句把删除按钮收起来
     closeAssetSheet();                 // 右侧资产抽屉
@@ -8997,6 +9515,474 @@
     if (kind === 'download') { downloadImage(n); return; }
     createEditNode(n, kind);      // upscale / cutout
   }
+
+  // ================= 提示词节点的格式条 =================
+  // 和图片工具条同一套外壳（深色药丸 + 图标文字按钮），只是按钮换成排版命令。
+  // 命令走 execCommand：生成的是 <b> / <i> / <h3> / <ol> / <hr> 这些语义标签，
+  // 不是一堆行内 style —— 存档小、CSS 也好接管。
+  const TEXT_TOOLS = [
+    { k: 'color', label: '颜色', icon: 'palette', tip: '提示词框底色（默认 #262626）' },
+    { k: 'h', label: '标题', icon: 'text', tip: '这一段变成标题（再点一次退回正文）' },
+    { k: 'ol', label: '列表', glyph: '1.', tip: '有序列表' },
+    { k: 'b', label: '加粗', glyph: 'B', strong: true, tip: '加粗' },
+    { k: 'i', label: '斜体', glyph: 'I', italic: true, tip: '斜体' },
+    { k: 'hr', label: '分割线', glyph: '—', tip: '插入一条分割线' },
+    { k: 'preset', label: '预设', icon: 'book', tip: '提示词预设：把常用的存起来，一键插回来' },
+    { k: 'expand', label: '展开', icon: 'expand', tip: '全屏编辑（Esc 退出）' },
+  ];
+  const TEXT_BREAKS = new Set(['b', 'expand']);
+
+  let textToolsEl = null;
+  let textColorPop = null;
+  let textFull = null;
+  let presetPop = null;
+  let textPresets = null;         // null = 还没拉过；数组 = 已加载
+
+  function textToolNode() {
+    if (state.selected.size !== 1) return null;
+    const n = getNode([...state.selected][0]);
+    return n && n.type === 'text' ? n : null;
+  }
+
+  // 命令该发给哪个编辑器：全屏编辑开着就是它，否则是节点里那个
+  function activeTextEd(n) {
+    if (textFull && textFull.n === n && textFull.ed.isConnected) return textFull.ed;
+    const h = textEditors.get(n.id);
+    return h && h.ed.isConnected ? h.ed : null;
+  }
+  function textAbsorb(n) {
+    if (textFull && textFull.n === n && textFull.ed.isConnected) { textFull.absorb(); return; }
+    const h = textEditors.get(n.id);
+    if (h) h.absorb();
+  }
+
+  function makeTextButtons(host, skipExpand) {
+    TEXT_TOOLS.forEach((t) => {
+      if (skipExpand && t.k === 'expand') return;
+      if (TEXT_BREAKS.has(t.k)) {
+        const s = document.createElement('span');
+        s.className = 'it-sep';
+        host.appendChild(s);
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'it-btn';
+      b.dataset.tool = t.k;
+      b.title = t.tip;
+      b.setAttribute('aria-label', `${t.label}：${t.tip}`);
+      const glyph = t.icon
+        ? icon(t.icon)
+        : `<i class="it-glyph${t.strong ? ' is-bold' : ''}${t.italic ? ' is-italic' : ''}">${t.glyph}</i>`;
+      b.innerHTML = `${glyph}${t.k === 'color' ? '<i class="it-dot"></i>' : ''}<span>${t.label}</span>`;
+      b.onclick = (ev) => { ev.stopPropagation(); runTextTool(t.k, b); };
+      host.appendChild(b);
+    });
+  }
+
+  function ensureTextTools() {
+    if (textToolsEl && textToolsEl.isConnected) return textToolsEl;
+    const bar = document.createElement('div');
+    bar.id = 'textTools';
+    bar.className = 'hidden';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', '提示词格式');
+    // 点工具条不能把节点选丢、不能拖画布，也不能把编辑区的焦点和选区抢走——
+    // 抢走了 execCommand 就不知道往哪儿加粗（按钮照样收得到 click）
+    bar.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); ev.preventDefault(); });
+    makeTextButtons(bar, false);
+    document.body.appendChild(bar);
+    textToolsEl = bar;
+    return bar;
+  }
+
+  function positionTextTools() {
+    const bar = textToolsEl;
+    const n = textToolNode();
+    if (!bar || !n || bar.classList.contains('hidden')) return;
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    if (!el) return;
+    const nb = el.getBoundingClientRect();
+    const w = bar.offsetWidth || 340;
+    const h = bar.offsetHeight || 34;
+    const topBar = document.getElementById('topBar');
+    const floor = (topBar ? topBar.offsetHeight : 44) + 6;
+    bar.style.left = `${Math.round(clamp(nb.left + nb.width / 2 - w / 2, 10, Math.max(10, window.innerWidth - w - 10)))}px`;
+    bar.style.top = `${Math.round(Math.max(floor, nb.top - h - 8))}px`;
+  }
+
+  // 当前这一段是不是标题 / 有没有加粗斜体：按钮跟着亮，不然点了不知道生效没
+  function syncTextToolStates(n) {
+    const bar = textToolsEl;
+    if (!bar) return;
+    const ed = n ? activeTextEd(n) : null;
+    const on = {};
+    if (ed && (ed.isContentEditable || (textFull && textFull.ed === ed))) {
+      try {
+        on.b = document.queryCommandState('bold');
+        on.i = document.queryCommandState('italic');
+        on.ol = document.queryCommandState('insertOrderedList');
+        on.h = /^h[1-6]$/i.test(String(document.queryCommandValue('formatBlock') || ''));
+      } catch { /* 没有选区时 queryCommand* 可能抛，忽略 */ }
+    }
+    bar.querySelectorAll('.it-btn').forEach((b) => {
+      const k = b.dataset.tool;
+      if (k in on) b.classList.toggle('on', !!on[k]);
+    });
+  }
+
+  function updateTextTools() {
+    const n = textToolNode();
+    const bar = ensureTextTools();
+    const show = !!n && !cropSession && !bigEditor && !imgPanel && !textFull;
+    bar.classList.toggle('hidden', !show);
+    if (!show) { closeTextColor(); closePresetPop(); return; }
+    const dot = bar.querySelector('[data-tool="color"] .it-dot');
+    if (dot) dot.style.background = n.bg || TEXT_BG_DEFAULT;
+    syncTextToolStates(n);
+    positionTextTools();
+  }
+
+  function runTextTool(kind, btn) {
+    const n = textToolNode();
+    if (!n) { updateTextTools(); flash('先选中一个提示词节点'); return; }
+    if (kind === 'expand') { openTextFull(n); return; }
+    if (kind === 'color') { openTextColor(n, btn); return; }
+    if (kind === 'preset') { openTextPresets(n, btn); return; }
+    const ed = activeTextEd(n);
+    if (!ed) return;
+    // 还没进编辑态：先把编辑器打开再发命令，否则命令没有落点
+    if (!textFull) {
+      const h = textEditors.get(n.id);
+      if (h && !h.ed.isContentEditable) {
+        h.setEditing(true);
+        // 从只读点进来时编辑器里没有选区，命令会落空（点了没反应）。
+        // 用户点的本来就是「这个节点」，整块选中，效果落到整段上才看得见。
+        const r = document.createRange();
+        r.selectNodeContents(h.ed);
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      }
+    }
+    ed.focus();
+    document.execCommand('styleWithCSS', false, false);
+    if (kind === 'b') document.execCommand('bold');
+    else if (kind === 'i') document.execCommand('italic');
+    else if (kind === 'ol') document.execCommand('insertOrderedList');
+    else if (kind === 'hr') document.execCommand('insertHorizontalRule');
+    else if (kind === 'h') {
+      const cur = String(document.queryCommandValue('formatBlock') || '').toLowerCase();
+      document.execCommand('formatBlock', false, /^h[1-6]$/.test(cur) ? 'p' : 'h3');
+    }
+    textAbsorb(n);
+    syncTextToolStates(n);
+  }
+
+  function setTextBg(n, color) {
+    n.bg = color;
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    const card = el && el.querySelector('.node-card');
+    if (card) card.style.background = color;
+    const dot = textToolsEl && textToolsEl.querySelector('[data-tool="color"] .it-dot');
+    if (dot) dot.style.background = color;
+    queueSave(); commit();
+  }
+
+  function closeTextColor() {
+    if (!textColorPop) return;
+    textColorPop.remove();
+    textColorPop = null;
+  }
+
+  function openTextColor(n, anchor) {
+    if (textColorPop) { closeTextColor(); return; }      // 再点一次收起
+    const pop = document.createElement('div');
+    pop.className = 'text-color-pop';
+    pop.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const grid = document.createElement('div');
+    grid.className = 'tcp-grid';
+    TEXT_BG_SWATCHES.forEach(([c, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tcp-swatch';
+      b.title = label;
+      b.style.background = c;
+      b.dataset.color = c;
+      if ((n.bg || TEXT_BG_DEFAULT).toLowerCase() === c) b.classList.add('on');
+      b.onclick = () => { setTextBg(n, c); closeTextColor(); };
+      grid.appendChild(b);
+    });
+    pop.appendChild(grid);
+    const row = document.createElement('div');
+    row.className = 'tcp-row';
+    const lab = document.createElement('span');
+    lab.textContent = '自定义';
+    const inp = document.createElement('input');
+    inp.type = 'color';
+    inp.value = n.bg || TEXT_BG_DEFAULT;
+    inp.oninput = () => setTextBg(n, inp.value);
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'tcp-reset';
+    reset.textContent = '恢复默认';
+    reset.onclick = () => { setTextBg(n, TEXT_BG_DEFAULT); closeTextColor(); };
+    row.append(lab, inp, reset);
+    pop.appendChild(row);
+    document.body.appendChild(pop);
+    // 贴在按钮下方；下方放不下就翻到上方
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    const left = clamp(r.left + r.width / 2 - w / 2, 10, Math.max(10, window.innerWidth - w - 10));
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 10) top = Math.max(10, r.top - h - 6);
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+    textColorPop = pop;
+    // 点别处收起（气泡自己的 pointerdown 已经 stopPropagation，不会误关）
+    setTimeout(() => {
+      if (textColorPop !== pop) return;
+      document.addEventListener('pointerdown', closeTextColor, { once: true });
+    }, 0);
+  }
+
+  // ---------- 提示词预设 ----------
+  // 存服务端 data/prompt-presets.json：换浏览器、换项目、换机器都还在。
+  // 一条预设同时存纯文本和 html —— 标题 / 列表 / 加粗那些排版插回去不能丢。
+  async function presetsApi(payload) {
+    try {
+      const r = await fetch('/api/prompts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) { flash(j.error || '预设操作失败'); return null; }
+      textPresets = j.items || [];
+      return j;
+    } catch {
+      flash('预设没存上：服务端没响应');
+      return null;
+    }
+  }
+
+  async function loadPresets(force) {
+    if (textPresets && !force) return textPresets;
+    try {
+      const j = await (await fetch('/api/prompts')).json();
+      textPresets = j.items || [];
+    } catch { textPresets = []; }
+    return textPresets;
+  }
+
+  function closePresetPop() {
+    if (!presetPop) return;
+    presetPop.remove();
+    presetPop = null;
+  }
+
+  // 把一条预设写进编辑器：mode=insert 插在光标处，mode=replace 整段换掉
+  function presetApply(n, p, mode) {
+    const h = textEditors.get(n.id);
+    const ed = activeTextEd(n);
+    if (!ed) return;
+    if (!textFull && h && !h.ed.isContentEditable) {
+      h.setEditing(true);
+      const r = document.createRange();
+      r.selectNodeContents(h.ed);
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    }
+    ed.focus();
+    const html = p.html || textToHtml(p.text || '');
+    if (mode === 'replace') {
+      ed.innerHTML = html;
+    } else {
+      // 走 execCommand 而不是直接拼字符串：光标位置、撤销栈都由浏览器管
+      document.execCommand('styleWithCSS', false, false);
+      document.execCommand('insertHTML', false, html);
+    }
+    textAbsorb(n);
+    syncTextToolStates(n);
+    closePresetPop();
+    flash(`${mode === 'replace' ? '已用预设替换' : '已插入预设'}：${p.name}`);
+  }
+
+  async function savePresetFrom(n, done) {
+    const text = String(n.value || '').trim();
+    if (!text) { flash('这个节点还没有提示词'); return; }
+    const name = prompt('预设名称（留空就用前 16 个字）', text.slice(0, 16));
+    if (name == null) return;
+    const j = await presetsApi({ op: 'save', name: name.trim(), text, html: n.html || '' });
+    if (!j) return;
+    flash(`已存为预设：${(j.item || {}).name || name}`);
+    if (done) done();
+  }
+
+  async function openTextPresets(n, anchor) {
+    if (presetPop) { closePresetPop(); return; }
+    const pop = document.createElement('div');
+    pop.className = 'text-preset-pop';
+    pop.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const head = document.createElement('div');
+    head.className = 'tpp-head';
+    const title = document.createElement('span');
+    title.textContent = '提示词预设';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'tpp-btn tpp-save';
+    saveBtn.textContent = '存当前';
+    saveBtn.title = '把现在这个节点的提示词存成预设（标题 / 列表 / 加粗这些排版一起存）';
+    head.append(title, saveBtn);
+    const listEl = document.createElement('div');
+    listEl.className = 'tpp-list';
+    pop.append(head, listEl);
+    document.body.appendChild(pop);
+    presetPop = pop;
+
+    const render = () => {
+      listEl.innerHTML = '';
+      const items = textPresets || [];
+      if (!items.length) {
+        const empty = document.createElement('p');
+        empty.className = 'tpp-empty';
+        empty.textContent = '还没有预设：写完提示词点右上「存当前」，以后一键就能插回来。';
+        listEl.appendChild(empty);
+        return;
+      }
+      items.forEach((p) => {
+        const row = document.createElement('div');
+        row.className = 'tpp-item';
+        row.title = '点击插入到光标处';
+        const nm = document.createElement('div');
+        nm.className = 'tpp-name';
+        nm.textContent = p.name;
+        const pv = document.createElement('div');
+        pv.className = 'tpp-prev';
+        pv.textContent = String(p.text || '').replace(/\s+/g, ' ').slice(0, 90);
+        const ops = document.createElement('div');
+        ops.className = 'tpp-ops';
+        const rep = document.createElement('button');
+        rep.type = 'button';
+        rep.className = 'tpp-btn';
+        rep.textContent = '替换';
+        rep.title = '用这条预设替换整段提示词';
+        rep.onclick = (ev) => { ev.stopPropagation(); presetApply(n, p, 'replace'); };
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'tpp-btn tpp-del';
+        del.textContent = '×';
+        del.title = '删除这条预设';
+        del.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (!confirm(`删除预设「${p.name}」？`)) return;
+          if (!await presetsApi({ op: 'remove', ids: [p.id] })) return;
+          render();
+        };
+        ops.append(rep, del);
+        row.append(nm, pv, ops);
+        row.onclick = () => presetApply(n, p, 'insert');
+        listEl.appendChild(row);
+      });
+    };
+    saveBtn.onclick = () => savePresetFrom(n, render);
+
+    // 贴在按钮下方；下方放不下就翻到上方（和颜色气泡同一套算法）
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth || 280, h = pop.offsetHeight || 240;
+    const left = clamp(r.left + r.width / 2 - w / 2, 10, Math.max(10, window.innerWidth - w - 10));
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 10) top = Math.max(10, r.top - h - 6);
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+
+    render();
+    await loadPresets(true);
+    render();
+    setTimeout(() => {
+      if (presetPop !== pop) return;
+      document.addEventListener('pointerdown', closePresetPop, { once: true });
+    }, 0);
+  }
+
+  // ---------- 全屏编辑 ----------
+  function closeTextFull() {
+    if (!textFull) return;
+    const { n, root } = textFull;
+    textFull = null;
+    root.remove();
+    if (n) rerenderNode(n.id, true);     // 节点里那块要跟着换成新内容
+    updateTextTools();
+  }
+
+  function openTextFull(n) {
+    if (textFull) { closeTextFull(); return; }
+    // 节点里那个先退出编辑态，免得两块编辑器抢焦点
+    const h = textEditors.get(n.id);
+    if (h && h.ed.isContentEditable) h.setEditing(false);
+    const root = document.createElement('div');
+    root.id = 'textFull';
+    const panel = document.createElement('div');
+    panel.className = 'tf-panel';
+    panel.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const head = document.createElement('div');
+    head.className = 'tf-head';
+    head.innerHTML = `<span class="tf-name">${esc(n.title || '提示词')} · 全屏编辑</span>`;
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'tf-done';
+    done.textContent = '完成';
+    done.onclick = () => closeTextFull();
+    head.appendChild(done);
+    const bar = document.createElement('div');
+    bar.className = 'tf-bar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', '提示词格式');
+    bar.addEventListener('pointerdown', (ev) => ev.preventDefault());
+    makeTextButtons(bar, true);
+    const ed = document.createElement('div');
+    ed.className = 'tf-ed';
+    ed.contentEditable = 'true';
+    ed.spellcheck = false;
+    ed.dataset.ph = '写提示词…';
+    ed.style.background = n.bg || TEXT_BG_DEFAULT;
+    ed.innerHTML = n.html != null ? n.html : textToHtml(n.value || '');
+    const syncEmpty = () => ed.classList.toggle('is-empty', !richToText(ed).length);
+    const absorb = () => {
+      n.html = ed.innerHTML;
+      n.value = richToText(ed);
+      syncEmpty();
+      queueSave();
+    };
+    ed.oninput = absorb;
+    ed.onkeydown = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeTextFull();
+    };
+    panel.append(head, bar, ed);
+    root.appendChild(panel);
+    root.addEventListener('pointerdown', (ev) => { if (ev.target === root) closeTextFull(); });
+    document.body.appendChild(root);
+    textFull = { n, root, ed, absorb };
+    syncEmpty();
+    ed.focus();
+    const r = document.createRange();
+    r.selectNodeContents(ed);
+    r.collapse(false);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    updateTextTools();
+  }
+
+  // 光标在加粗段落里 → B 按钮亮着，不然点了不知道有没有生效
+  document.addEventListener('selectionchange', () => {
+    if (!textToolsEl || textToolsEl.classList.contains('hidden')) return;
+    const n = textToolNode();
+    if (n) syncTextToolStates(n);
+  });
 
   // 下载 = 把这张图原样存到本地。**不经过 canvas 重编码**：canvas 只能出 PNG，
   // 而用户贴进来的 JPEG 存成 PNG 会大好几倍；这里直接拿原字节，扩展名跟着 MIME 走。

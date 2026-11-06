@@ -1768,14 +1768,643 @@ try {
   check('画布放大上限 800%', zoom.spun === '800%' && zoom.scale8 && zoom.hasPresets && zoom.preset === '800%',
     JSON.stringify(zoom));
 
-  // 圆形 dock / 视图工具
+  // 悬浮控制条：统一 12px 圆角矩形 + 条内按钮 8px 圆角（不再是胶囊 / 正圆），四条条同高
   const shapes = await page.evaluate(`(() => ({
     bar: getComputedStyle(document.getElementById('bar')).borderRadius,
     vt: getComputedStyle(document.getElementById('viewTools')).borderRadius,
-    prime: getComputedStyle(document.querySelector('#bar .icon.prime')).borderRadius
+    prime: getComputedStyle(document.querySelector('#bar .icon.prime')).borderRadius,
+    hs: ['projectBar', 'statusChip', 'viewTools', 'bar'].map((id) => Math.round(document.getElementById(id).getBoundingClientRect().height))
   }))()`);
-  check('dock / 视图工具为胶囊、白色加号为正圆',
-    shapes.bar === '999px' && shapes.vt === '999px' && shapes.prime === '999px', JSON.stringify(shapes));
+  check('dock / 视图工具为 12px 圆角矩形，白色加号为 8px 圆角，四条条同高',
+    shapes.bar === '12px' && shapes.vt === '12px' && shapes.prime === '8px'
+      && shapes.hs.every((h) => h === shapes.hs[0]), JSON.stringify(shapes));
+
+  // 从端口拖到空白 → 菜单里挑节点：建完必须顺手接上。
+  // 用户是从端口一路拖出来松手的，看到一个没连上的新节点等于白拖一次
+  // （文本 / 图片这两支以前就是这样：只有「工作流」和「图片输出」接了线）。
+  const linkBlank = await page.evaluate(`(() => {
+    const port = document.querySelector('#nodes .node .port.out');
+    if (!port) return null;
+    let pt = null;
+    for (let y = 120; y < window.innerHeight - 120 && !pt; y += 60) {
+      for (let x = 900; x < window.innerWidth - 60; x += 60) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('.node, .group, .popmenu, #dockWrap, #viewTools, #minimap, #topBar, #canvasEmpty')) { pt = [x, y]; break; }
+      }
+    }
+    if (!pt) return null;
+    const r = port.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    port.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: pt[0], clientY: pt[1], buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: pt[0], clientY: pt[1], buttons: 0 }));
+    return pt;
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const linkMenuPick = await page.evaluate(`(() => {
+    const btn = [...document.querySelectorAll('.popmenu button')].find((b) => b.textContent.trim() === '文本节点');
+    if (!btn) return { picked: false, menu: [...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()) };
+    btn.click();
+    return { picked: true };
+  })()`);
+  await new Promise((r) => setTimeout(r, 700));
+  const linkMenuNew = await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const last = nodes[nodes.length - 1];
+    return { id: last && last.dataset.id, inLinked: !!(last && last.querySelector('.port.in.linked')) };
+  })()`);
+  check('拖到空白建节点：建完自动接上（不是建了个散节点）',
+    !!linkBlank && linkMenuPick.picked && linkMenuNew.inLinked,
+    JSON.stringify({ linkBlank, linkMenuPick, linkMenuNew }));
+
+  // 端口外那圈 6px 隐形命中区是给「抓」用的，松手不能也认它：
+  // 两个挨着的节点之间整片都会变成连接区，用户拖出去想新建节点会被旁边的口抢走
+  // （报的「拖出去自动吸住」）。这里把落点放在别的端口 20px 外的空白处，
+  // 必须弹「接一个节点」，不能被吸过去直接连线。
+  const magnet = await page.evaluate(`(() => {
+    const out = document.querySelector('#nodes .node .port.out');
+    if (!out) return null;
+    const fromId = out.dataset.port.split(':')[0];
+    for (const inp of document.querySelectorAll('#nodes .node .port.in')) {
+      const toId = inp.dataset.port.split(':')[0];
+      if (toId === fromId) continue;
+      const r = inp.getBoundingClientRect();
+      const pt = [Math.round(r.left - 20), Math.round(r.top + r.height / 2)];
+      const el = document.elementFromPoint(pt[0], pt[1]);
+      if (!el || el.closest('.node, .port, .popmenu, #dockWrap, #viewTools, #minimap, #topBar')) continue;
+      const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      const or = out.getBoundingClientRect();
+      out.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: or.left + or.width / 2, clientY: or.top + or.height / 2, buttons: 1 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: pt[0], clientY: pt[1], buttons: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: pt[0], clientY: pt[1], buttons: 0 }));
+      return { pt, toId };
+    }
+    return null;
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const magnetMenu = await page.evaluate(`JSON.stringify([...document.querySelectorAll('.popmenu')].map((m) => m.textContent.replace(/\\s+/g, ' ').trim()))`);
+  check('端口吸附不越界：落在别家端口 20px 外要弹菜单，不能直接吸住',
+    !magnet || magnetMenu.includes('接一个节点'), JSON.stringify({ magnet, magnetMenu }));
+  await page.evaluate(`document.querySelectorAll('.popmenu').forEach((m) => m.remove())`);
+
+  // 多选拖线：选中两个节点后从一个的输出口拖到同一个目标，两个都要接上
+  // （用户要的「多选可以同时拖拽连接同一节点」）
+  const batch = await page.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll('#nodes .node')];
+    const target = nodes.find((n) => n.classList.contains('image') && !n.querySelector('.port.in.linked'));
+    if (!target) return null;
+    const srcs = nodes.filter((n) => n !== target && n.querySelector('.port.out')).slice(0, 2);
+    if (srcs.length < 2) return null;
+    const pick = (el, shift) => {
+      const t = el.querySelector('.node-title') || el;
+      const r = t.getBoundingClientRect();
+      const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, shiftKey: shift };
+      t.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, buttons: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, buttons: 0 }));
+    };
+    pick(srcs[0], false);
+    pick(srcs[1], true);
+    const before = document.querySelectorAll('#links path').length;
+    const out = srcs[0].querySelector('.port.out');
+    const inp = target.querySelector('.port.in');
+    const or = out.getBoundingClientRect();
+    const ir = inp.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    out.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: or.left + or.width / 2, clientY: or.top + or.height / 2, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: ir.left + ir.width / 2, clientY: ir.top + ir.height / 2, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: ir.left + ir.width / 2, clientY: ir.top + ir.height / 2, buttons: 0 }));
+    return { before, targetId: target.dataset.id, srcIds: srcs.map((n) => n.dataset.id), sel: document.querySelectorAll('#nodes .node.selected').length };
+  })()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const batchAfter = await page.evaluate(`(() => ({
+    paths: document.querySelectorAll('#links path').length,
+    flash: (document.getElementById('queueBadge') || {}).textContent || '',
+  }))()`);
+  check('多选拖线：选中的节点一起接到同一个目标',
+    !!batch && batchAfter.flash.includes('已连上 2 个节点') && batchAfter.paths > batch.before,
+    JSON.stringify({ batch, batchAfter }));
+  await page.evaluate(`document.querySelectorAll('.popmenu').forEach((m) => m.remove())`);
+
+  // 框选连线：拖一个框罩住某条线的中段，松手后这条线要被选中（提示里给条数）
+  const marqueeLink = await page.evaluate(`(() => {
+    const p = document.querySelector('#links .link-line');
+    if (!p) return null;
+    const pt = p.getPointAtLength(p.getTotalLength() / 2);
+    const m = p.getScreenCTM();
+    const mid = { x: Math.round(m.a * pt.x + m.c * pt.y + m.e), y: Math.round(m.b * pt.x + m.d * pt.y + m.f) };
+    let start = null;
+    for (let d = 24; d <= 140 && !start; d += 8) {
+      for (const [dx, dy] of [[-d, -d], [-d, d], [d, -d], [d, d]]) {
+        const x = mid.x + dx, y = mid.y + dy;
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('.node, .port, #links, .popmenu, #dockWrap, #viewTools, #minimap, #topBar')) { start = { x, y }; break; }
+      }
+    }
+    if (!start) return null;
+    const end = { x: 2 * mid.x - start.x, y: 2 * mid.y - start.y };
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    const stage = document.getElementById('stage');
+    stage.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: start.x, clientY: start.y, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: end.x, clientY: end.y, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: end.x, clientY: end.y, buttons: 0 }));
+    return { mid, start, end };
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const marqueeState = await page.evaluate(`(() => ({
+    sel: document.querySelectorAll('#links .link-line.sel').length,
+    flash: (document.getElementById('queueBadge') || {}).textContent || '',
+  }))()`);
+  check('框选连线：框住曲线中段就能选中，提示给出条数',
+    !!marqueeLink && marqueeState.sel > 0 && marqueeState.flash.includes('条连线'),
+    JSON.stringify({ marqueeLink, marqueeState }));
+  // 收掉这次框选（点一下空白即可），别让后面的用例带着选中态跑
+  await page.evaluate(`(() => {
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    const stage = document.getElementById('stage');
+    stage.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: 8, clientY: 8, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: 8, clientY: 8, buttons: 0 }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 200));
+
+  // 左侧输入口拖到空白：语义是「添加上下文」，要弹出上游菜单并把新节点接进这一口。
+  // 以前这条路径只在「正好松手在别的输出口上」才有反应，拖到空白什么都不发生。
+  const srcDrag = await page.evaluate(`(() => {
+    const port = [...document.querySelectorAll('#nodes .node .port.in')].find((p) => !p.classList.contains('linked'));
+    if (!port) return null;
+    const nodeId = port.dataset.port.split(':')[0];
+    let pt = null;
+    for (let y = 120; y < window.innerHeight - 120 && !pt; y += 60) {
+      for (let x = 900; x < window.innerWidth - 60; x += 60) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('.node, .group, .popmenu, #dockWrap, #viewTools, #minimap, #topBar, #canvasEmpty')) { pt = [x, y]; break; }
+      }
+    }
+    if (!pt) return null;
+    const r = port.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    port.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: pt[0], clientY: pt[1], buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: pt[0], clientY: pt[1], buttons: 0 }));
+    return { nodeId, pt };
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const srcMenu = await page.evaluate(`(() => {
+    const menu = document.querySelector('.popmenu');
+    const title = menu ? (menu.textContent || '').trim().slice(0, 5) : '';
+    // 菜单项随目标节点类型变（文本节点的输入口只吃图片），所以取第一项，别写死文字
+    const btn = menu && menu.querySelector('button');
+    if (!btn) return { title, items: menu ? [...menu.querySelectorAll('button')].map((b) => b.textContent.trim()) : [] };
+    btn.click();
+    return { title, picked: true };
+  })()`);
+  await new Promise((r) => setTimeout(r, 800));
+  const srcTargetId = (srcDrag && srcDrag.nodeId) || '';
+  const srcLinked = await page.evaluate(`(() => {
+    const port = document.querySelector('[data-port="${srcTargetId}:in"]');
+    return { linked: !!(port && port.classList.contains('linked')), nodes: document.querySelectorAll('#nodes .node').length };
+  })()`);
+  check('左输入口拖到空白：弹「添加上下文」，建完接进这一口',
+    !!srcDrag && srcMenu.title === '添加上下文' && !!srcMenu.picked && srcLinked.linked,
+    JSON.stringify({ srcDrag, srcMenu, srcLinked }));
+
+  // 空图片节点上不再摆「上传图片 / 文本生图」两颗按钮：面板里本来就有「上传」和提示词框，
+  // 两颗都是重复入口（用户原话：没有实际用处）
+  const emptyTry = await page.evaluate(`(() => ({
+    tries: document.querySelectorAll('.try-item, .thumb-empty .try').length,
+    icons: document.querySelectorAll('.thumb-empty .ph-big').length,
+  }))()`);
+  check('空图片节点只剩大图标，没有「上传图片 / 文本生图」按钮',
+    emptyTry.tries === 0 && emptyTry.icons > 0, JSON.stringify(emptyTry));
+
+  // 空节点平时必须是「空的」：不摆任何推荐内容，只有鼠标进来才浮出提示
+  // （用户报过「在没有任何操作的情况下绿色区域会显示推荐内容」）
+  const hintIdle = await page.evaluate(`(() => {
+    const h = document.querySelector('.node .thumb-hint');
+    return h ? { opacity: getComputedStyle(h).opacity, text: h.textContent.trim() } : null;
+  })()`);
+  const hintBox = await page.evaluate(`(() => {
+    const t = document.querySelector('.node .thumb.is-empty');
+    if (!t) return null;
+    const r = t.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  if (hintBox) await page.clickAt(hintBox.x, hintBox.y, { settle: 350 });
+  const hintHover = await page.evaluate(`(() => {
+    const h = document.querySelector('.node .thumb-hint');
+    return h ? getComputedStyle(h).opacity : null;
+  })()`);
+  check('空节点默认不显示任何内容，悬停才浮出「双击上传」提示',
+    !!hintIdle && hintIdle.opacity === '0' && hintHover === '1'
+      && hintIdle.text.includes('双击上传'), JSON.stringify({ hintIdle, hintHover }));
+
+  // 提示词框：无边框（不要输入框那种方框感），拖右下角手柄能自由改高，
+  // 双击手柄退回「按内容自动长高」（用户：将提示词框修改成无边框，可自由放大缩小）
+  const textBox = await page.evaluate(`(() => {
+    const node = document.querySelector('#nodes .node.text');
+    const ta = node && node.querySelector('.text-body');
+    const hd = node && node.querySelector('.node-resize');
+    if (!ta || !hd) return null;
+    const cs = getComputedStyle(ta);
+    const before = Math.round(ta.getBoundingClientRect().height);
+    const r = hd.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const o = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    hd.dispatchEvent(new PointerEvent('pointerdown', { ...o, clientX: cx, clientY: cy, buttons: 1 }));
+    // 只往下拉：横向位移为 0，宽度保持默认，别把后面用例的坐标算歪
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: cx, clientY: cy + 90, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...o, clientX: cx, clientY: cy + 90, buttons: 0 }));
+    return {
+      border: cs.borderTopWidth, bg: cs.backgroundColor, shadow: cs.boxShadow,
+      before, after: Math.round(ta.getBoundingClientRect().height),
+      overflowY: getComputedStyle(ta).overflowY,
+    };
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  check('提示词框无边框：透明底、无描边、无阴影',
+    !!textBox && textBox.border === '0px' && textBox.bg === 'rgba(0, 0, 0, 0)' && textBox.shadow === 'none',
+    JSON.stringify(textBox));
+  check('提示词框可自由拉高：拖手柄变高并切成滚动',
+    !!textBox && textBox.after > textBox.before + 40 && textBox.overflowY === 'auto',
+    JSON.stringify(textBox));
+
+  const textReset = await page.evaluate(`(() => {
+    const hd = document.querySelector('#nodes .node.text .node-resize');
+    if (!hd) return null;
+    hd.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const ta = document.querySelector('#nodes .node.text .text-body');
+    return { h: Math.round(ta.getBoundingClientRect().height), overflowY: getComputedStyle(ta).overflowY };
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const textResetAfter = await page.evaluate(`(() => {
+    const ta = document.querySelector('#nodes .node.text .text-body');
+    return { h: Math.round(ta.getBoundingClientRect().height), overflowY: getComputedStyle(ta).overflowY };
+  })()`);
+  // 双击后必须真的回到自动高度：高度退回去、overflow 变回 hidden
+  check('提示词框双击手柄：退回按内容自动高度',
+    !!textReset && textResetAfter.overflowY === 'hidden'
+      && textResetAfter.h <= (textBox ? textBox.before + 4 : 999),
+    JSON.stringify({ textReset, textResetAfter, before: textBox && textBox.before }));
+
+  // 底色 #262626 + 平时只读：画布上滚动/点选都要经过这块字，一碰就进输入态迟早改错提示词
+  const skin = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node.text');
+    const ta = n.querySelector('.text-body');
+    const cs = getComputedStyle(ta);
+    return {
+      bg: getComputedStyle(n.querySelector('.node-card')).backgroundColor,
+      caret: cs.caretColor, cursor: cs.cursor, editable: ta.isContentEditable,
+      len: ta.textContent.length, editing: n.classList.contains('editing'),
+    };
+  })()`);
+  check('提示词框：默认底色 #262626 + 平时只读（没有光标、不是 text 光标）',
+    skin.bg === 'rgb(38, 38, 38)' && skin.editable === false && !skin.editing
+      && skin.caret === 'rgba(0, 0, 0, 0)' && skin.cursor === 'default',
+    JSON.stringify(skin));
+
+  const taPt = await page.evaluate(`(() => {
+    const r = document.querySelector('#nodes .node.text .text-body').getBoundingClientRect();
+    return { x: Math.round(r.left + 30), y: Math.round(r.top + 18) };
+  })()`);
+  const typeZ = async () => {
+    await page.send('Input.dispatchKeyEvent', {
+      type: 'char', text: 'Z', unmodifiedText: 'Z', key: 'Z', code: 'KeyZ',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+  };
+  // 单击 = 选中节点，不进编辑态；这时候打字必须改不动内容（防误触的核心）
+  await page.clickAt(taPt.x, taPt.y, { settle: 250 });
+  await typeZ();
+  const afterClick = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node.text');
+    const ta = n.querySelector('.text-body');
+    return { editable: ta.isContentEditable, editing: n.classList.contains('editing'), len: ta.textContent.length };
+  })()`);
+  check('提示词框单击不编辑：只读，打字改不动内容',
+    afterClick.editable === false && !afterClick.editing && afterClick.len === skin.len,
+    JSON.stringify({ afterClick, before: skin.len }));
+
+  // 双击才进编辑态：可以打字，Esc 退出回到只读
+  await page.clickAt(taPt.x, taPt.y, { clickCount: 2, settle: 320 });
+  const inEdit = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node.text');
+    const ta = n.querySelector('.text-body');
+    return { editable: ta.isContentEditable, editing: n.classList.contains('editing'), caret: getComputedStyle(ta).caretColor };
+  })()`);
+  await typeZ();
+  const typed = await page.evaluate(`document.querySelector('#nodes .node.text .text-body').textContent.length`);
+  await page.key('Escape', { settle: 300 });
+  const afterEsc = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node.text');
+    const ta = n.querySelector('.text-body');
+    return { editable: ta.isContentEditable, editing: n.classList.contains('editing'), focus: document.activeElement === ta };
+  })()`);
+  check('提示词框双击才进编辑：光标回来、能打字，Esc 退出回只读',
+    inEdit.editable === true && inEdit.editing && inEdit.caret !== 'rgba(0, 0, 0, 0)'
+      && typed === skin.len + 1 && afterEsc.editable === false && !afterEsc.editing && !afterEsc.focus,
+    JSON.stringify({ inEdit, typed, afterEsc, before: skin.len }));
+  // 把试打的那个字符抹掉，别留给后面的用例
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('#nodes .node.text .text-body');
+    if (ta.innerHTML.endsWith('Z')) ta.innerHTML = ta.innerHTML.slice(0, -1);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+
+  // ---- 提示词格式条（用户：与图片功能顶部的功能条一致）----
+  // 单选文本节点就浮出来，7 个按钮：颜色 / 标题 / 列表 / 加粗 / 斜体 / 分割线 / 展开
+  const tbar = await page.evaluate(`(() => {
+    const bar = document.getElementById('textTools');
+    if (!bar) return null;
+    const cs = getComputedStyle(bar);
+    const dot = bar.querySelector('[data-tool="color"] .it-dot');
+    const first = bar.querySelector('.it-btn');
+    return {
+      hidden: bar.classList.contains('hidden'),
+      btns: [...bar.querySelectorAll('.it-btn')].map((b) => b.dataset.tool),
+      labels: [...bar.querySelectorAll('.it-btn span')].map((s) => s.textContent),
+      seps: bar.querySelectorAll('.it-sep').length,
+      h: Math.round(bar.getBoundingClientRect().height),
+      radius: cs.borderRadius,
+      btnRadius: first ? getComputedStyle(first).borderRadius : '',
+      dot: dot ? getComputedStyle(dot).backgroundColor : null,
+      dotSize: dot ? Math.round(dot.getBoundingClientRect().width) : 0,
+      top: Math.round(bar.getBoundingClientRect().top),
+      nodeTop: Math.round(document.querySelector('#nodes .node.text').getBoundingClientRect().top),
+    };
+  })()`);
+  check('提示词格式条：单选文本节点就浮出，7 个按钮齐全且顺序对',
+    !!tbar && tbar.hidden === false
+      && tbar.btns.join(',') === 'color,h,ol,b,i,hr,preset,expand'
+      && tbar.labels.join(',') === '颜色,标题,列表,加粗,斜体,分割线,预设,展开',
+    JSON.stringify(tbar));
+  check('格式条与图片工具条同一套壳：12px 圆角、按钮 8px、浮在节点上方',
+    !!tbar && tbar.h >= 30 && tbar.h <= 40 && tbar.radius === '12px' && tbar.btnRadius === '8px'
+      && tbar.top < tbar.nodeTop, JSON.stringify(tbar));
+  check('颜色按钮上带当前底色的小圆点（默认 #262626）',
+    !!tbar && tbar.dot === 'rgb(38, 38, 38)' && tbar.dotSize >= 6 && tbar.dotSize <= 12,
+    JSON.stringify({ dot: tbar && tbar.dot, size: tbar && tbar.dotSize }));
+
+  // 逐项验证命令真的写进 html（语义标签，不是一堆行内 style）。
+  // 每次都从同一段干净内容起：选中整段再点按钮，等价于用户拖选后点格式。
+  const fmt = (kind) => page.evaluate(`(() => {
+    const ed = document.querySelector('#nodes .node.text .text-body');
+    const btn = document.querySelector('#textTools [data-tool="${kind}"]');
+    if (!ed || !btn) return null;
+    ed.innerHTML = '<div>柔和侧光</div><div>浅景深</div>';
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+    ed.focus();
+    const r = document.createRange();
+    r.selectNodeContents(ed);
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    btn.click();
+    return { html: ed.innerHTML, text: ed.textContent, on: btn.classList.contains('on') };
+  })()`);
+  const fmtB = await fmt('b');
+  check('加粗：选中整段点「B」→ 写出 <b>，纯文本不受影响',
+    !!fmtB && /<b>/i.test(fmtB.html) && /柔和侧光/.test(fmtB.text), JSON.stringify(fmtB));
+  const fmtI = await fmt('i');
+  check('斜体：点「I」→ 写出 <i>',
+    !!fmtI && /<i>/i.test(fmtI.html) && /浅景深/.test(fmtI.text), JSON.stringify(fmtI));
+  const fmtH = await fmt('h');
+  check('标题：点「标题」→ 这一段变成 <h3>',
+    !!fmtH && /<h3>/i.test(fmtH.html) && /柔和侧光/.test(fmtH.text), JSON.stringify(fmtH));
+  const fmtOl = await fmt('ol');
+  check('列表：点「1.」→ 变成 <ol><li> 的有序列表',
+    !!fmtOl && /<ol>/i.test(fmtOl.html) && /<li>/i.test(fmtOl.html), JSON.stringify(fmtOl));
+
+  // 分割线插在光标处（不替换选中的内容）：先落到末尾再点
+  const fmthr = await page.evaluate(`(() => {
+    const ed = document.querySelector('#nodes .node.text .text-body');
+    const btn = document.querySelector('#textTools [data-tool="hr"]');
+    if (!ed || !btn) return null;
+    ed.innerHTML = '<div>柔和侧光</div><div>浅景深</div>';
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+    ed.focus();
+    const r = document.createRange();
+    r.selectNodeContents(ed);
+    r.collapse(false);
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    btn.click();
+    return { html: ed.innerHTML, hrs: ed.querySelectorAll('hr').length, text: ed.textContent };
+  })()`);
+  check('分割线：点「—」→ 插入 <hr>，原来的字都还在',
+    !!fmthr && fmthr.hrs === 1 && /柔和侧光/.test(fmthr.text) && /浅景深/.test(fmthr.text),
+    JSON.stringify(fmthr));
+
+  // 格式是「能看」也要「能存」：html 进存档、value 还是剥干净的纯文本
+  await new Promise((r) => setTimeout(r, 900));
+  const savedText = (() => {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(dataDir, 'projects', `${projId}.json`), 'utf8'));
+      return j.nodes.find((x) => x.id === 't1') || {};
+    } catch { return {}; }
+  })();
+  check('存档里 html 与 value 各存一份：html 带 <hr>，value 是纯文本（送模型的那份）',
+    /<hr/i.test(savedText.html || '') && /柔和侧光/.test(savedText.value || '')
+      && !/[<>]/.test(savedText.value || ''),
+    JSON.stringify({ html: savedText.html, value: savedText.value }));
+
+  // 换底色：点色板 → 卡片背景跟着变，存档里带 bg
+  const bgAfter = await page.evaluate(`(() => {
+    const btn = document.querySelector('#textTools [data-tool="color"]');
+    btn.click();
+    const pop = document.querySelector('.text-color-pop');
+    if (!pop) return { pop: false };
+    const sw = [...pop.querySelectorAll('.tcp-swatch')];
+    const target = sw.find((b) => b.dataset.color === '#22303c') || sw[4];
+    const info = {
+      pop: true, swatches: sw.length,
+      hasCustom: !!pop.querySelector('input[type="color"]'),
+      hasReset: !!pop.querySelector('.tcp-reset'),
+      on: sw.filter((b) => b.classList.contains('on')).map((b) => b.dataset.color),
+    };
+    target.click();
+    const card = document.querySelector('#nodes .node.text .node-card');
+    const dot = document.querySelector('#textTools [data-tool="color"] .it-dot');
+    return {
+      ...info, bg: getComputedStyle(card).backgroundColor,
+      dot: getComputedStyle(dot).backgroundColor,
+      closed: !document.querySelector('.text-color-pop'),
+    };
+  })()`);
+  check('换底色：色板气泡有 8 个色 + 自定义 + 恢复默认，点一下卡片和圆点一起变、气泡收起',
+    !!bgAfter && bgAfter.pop && bgAfter.swatches === 8 && bgAfter.hasCustom && bgAfter.hasReset
+      && bgAfter.on.join(',') === '#262626' && bgAfter.bg === 'rgb(34, 48, 60)'
+      && bgAfter.dot === 'rgb(34, 48, 60)' && bgAfter.closed === true,
+    JSON.stringify(bgAfter));
+  await new Promise((r) => setTimeout(r, 900));
+  const savedBg = (() => {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(dataDir, 'projects', `${projId}.json`), 'utf8'));
+      return (j.nodes.find((x) => x.id === 't1') || {}).bg;
+    } catch { return null; }
+  })();
+  check('换过的底色存进存档（刷新后还在）', savedBg === '#22303c', String(savedBg));
+
+  // 展开：全屏编辑打开（里面的格式条不重复「展开」按钮），Esc 关闭
+  const full = await page.evaluate(`(() => {
+    document.querySelector('#textTools [data-tool="expand"]').click();
+    const root = document.getElementById('textFull');
+    if (!root) return { open: false };
+    const ed = root.querySelector('.tf-ed');
+    return {
+      open: true,
+      w: Math.round(root.querySelector('.tf-panel').getBoundingClientRect().width),
+      btns: [...root.querySelectorAll('.it-btn')].map((b) => b.dataset.tool),
+      editable: ed.isContentEditable,
+      len: ed.textContent.length,
+      barHidden: document.getElementById('textTools').classList.contains('hidden'),
+      bg: getComputedStyle(ed).backgroundColor,
+    };
+  })()`);
+  check('展开：全屏编辑打开，里面有同一排格式按钮（不重复「展开」），格式条自己让位',
+    !!full && full.open && full.w >= 700 && full.btns.join(',') === 'color,h,ol,b,i,hr,preset'
+      && full.editable === true && full.len >= 4 && full.barHidden === true,
+    JSON.stringify(full));
+  await page.key('Escape', { settle: 400 });
+  const fullClosed = await page.evaluate(`(() => ({
+    open: !!document.getElementById('textFull'),
+    barHidden: document.getElementById('textTools').classList.contains('hidden'),
+    len: document.querySelector('#nodes .node.text .text-body').textContent.length,
+  }))()`);
+  check('全屏编辑 Esc 关闭：节点里那块内容还在（不是只改了浮层）',
+    fullClosed.open === false && fullClosed.barHidden === false && fullClosed.len >= 4,
+    JSON.stringify(fullClosed));
+
+  // 恢复成 fixture 里那段原文，后面的用例还得用
+  // 文案四边留白一致：从文档 / 网页粘进来的提示词多半是 <p> 包着的，浏览器给 <p> 的
+  // 默认外边距是 1em，第一行上面、最后一行下面会凭空多出十几像素，左右却还是 10px——
+  // 看着就是「上边距比左右宽」。这条把四个方向量出来对齐（字形到卡片边框）。
+  const pad = await page.evaluate(`(() => {
+    const node = document.querySelector('#nodes .node.text');
+    const ed = node.querySelector('.text-body');
+    ed.innerHTML = '<p>创意，想象，大幅留白，高饱和度对比，抽象表现主义，克制的笔触，质感的颜料堆积，莱杰希斯。</p>';
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+    const cr = node.querySelector('.node-card').getBoundingClientRect();
+    const rects = [];
+    const w = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+    for (let t = w.nextNode(); t; t = w.nextNode()) {
+      if (!t.nodeValue.trim()) continue;
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      rects.push(...[...r.getClientRects()].filter((x) => x.height > 2));
+    }
+    return {
+      tag: ed.firstElementChild && ed.firstElementChild.tagName,
+      L: Math.round(Math.min(...rects.map((r) => r.left)) - cr.left),
+      T: Math.round(Math.min(...rects.map((r) => r.top)) - cr.top),
+      B: Math.round(cr.bottom - Math.max(...rects.map((r) => r.bottom))),
+    };
+  })()`);
+  check('文案四边留白一致：<p> 包着的提示词，上下留白和左右一样（默认外边距已压平）',
+    !!pad && pad.tag === 'P' && Math.abs(pad.T - pad.L) <= 3 && Math.abs(pad.B - pad.L) <= 4,
+    JSON.stringify(pad));
+
+  // ---- 提示词预设：把常用的存起来，一键插回来 ----
+  await page.evaluate(`window.prompt = () => 'E2E 预设'`);
+  await page.evaluate(`document.querySelector('#textTools [data-tool="preset"]').click()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const pop0 = await page.evaluate(`(() => {
+    const p = document.querySelector('.text-preset-pop');
+    return p ? { open: true, empty: !!p.querySelector('.tpp-empty'), w: Math.round(p.getBoundingClientRect().width) }
+      : { open: false };
+  })()`);
+  check('格式条上的「预设」：弹出面板，没存过时先告诉你怎么用',
+    !!pop0.open && pop0.empty === true && pop0.w > 200, JSON.stringify(pop0));
+
+  await page.evaluate(`document.querySelector('.tpp-save').click()`);
+  await new Promise((r) => setTimeout(r, 800));
+  const pop1 = await page.evaluate(`(() => {
+    const items = [...document.querySelectorAll('.tpp-item')];
+    return { n: items.length, name: (items[0] || {}).textContent || '',
+      prev: (document.querySelector('.tpp-prev') || {}).textContent || '' };
+  })()`);
+  const savedOnDisk = await page.evaluate(
+    `(async () => (await (await fetch('/api/prompts')).json()).items.map((x) => x.name))()`);
+  check('「存当前」把这条提示词存成预设：面板里出现，服务端也真存了',
+    pop1.n >= 1 && pop1.name.includes('E2E 预设') && savedOnDisk.includes('E2E 预设'),
+    JSON.stringify({ pop1, savedOnDisk }));
+
+  // 预览是一整行长文本：必须省略在条目里，不能把面板撑开（隐式 auto 列会被 nowrap 撑爆）。
+  // 「替换 / ×」常驻压暗，别只在悬停时冒出来——不然没人知道这条能改能删。
+  const popFit = await page.evaluate(`(() => {
+    const p = document.querySelector('.text-preset-pop');
+    const it = document.querySelector('.tpp-item');
+    const prev = it.querySelector('.tpp-prev');
+    const ops = it.querySelector('.tpp-ops');
+    const pr = p.getBoundingClientRect(), ir = it.getBoundingClientRect(), vr = prev.getBoundingClientRect();
+    return {
+      over: Math.round(vr.right - pr.right),
+      fit: Math.round(ir.width) <= Math.round(pr.width) + 1,
+      ops: ops ? getComputedStyle(ops).display : null,
+      opN: ops ? ops.children.length : 0,
+      ell: getComputedStyle(prev).textOverflow,
+    };
+  })()`);
+  check('预设条目不出界：长预览省略在条目里，「替换 / ×」常驻（压暗而非藏起来）',
+    popFit.over <= 0 && popFit.fit && popFit.ops === 'flex' && popFit.opN === 2 && popFit.ell === 'ellipsis',
+    JSON.stringify(popFit));
+
+  // 清空节点再点预设：整段插回来
+  await page.evaluate(`(() => {
+    const ed = document.querySelector('#nodes .node.text .text-body');
+    ed.innerHTML = '';
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await page.evaluate(`document.querySelector('.tpp-item').click()`);
+  await new Promise((r) => setTimeout(r, 450));
+  const inserted = await page.evaluate(
+    `document.querySelector('#nodes .node.text .text-body').textContent.trim()`);
+  const popClosed = await page.evaluate(`!document.querySelector('.text-preset-pop')`);
+  check('点一条预设就插回节点里（插完面板自己收起）',
+    inserted.length > 5 && popClosed === true, JSON.stringify({ inserted: inserted.slice(0, 40), popClosed }));
+
+  // 恢复成 fixture 里那段原文，后面的用例还得用
+  await page.evaluate(`(() => {
+    const ed = document.querySelector('#nodes .node.text .text-body');
+    ed.innerHTML = '<div>a cinematic portrait of a woman standing in a rain-soaked neon street</div>';
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+    const btn = document.querySelector('#textTools [data-tool="color"]');
+    if (btn) btn.click();
+    const rs = document.querySelector('.text-color-pop .tcp-reset');
+    if (rs) rs.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  // 端口圆点：必须压在卡片垂直中线上（左右两口都一样）。
+  // 20px 的端口配 18px 时代留下的 calc(50% - 9px)，整口会偏低 1px，放大后看得见。
+  const portAlign = await page.evaluate(`(() => {
+    const n = document.querySelector('#nodes .node.text');
+    const c = n.querySelector('.node-card').getBoundingClientRect();
+    const i = n.querySelector('.port.in').getBoundingClientRect();
+    const o = n.querySelector('.port.out').getBoundingClientRect();
+    const r = (v) => Math.round(v * 100) / 100;
+    return {
+      inD: r(i.top + i.height / 2 - (c.top + c.height / 2)),
+      outD: r(o.top + o.height / 2 - (c.top + c.height / 2)),
+      size: [Math.round(i.width), Math.round(i.height)],
+    };
+  })()`);
+  check('端口圆点压在卡片中线上：左右两口误差都 < 0.6px',
+    Math.abs(portAlign.inD) < 0.6 && Math.abs(portAlign.outD) < 0.6, JSON.stringify(portAlign));
+
+  // 拉伸手柄改隐藏式：平时完全看不见，也不再弹那条原生 tooltip
+  const hdIdle = await page.evaluate(`(() => {
+    const hd = document.querySelector('#nodes .node.text .node-resize');
+    return { opacity: getComputedStyle(hd).opacity, title: hd.getAttribute('title') || '', aria: hd.getAttribute('aria-label') || '' };
+  })()`);
+  const cardPt = await page.evaluate(`(() => {
+    const r = document.querySelector('#nodes .node.text .node-card').getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  await page.clickAt(cardPt.x, cardPt.y, { settle: 300 });
+  const hdHover = await page.evaluate(`getComputedStyle(document.querySelector('#nodes .node.text .node-resize')).opacity`);
+  check('缩放手柄隐藏式：悬停节点也不浮出、没有原生 tooltip',
+    hdIdle.opacity === '0' && hdIdle.title === '' && hdIdle.aria !== '' && hdHover === '0',
+    JSON.stringify({ hdIdle, hdHover }));
 
   // ---- 工作流库并进全局设置：左导航 + 右分格 ----
   // 以前是「设置一条长滚动」+「资产库一整个弹窗」：同一个工作流列表在两处渲染，
@@ -2806,8 +3435,9 @@ try {
     await new Promise((r) => setTimeout(r, 250));
     const el = [...document.querySelectorAll('#nodes .node.text')].pop();
     if (!el) return null;
-    const ta = el.querySelector('textarea');
-    ta.value = '来自提示词节点：雨夜巷口，霓虹反光';
+    const ta = el.querySelector('.text-body');
+    if (!ta) return null;
+    ta.innerHTML = '<div>来自提示词节点：雨夜巷口，霓虹反光</div>';
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     return el.dataset.id;
   })()`);
@@ -3006,6 +3636,113 @@ try {
   check('资产格子是正方形，且第二行整行落在第一行之下（不重叠）',
     Math.abs(aGeo.w - aGeo.h) <= 2 && aGeo.step >= aGeo.h + 6, JSON.stringify(aGeo));
 
+  // ---- 资产库：流畅度 / 宽度 / 框选 / 缩略图 ----
+  // 勾选一格只该改 class：以前每次点都 grid.innerHTML='' 重建全部格子，
+  // 浏览器得把看得见的十几张大图重新解码一遍，点一下卡一下。
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+  const reuse = await page.evaluate(`(() => {
+    const cell = document.querySelector('#assetPane .asset-cell');
+    const img = cell.querySelector('img');
+    img.dataset.mark = 'first';
+    cell.click();
+    const after = document.querySelector('#assetPane .asset-cell img');
+    return { same: after.dataset.mark === 'first', on: cell.classList.contains('on') };
+  })()`);
+  check('勾选一格不重建格子：<img> 还是原来那个（省掉一次大图解码）',
+    reuse.same && reuse.on === true, JSON.stringify(reuse));
+
+  const thumb = await page.evaluate(`(() => {
+    const cell = [...document.querySelectorAll('#assetPane .asset-cell')]
+      .find((c) => (c.dataset.src || '').startsWith('/api/'));
+    if (!cell) return null;
+    const src = cell.querySelector('img').getAttribute('src') || '';
+    return { src: src.slice(0, 26), w: /[?&]w=320/.test(src), full: (cell.dataset.src || '').slice(0, 22) };
+  })()`);
+  check('格子里的图走缩略图接口，原图地址留在 data-src（点开大图还是原图）',
+    !!thumb && thumb.src.startsWith('/api/thumb') && thumb.w === true && thumb.full.startsWith('/api/'),
+    JSON.stringify(thumb));
+
+  // 框选：拖一个框，框到的格子一次全选中
+  const marqBox = await page.evaluate(`(() => {
+    const r = [...document.querySelectorAll('#assetPane .asset-cell')].map((c) => {
+      const b = c.getBoundingClientRect();
+      return { l: b.left, t: b.top, r: b.right, b: b.bottom };
+    });
+    const last = r[Math.min(3, r.length - 1)];
+    const hit = r.filter((x) => x.r >= r[0].l && x.l <= last.r && x.b >= r[0].t && x.t <= last.b).length;
+    return {
+      from: { x: Math.round(r[0].l + 3), y: Math.round(r[0].t + 3) },
+      to: { x: Math.round(last.r - 3), y: Math.round(last.b - 3) },
+      hit, n: r.length,
+    };
+  })()`);
+  // 先把上一格勾选清掉（走「清空」按钮，别只手改 class——那会让内部状态对不上）
+  await page.evaluate(`document.querySelector('#assetPane .asset-none').click()`);
+  await new Promise((r) => setTimeout(r, 150));
+  await page.drag(marqBox.from, marqBox.to, { steps: 14, settle: 400 });
+  const marq = await page.evaluate(`({
+    on: document.querySelectorAll('#assetPane .asset-cell.on').length,
+    label: (document.querySelector('#assetPane .asset-sel') || {}).textContent,
+    left: !!document.querySelector('#assetPane .asset-marquee'),
+  })`);
+  check('框选：拖一个框，框到的格子一次全选中（不用一张张点）',
+    marqBox.hit >= 2 && marq.on === marqBox.hit && marq.label === `已选 ${marqBox.hit} 项`
+      && marq.left === false, JSON.stringify({ marqBox, marq }));
+
+  // 动作条：上行「选了什么」，下行「做什么」；「完成」离「删除」最远
+  const actBar = await page.evaluate(`(() => {
+    const rows = [...document.querySelectorAll('#assetPane .asset-actions .asset-arow')];
+    return {
+      rows: rows.map((r) => [...r.children].map((c) => (c.tagName === 'SELECT' ? 'select' : c.textContent.trim()))),
+    };
+  })()`);
+  check('动作条按「先选、再动手」重排：上行计数+全选/清空/完成，下行才是收进库/移动/删除',
+    actBar.rows.length === 2 && actBar.rows[0][0].startsWith('已选')
+      && actBar.rows[0].slice(1).join('/') === '全选/清空/完成'
+      && actBar.rows[1].join('/') === '收进库/select/删除', JSON.stringify(actBar));
+
+  // 顶栏那个「选择」在多选态里要让位：否则屏幕上并排两个「完成」，点哪个都行，反而犹豫。
+  const pickToggle = await page.evaluate(`(() => {
+    const b = document.querySelector('#assetPane .asset-pick');
+    return {
+      gone: b.classList.contains('gone'),
+      visible: getComputedStyle(b).display !== 'none',
+      q: Math.round(document.querySelector('#assetPane .asset-q').getBoundingClientRect().width),
+      done: document.querySelectorAll('#assetPane .asset-actions .asset-done').length,
+    };
+  })()`);
+  check('多选态里顶栏「选择」让位：全屏只有动作条一个「完成」，搜索框占满',
+    pickToggle.gone && !pickToggle.visible && pickToggle.done === 1 && pickToggle.q > 240,
+    JSON.stringify(pickToggle));
+
+  // 拖左边沿变宽：宫格列数跟着涨（不是把三列拉大）
+  const w0 = await page.evaluate(`Math.round(document.querySelector('#assetPane .asset-pane').getBoundingClientRect().width)`);
+  const gripPt = await page.evaluate(`(() => {
+    const r = document.querySelector('#assetPane .asset-grip').getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  await page.drag({ x: gripPt.x, y: gripPt.y }, { x: gripPt.x - 300, y: gripPt.y }, { steps: 12, settle: 400 });
+  const w1 = await page.evaluate(`(() => {
+    const pane = document.querySelector('#assetPane .asset-pane');
+    return {
+      w: Math.round(pane.getBoundingClientRect().width),
+      cols: getComputedStyle(document.querySelector('#assetPane .asset-grid')).gridTemplateColumns.split(' ').length,
+      saved: localStorage.getItem('infisheet-asset-w'),
+    };
+  })()`);
+  check('拖左边沿把抽屉拉宽：宫格多排几列（宽度记在本机，下次打开还是这么宽）',
+    w1.w >= w0 + 200 && w1.cols > 3 && Number(w1.saved) === w1.w,
+    JSON.stringify({ w0, w1 }));
+  await page.evaluate(`document.querySelector('#assetPane .asset-grip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 250));
+  const w2 = await page.evaluate(`Math.round(document.querySelector('#assetPane .asset-pane').getBoundingClientRect().width)`);
+  check('双击左边沿：宽度复位到默认', w2 === w0, `${w0} → ${w1.w} → ${w2}`);
+
+  // 退出多选态，后面的用例还要接着点格子
+  await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
+  await new Promise((r) => setTimeout(r, 200));
+
   // 计数文案有两种形态：还有别的来源时是「4 / 59 项」，只剩一个来源时退化成「4 项」
   // （app.js: `list.length === total ? total + ' 项' : list.length + ' / ' + total + ' 项'`）。
   // CI 里没有 ComfyUI，资产只有画布那几张 → 全部 == 画布 → 走的是「4 项」这一支，
@@ -3081,7 +3818,8 @@ try {
 
   // 放一张进画布：节点数 +1，落的图就是点的那一张
   const beforeAdd = await page.evaluate(`document.querySelectorAll('#nodes .node.image').length`);
-  const pickSrc = await page.evaluate(`document.querySelector('#assetPane .asset-cell img').getAttribute('src')`);
+  // 格子里的 <img> 现在是缩略图，原图地址在 data-src 上（点「＋」落进画布的是原图）
+  const pickSrc = await page.evaluate(`document.querySelector('#assetPane .asset-cell').dataset.src`);
   await page.evaluate(`document.querySelector('#assetPane .asset-cell .asset-add').click()`);
   await new Promise((r) => setTimeout(r, 900));
   const addRes = await page.evaluate(`(() => {
@@ -3237,14 +3975,15 @@ try {
   // 删除：真删（进系统回收站），原地址立刻 404，也不再留 .trash 目录
   // 按 src 找格子，不按下标：目录扫描顺序不是稳定的（NTFS 给什么顺序就是什么），
   // 按下标可能删到另一张，断言就成了「删对了才通过」的运气测试。
+  // 按 data-src（原图地址）找，不按 <img>：img 现在指向缩略图，名字被套了两层编码
   const pickCover = `(() => {
     const cell = [...document.querySelectorAll('#assetPane .asset-cell')]
-      .find((c) => decodeURIComponent(c.querySelector('img').getAttribute('src')).includes('封面'));
+      .find((c) => decodeURIComponent(c.dataset.src || '').includes('封面'));
     return cell || null;
   })()`;
   const delSrc = await page.evaluate(`(() => {
     const c = ${pickCover};
-    return c ? c.querySelector('img').getAttribute('src') : '';
+    return c ? c.dataset.src : '';
   })()`);
   await page.evaluate(`document.querySelector('#assetPane .asset-pick').click()`);
   await new Promise((r) => setTimeout(r, 250));
@@ -5008,7 +5747,7 @@ try {
   let syncedTick = 0;
   for (let k = 0; k < 40; k++) {
     syncedValue = await page.evaluate(
-      `(() => { const n = document.querySelector('.node[data-id="${mcpNode}"] textarea'); return n ? n.value : ''; })()`);
+      `(() => { const n = document.querySelector('.node[data-id="${mcpNode}"] .text-body'); return n ? n.textContent : ''; })()`);
     if (syncedValue === 'MCP 写进来的提示词') { syncedTick = k; break; }
     await new Promise((r) => setTimeout(r, 250));
   }

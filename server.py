@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -1321,6 +1322,193 @@ def save_asset_lib(data: dict) -> dict:
     return clean
 
 
+# --------------------------------------------------------------------------- #
+# 缩略图：资产库里一屏几百张原图，不缩就没法滚
+#
+# 为什么需要：一张 ComfyUI 产物常常是 1024×1536、1~2MB。资产库一列就是几百张，
+# 浏览器要为每一张解码一整幅位图（1024×1536×4 ≈ 6MB 显存/内存），滚动时一边丢一边
+# 重新解码——这就是「上下滚动卡顿」的真正来源。缩到 320px 宽，解码量掉到 1/10。
+#
+# PIL 是**可选**依赖（本项目对外是零运行时依赖，托管 Python 里没有 PIL）：
+# 装了就用它缩并落盘缓存，没装就原样返回——功能不坏，只是没省到带宽和解码。
+# --------------------------------------------------------------------------- #
+THUMB_DIR = "thumbs"
+THUMB_WIDTHS = (160, 320, 640)     # 只做这三档：档位多了缓存文件翻几倍，收益却很小
+THUMB_SRC_MAX = 48 * 1024 * 1024   # 超过 48MB 的源文件不缩，别为了缩略图把内存吃穿
+
+try:  # noqa: SIM105
+    from PIL import Image as _PILImage
+except Exception:  # noqa: BLE001
+    _PILImage = None
+
+
+def thumb_width(raw) -> int:
+    """请求的宽度吸附到最近的档位（多一档 = 多一份缓存，没必要）。"""
+    try:
+        w = int(raw)
+    except (TypeError, ValueError):
+        w = 320
+    return min(THUMB_WIDTHS, key=lambda v: abs(v - w))
+
+
+def thumb_cache_file(src: str, w: int) -> Path:
+    h = hashlib.sha1(f"{src}|{w}".encode("utf-8")).hexdigest()[:20]
+    return DATA / THUMB_DIR / f"{h}-{w}.jpg"
+
+
+def make_thumb(raw: bytes, w: int) -> bytes | None:
+    """缩成宽 w 的 JPEG。没装 PIL / 不是图 / 本来就比 w 窄 → None（调用方回退原图）。"""
+    if _PILImage is None or not raw or len(raw) > THUMB_SRC_MAX:
+        return None
+    try:
+        im = _PILImage.open(io.BytesIO(raw))
+        im.load()
+        if im.width <= w:
+            return None
+        im = im.convert("RGB")
+        h = max(1, round(im.height * w / im.width))
+        im = im.resize((w, h), _PILImage.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=82, optimize=True)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001  坏图 / 不支持的格式：当作缩不了
+        return None
+
+
+def thumb_source_bytes(src: str) -> tuple[bytes, str]:
+    """把缩略图请求里的源 URL 还原成字节。只认自家两个图片入口，不做任意 URL 代理。"""
+    if src.startswith("/api/assets/file?"):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(src).query)
+        rel = (q.get("path") or [""])[0]
+        p = asset_file_path(asset_root(load_asset_lib()), "lib:" + rel)
+        if not p.is_file():
+            raise FileNotFoundError("文件不存在")
+        return p.read_bytes(), mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    if src.startswith("/api/view?"):
+        qs = urllib.parse.urlsplit(src).query
+        status, headers, raw = comfy_request("GET", f"/view?{qs}", timeout=120)
+        if status != 200:
+            raise FileNotFoundError(f"取回产物失败 {status}")
+        return raw, headers.get("Content-Type") or "application/octet-stream"
+    raise ValueError("只支持 /api/assets/file 与 /api/view 两种来源")
+
+
+# --------------------------------------------------------------------------- #
+# 提示词预设：用户自己攒的「常用提示词」，一键塞回提示词节点
+#
+# 存 DATA/prompt-presets.json：{"items": [{"id","name","text","html","at"}]}
+# text 是纯文本（送模型、在纯文本控件里显示都靠它），html 是可选富文本
+# （标题 / 列表 / 加粗那些排版），插回 contenteditable 时原样带回去。
+# 和资产库分组分开存：那套是图片归属，这套是文字片段，生命周期完全不同。
+# --------------------------------------------------------------------------- #
+PROMPT_MAX = 300
+PROMPT_NAME_MAX = 60
+PROMPT_TEXT_MAX = 20000
+PROMPT_HTML_MAX = 80000
+
+
+def prompts_file() -> Path:
+    return DATA / "prompt-presets.json"
+
+
+def load_prompts() -> list[dict]:
+    """读预设。坏文件留档不覆盖（和资产库同一个道理：这是用户手打的东西）。"""
+    f = prompts_file()
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        try:
+            f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
+            print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空列表开始")
+        except OSError:
+            pass
+        return []
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    return _clean_prompts(items)
+
+
+def _clean_prompts(items) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        text = str(it.get("text") or "").strip()
+        if not text:
+            continue
+        pid = str(it.get("id") or "").strip() or uuid.uuid4().hex[:12]
+        if pid in seen:
+            pid = uuid.uuid4().hex[:12]
+        seen.add(pid)
+        out.append({
+            "id": pid,
+            "name": str(it.get("name") or "").strip()[:PROMPT_NAME_MAX] or text[:16],
+            "text": text[:PROMPT_TEXT_MAX],
+            "html": str(it.get("html") or "")[:PROMPT_HTML_MAX],
+            "at": int(it.get("at") or 0),
+        })
+    out.sort(key=lambda x: x["at"], reverse=True)
+    return out[:PROMPT_MAX]
+
+
+def save_prompts(items) -> list[dict]:
+    clean = _clean_prompts(items)
+    DATA.mkdir(parents=True, exist_ok=True)
+    f = prompts_file()
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps({"items": clean}, ensure_ascii=False, indent=1) + "\n",
+                   encoding="utf-8")
+    os.replace(tmp, f)
+    return clean
+
+
+def prompts_apply(payload: dict) -> dict:
+    op = str(payload.get("op") or "list")
+    items = load_prompts()
+    if op == "list":
+        return {"ok": True, "items": items}
+    if op == "save":
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise ValueError("提示词是空的")
+        if len(items) >= PROMPT_MAX:
+            raise ValueError(f"预设最多 {PROMPT_MAX} 条，先删几条")
+        item = {
+            "id": uuid.uuid4().hex[:12],
+            "name": str(payload.get("name") or "").strip()[:PROMPT_NAME_MAX] or text[:16],
+            "text": text[:PROMPT_TEXT_MAX],
+            "html": str(payload.get("html") or "")[:PROMPT_HTML_MAX],
+            "at": int(time.time() * 1000),
+        }
+        items.append(item)
+        return {"ok": True, "items": save_prompts(items), "item": item}
+    if op == "update":
+        pid = str(payload.get("id") or "")
+        hit = next((x for x in items if x["id"] == pid), None)
+        if not hit:
+            raise ValueError("预设不存在")
+        if payload.get("name") is not None:
+            hit["name"] = str(payload.get("name")).strip()[:PROMPT_NAME_MAX] or hit["name"]
+        if payload.get("text") is not None:
+            text = str(payload.get("text")).strip()
+            if not text:
+                raise ValueError("提示词是空的")
+            hit["text"] = text[:PROMPT_TEXT_MAX]
+        if payload.get("html") is not None:
+            hit["html"] = str(payload.get("html"))[:PROMPT_HTML_MAX]
+        return {"ok": True, "items": save_prompts(items)}
+    if op == "remove":
+        ids = payload.get("ids")
+        ids = [str(x) for x in ids] if isinstance(ids, list) else [str(payload.get("id") or "")]
+        ids = {x for x in ids if x}
+        if not ids:
+            raise ValueError("没说要删哪条")
+        return {"ok": True, "items": save_prompts([x for x in items if x["id"] not in ids])}
+    raise ValueError(f"不认识的 op：{op}")
+
+
 def _safe_asset_name(raw, fallback: str = "image") -> str:
     """用户输入的文件名 → 能落盘的干净名字。"""
     name = str(raw or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
@@ -2185,11 +2373,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 基础输出 ----------
     def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None):
+        extra = dict(extra or {})
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for key, val in (extra or {}).items():
+        # 默认 no-store：改名 / 挪组之后 URL 会变，缓存反而容易看到旧图。
+        # 缩略图不一样——它按「源 URL + 宽度」寻址，内容不会变，要的是长期缓存。
+        self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+        for key, val in extra.items():
             self.send_header(key, val)
         self.end_headers()
         try:
@@ -2595,6 +2786,47 @@ class Handler(BaseHTTPRequestHandler):
             out["progress"] = pct
             return self.json_out(out)
 
+        if path == "/api/thumb":
+            # 缩略图：src 是原始的图片 URL（/api/assets/file?… 或 /api/view?…）。
+            # 按「src + 宽度」落盘缓存一次，之后直接读文件；浏览器那边长期缓存。
+            src = (query.get("src") or [""])[0]
+            w = thumb_width((query.get("w") or ["320"])[0])
+            if not src:
+                return self.fail("缺少 src", 400)
+            cache = thumb_cache_file(src, w)
+            try:
+                if cache.is_file():
+                    return self._send(200, cache.read_bytes(), "image/jpeg",
+                                      {"Cache-Control": "public, max-age=604800"})
+            except OSError:
+                pass
+            try:
+                raw, ctype = thumb_source_bytes(src)
+            except FileNotFoundError as exc:
+                return self.fail(str(exc), 404)
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except ConnectionError as exc:
+                return self.fail(str(exc), 502)
+            small = make_thumb(raw, w)
+            if small is None:
+                # 没装 PIL / 本来就小：原样给，别让格子空着
+                return self._send(200, raw, ctype,
+                                  {"Cache-Control": "public, max-age=3600"})
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                tmp = cache.with_name(cache.name + f".{uuid.uuid4().hex[:6]}.tmp")
+                tmp.write_bytes(small)
+                os.replace(tmp, cache)
+            except OSError:
+                pass          # 缓存写不进去不影响这次返回
+            return self._send(200, small, "image/jpeg",
+                              {"Cache-Control": "public, max-age=604800"})
+
+        if path == "/api/prompts":
+            # 预设列表。写操作在 api_post 那边（同一个路径，按方法分）
+            return self.json_out({"ok": True, "items": load_prompts()})
+
         if path == "/api/assets":
             try:
                 limit = int((query.get("limit") or ["400"])[0] or 400)
@@ -2663,6 +2895,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/shutdown":
             return self.api_shutdown()
+
+        # 提示词预设的写操作（列表走 api_get）。一个入口靠 op 分发
+        if path == "/api/prompts":
+            payload = self.read_json() or {}
+            try:
+                return self.json_out(prompts_apply(payload))
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         # 资产库的分组 / 归属 / 移除。一个入口靠 op 分发，见 asset_lib_apply()
         if path == "/api/assets/lib":

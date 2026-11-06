@@ -47,6 +47,42 @@ def skip(name: str, detail: str = "") -> None:
     print(f"SKIP  {name}" + (f"   [{detail}]" if detail else ""))
 
 
+def _png(width: int, height: int, rgb=(40, 80, 120)) -> bytes:
+    """纯标准库生成一张纯色 PNG：测缩略图用，不引入 PIL 依赖。"""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def _jpeg_size(data: bytes):
+    """从 JPEG 的 SOF 段里读宽高（只为断言缩略图真的缩了，不解像素）。"""
+    import struct
+    i = 2
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2):
+            h = struct.unpack(">H", data[i + 5:i + 7])[0]
+            w = struct.unpack(">H", data[i + 7:i + 9])[0]
+            return (w, h)
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seg = struct.unpack(">H", data[i + 2:i + 4])[0]
+        i += 2 + seg
+    return None
+
+
 def local_ipv4() -> list[str]:
     """本机所有可用的非回环 IPv4，按「最像局域网」的顺序。
 
@@ -350,6 +386,44 @@ def main() -> int:
         status, _ = request(base, "/api/assets/lib", "POST", {"op": "assign", "keys": [], "group": ""})
         check("空 keys 回 400（「没选中」不能被当成「全部」）", status == 400, f"HTTP {status}")
 
+        # ---- 提示词预设：用户自己攒的常用提示词 ----
+        # 存在 DATA/prompt-presets.json，和资产库分组分开：一个是图片归属，一个是文字片段。
+        status, raw = request(base, "/api/prompts")
+        check("预设列表一开始是空的", status == 200 and json.loads(raw or b"{}").get("items") == [],
+              raw[:80].decode("utf-8", "replace"))
+        status, raw = request(base, "/api/prompts", "POST",
+                              {"op": "save", "name": "人像", "text": "柔和侧光，浅景深",
+                               "html": "<div>柔和侧光，<b>浅景深</b></div>"})
+        saved = json.loads(raw or b"{}")
+        pid = (saved.get("item") or {}).get("id") or ""
+        check("存一条预设：回 id、纯文本和 html 都在",
+              status == 200 and pid and saved["item"]["text"] == "柔和侧光，浅景深"
+              and "<b>" in saved["item"]["html"], json.dumps(saved, ensure_ascii=False)[:160])
+        status, raw = request(base, "/api/prompts", "POST",
+                              {"op": "save", "text": "  雨夜霓虹巷口  "})
+        two = json.loads(raw or b"{}")
+        check("不填名字就用前几个字当名字，且新的排最前",
+              status == 200 and two["items"][0]["name"] == "雨夜霓虹巷口" and len(two["items"]) == 2,
+              json.dumps([x["name"] for x in two.get("items", [])], ensure_ascii=False))
+        status, _ = request(base, "/api/prompts", "POST", {"op": "save", "text": "   "})
+        check("空提示词不许存（回 400）", status == 400, f"HTTP {status}")
+        status, raw = request(base, "/api/prompts", "POST", {"op": "update", "id": pid, "name": "人像·柔光"})
+        check("改名：按 id 改，别的字段不动",
+              status == 200 and any(x["id"] == pid and x["name"] == "人像·柔光"
+                                    and x["text"] == "柔和侧光，浅景深"
+                                    for x in json.loads(raw or b"{}").get("items", [])),
+              raw[:160].decode("utf-8", "replace"))
+        pfile = data_dir / "prompt-presets.json"
+        check("预设落盘到 prompt-presets.json，且没留下 .tmp",
+              pfile.is_file() and not (data_dir / "prompt-presets.json.tmp").exists(), str(pfile))
+        status, raw = request(base, "/api/prompts", "POST", {"op": "remove", "ids": [pid]})
+        left = json.loads(raw or b"{}")
+        check("删一条预设：只剩另一条",
+              status == 200 and [x["name"] for x in left.get("items", [])] == ["雨夜霓虹巷口"],
+              json.dumps(left, ensure_ascii=False)[:160])
+        status, _ = request(base, "/api/prompts", "POST", {"op": "nope"})
+        check("不认识的 op 回 400（预设）", status == 400, f"HTTP {status}")
+
         # ---- 首次使用引导：先确认生成的图存哪 ----
         # 只问一次：点过（setup_done）或库里已经有图（老用户）都不再弹。
         # 这一段必须在往资产库塞图**之前**跑，否则「空库要问」这个前提就没了。
@@ -395,6 +469,33 @@ def main() -> int:
 
         status, _ = request(base, "/api/assets/file?path=" + urllib.parse.quote("../asset-lib.json"))
         check("目录穿越：拿不到资产目录之外的文件", status == 400, f"HTTP {status}")
+
+        # ---- 缩略图：几百张原图滚不动，宫格改走 /api/thumb ----
+        # 上面那张是 20 字节的假 PNG：PIL 打不开 → 必须**原样回退**，不能让格子空着
+        status, raw = request(base, "/api/thumb?w=320&src="
+                              + urllib.parse.quote(libs[0]["url"], safe=""))
+        check("缩略图：缩不了的原样回退（不返回空 body）",
+              status == 200 and raw == png, f"HTTP {status} {len(raw)}B")
+        status, _ = request(base, "/api/thumb?w=320&src="
+                            + urllib.parse.quote("http://example.com/x.png", safe=""))
+        check("缩略图：只认自家两个图片入口（不做任意 URL 代理）", status == 400, f"HTTP {status}")
+
+        big = _png(900, 600, (40, 80, 120))
+        request(base, "/api/assets/lib", "POST", {"op": "import", "items": [
+            {"key": "canvas:demo:2:0", "filename": "大图.png",
+             "data": base64.b64encode(big).decode("ascii")}]})
+        big_url = "/api/assets/file?path=" + urllib.parse.quote("大图.png")
+        status, raw = request(base, "/api/thumb?w=320&src=" + urllib.parse.quote(big_url, safe=""))
+        if raw[:2] == b"\xff\xd8":
+            dim = _jpeg_size(raw)
+            check("缩略图：900px 宽缩到 320（JPEG，按宽度等比）",
+                  status == 200 and dim and dim[0] == 320 and dim[1] == 213,
+                  f"HTTP {status} {len(raw)}B {dim}")
+            check("缩略图比原图小（原图 %d B）" % len(big), len(raw) < len(big), f"{len(raw)}B")
+        else:
+            skip("缩略图缩放", "这台机器的 Python 没装 PIL，服务端只回原图")
+        # 这张只为缩略图而建，删掉——下面「改存放路径」那条断言的是「目录已经搬空」
+        request(base, "/api/assets/lib", "POST", {"op": "delete", "keys": ["lib:大图.png"]})
 
         status, raw = request(base, "/api/assets/lib", "POST",
                               {"op": "assign", "keys": [libs[0]["key"]], "group": g2})

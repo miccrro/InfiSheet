@@ -419,7 +419,78 @@ select option { background: #1f1f1f; color: var(--text); }
 
 /* 文本节点 */
 .node.text { width: 280px; }
-.node.text textarea { min-height: 88px; resize: none; overflow: hidden; }
+/* 提示词框无边框：直接写在卡片上（和生成面板里的提示词同一个观感）。
+   原来它吃 `.node textarea` 那套「深色井 + 1px 描边 + 聚焦蓝框」，节点里套一个框，
+   看着像两张卡片叠在一起。高度由 JS 管：没手动拉过就按内容长，拉过就固定并自己滚。
+   富文本之后是 contenteditable，排版元素（标题 / 列表 / 分割线）的样式在下面一组。 */
+.node.text .text-body {
+  background: transparent; border: none; box-shadow: none;
+  border-radius: 0; padding: 0; outline: none;
+  min-height: 0; overflow: hidden;
+  font-size: 12.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* 空框才要 88px 的底：有字时高度由 autoGrow() 按内容算（min-height 留着的话，
+   一段短提示词下面会多出一截空白，四边留白就不等了） */
+.node.text .text-body.is-empty { min-height: 88px; }
+/* contenteditable 没有 ::placeholder，用 :empty 不可靠（浏览器会留一个 <br>），
+   所以 JS 里按纯文本长度打 .is-empty，这里画提示语。 */
+.text-body.is-empty::before {
+  content: attr(data-ph); color: #6f6f6f; pointer-events: none;
+}
+/* 富文本排版：标题比正文大一号、分割线是一条压暗的横线、列表缩进和正文对齐 */
+.node.text .text-body h1,
+.node.text .text-body h2,
+.node.text .text-body h3,
+.node.text .text-body h4,
+.node.text .text-body h5,
+.node.text .text-body h6 {
+  margin: 0 0 2px; font-size: 15px; line-height: 1.45; font-weight: 600; color: #fff;
+}
+.node.text .text-body ol,
+.node.text .text-body ul { margin: 2px 0; padding-left: 18px; }
+.node.text .text-body li { margin: 1px 0; }
+.node.text .text-body b,
+.node.text .text-body strong { font-weight: 600; color: #fff; }
+.node.text .text-body i,
+.node.text .text-body em { font-style: italic; }
+.node.text .text-body hr {
+  border: none; border-top: 1px solid rgba(255, 255, 255, 0.22);
+  margin: 8px 0;
+}
+/* 块级标签的**浏览器默认外边距**必须压平：`<p>` 是 1em（12.5px）、`<blockquote>` 是 1em 40px、
+   `<pre>` 是 1em。从文档 / 网页粘进来的提示词多半是 `<p>` 包着的，于是第一行上面凭空多出
+   十几像素、最后一行下面也一样，而左右还是 10px —— 看着就是「文案的上边距比左右宽」。
+   块之间只留 2px（和 h3 的下边距统一），首尾一律 0，四个方向才对得上。
+   注意不能只写 p：first-child / last-child 得盖住所有块级标签，否则换成 h3 打头又歪回去。 */
+.node.text .text-body p,
+.node.text .text-body blockquote,
+.node.text .text-body pre,
+#textFull .tf-ed p,
+#textFull .tf-ed blockquote,
+#textFull .tf-ed pre { margin: 0 0 2px; }
+.node.text .text-body blockquote,
+#textFull .tf-ed blockquote {
+  padding-left: 8px; border-left: 2px solid rgba(255, 255, 255, 0.18);
+}
+.node.text .text-body pre,
+#textFull .tf-ed pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.94em; white-space: pre-wrap;
+}
+.node.text .text-body > :first-child,
+#textFull .tf-ed > :first-child { margin-top: 0; }
+.node.text .text-body > :last-child,
+#textFull .tf-ed > :last-child { margin-bottom: 0; }
+/* 连卡片那圈描边也不要：静止时就是一坨字浮在画布上（外面再套一圈线，等于「无边框」没做到）。
+   悬停 / 选中时照旧浮出边界，不然不知道点到了谁——这两条的优先级本来就比我高，不用额外写。
+   底色默认 #262626（可在格式条里按节点改），JS 用行内 style 覆盖。 */
+.node.text .node-card { border-color: transparent; box-shadow: none; background: #262626; }
+/* 只读 = 不是输入框：没有光标，鼠标是普通箭头（不然看着随时能打字） */
+.node.text .text-body { cursor: default; caret-color: transparent; }
+/* 双击进入编辑：浮出一圈边 + 光标回来，明确「现在可以打字了」 */
+.node.text.editing .node-card { border-color: #6e6e6e; }
+.node.text.editing .text-body { cursor: text; caret-color: auto; }
 
 /* 图片节点 */
 .node.image { width: 250px; }
@@ -829,9 +900,9 @@ select option { background: #1f1f1f; color: var(--text); }
 }
 .port::after { content: '+'; font-size: 11px; line-height: 1; font-weight: 400; }
 .port:hover { transform: none; border-color: var(--accent); color: var(--accent); background: #141414; }
-.port.out { right: -9px; top: calc(50% - 9px); }
+.port.out { right: -9px; top: calc(50% - 10px); }
 .port.in { left: -9px; }
-.node.out .port.in { top: calc(50% - 9px); }
+.node.out .port.in { top: calc(50% - 10px); }
 .port.linked { background: rgba(110, 168, 254, 0.18); border-color: var(--accent); color: var(--accent); }
 
 /* 命中区比视觉圆点大一圈：连线时不必像素级瞄准 */
@@ -859,7 +930,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .port[data-kind="media"] { border-color: #a78bfa; }
 .port[data-kind="any"] { border-color: #cbd5e1; }
 /* 文本/图片节点：左右各一个点，垂直居中 */
-.node.text .port.in, .node.image .port.in, .node.wf .port.in { top: calc(50% - 9px); }
+.node.text .port.in, .node.image .port.in, .node.wf .port.in { top: calc(50% - 10px); }
 
 /* 图片节点：更大的画布区 */
 .node.image { width: 380px; }
@@ -942,17 +1013,14 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   width: 74px; height: 74px; fill: none; stroke: currentColor;
   stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round;
 }
-.thumb-empty .try { display: flex; flex-direction: column; gap: 2px; }
-.thumb-empty .try-label { font-size: 11.5px; color: var(--faint); margin-bottom: 4px; }
-.thumb-empty .try-item {
-  display: flex; align-items: center; gap: 8px;
-  background: transparent; border: none; color: var(--dim);
-  padding: 5px 2px; font-size: 12.5px; text-align: left; border-radius: 6px;
+/* 空节点的提示只在悬停时浮出来：平时是一块干净的占位（不常驻推荐内容），
+   鼠标一进来才告诉你怎么填。绝对定位，别把图标从正中间挤走。 */
+.thumb-empty .thumb-hint {
+  position: absolute; left: 12px; right: 12px; bottom: 12px;
+  font-size: 12px; color: var(--faint); text-align: center;
+  opacity: 0; transition: opacity 0.12s ease; pointer-events: none;
 }
-.thumb-empty .try-item svg {
-  width: 15px; height: 15px; fill: none; stroke: currentColor;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9;
-}
+.node.image .thumb.is-empty:hover .thumb-hint { opacity: 1; }
 
 /* 生成器：独立卡片，贴在节点下沿 */
 .gen-panel {
@@ -1274,7 +1342,9 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .node.out .out-empty { min-height: 96px; }
 
 
-/* 节点右下角的拉伸手柄 */
+/* 节点右下角的拉伸手柄：隐藏式——平时完全看不见，也不弹提示，
+   只有指针正好压在它身上（或正在拉）才浮出来一点点。想调大小直接把鼠标
+   怼到卡片右下角拖就行，不用先找手柄。 */
 .node-resize {
   position: absolute; right: -5px; bottom: -5px;
   width: 14px; height: 14px; border-radius: 4px;
@@ -1288,8 +1358,8 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border-right: 1.5px solid rgba(255, 255, 255, 0.45);
   border-bottom: 1.5px solid rgba(255, 255, 255, 0.45);
 }
-.node:hover .node-resize, .node.selected .node-resize { opacity: 1; }
-.node-resize:hover { border-color: var(--accent); }
+.node-resize:hover { opacity: 0.55; border-color: var(--accent); }
+body.resizing .node-resize { opacity: 1; }
 
 
 /* =========================================================
@@ -1728,9 +1798,6 @@ body.alt-down.dragging .node-head { cursor: grabbing; }
 /* 图片区 */
 .node.image .thumb { background: #0c0e12; border-radius: 10px; }
 .img-zoom { background: rgba(12, 14, 18, 0.82); border-color: rgba(255, 255, 255, 0.14); }
-.thumb-empty .try-label { color: var(--faint); }
-.thumb-empty .try-item { color: var(--dim); }
-.thumb-empty .try-item:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
 
 /* 菜单 */
 #addMenu, .popmenu {
@@ -2067,12 +2134,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #viewTools .vt .oi { width: 17px; height: 17px; }
 .node-title .oi { width: 15px; height: 15px; color: inherit; }
 .cap-btn .oi { width: 19px; height: 19px; }
-.try-item .oi { width: 14px; height: 14px; }
 .img-zoom { display: grid; place-items: center; }
 .img-zoom .oi { width: 15px; height: 15px; }
 
 /* 带文字的紧凑控件 → 胶囊（圆角拉满） */
-.chip, .gensel, .try-item, .gen-run,
+.chip, .gensel, .gen-run,
 button.primary { border-radius: 999px; }
 .chip.icon-only { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; }
 .chip.icon-only .oi { width: 14px; height: 14px; }
@@ -2091,8 +2157,10 @@ button.primary { border-radius: 999px; }
    风格格子和它的关闭键同理：缩略图要方方正正地铺成宫格，圆角 999px 会把图裁成圆圈
    （这条的 :not() 链特异性高达 0,13,1，不比它多带 :not() 压不住）。
    生成器的发送键（.gen-run）也要进排除名单：它要的是 8px 圆角矩形。以前这里漏了它，
-   于是 `border-radius: 50%` / `8px` 全被这条压掉，实测计算值是 999px。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb):not(.pc-more):not(.cover-cell) {
+   于是 `border-radius: 50%` / `8px` 全被这条压掉，实测计算值是 999px。
+   图片 / 提示词工具条上的按钮、底色色板、全屏编辑的「完成」同理：
+   它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。 */
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2295,11 +2363,24 @@ button.primary:hover,
 }
 #assetPane .asset-pane {
   pointer-events: auto;
+  position: relative;
   width: 392px; max-width: 92vw; height: 100%;
   display: flex; flex-direction: column;
   background: var(--panel); border-left: 1px solid var(--line);
   box-shadow: -18px 0 48px rgba(0, 0, 0, 0.55);
 }
+/* 左边沿的宽度把手：6px 的透明条，悬停才浮出一条线。双击复位到默认 392。 */
+#assetPane .asset-grip {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
+  cursor: col-resize; z-index: 3;
+}
+#assetPane .asset-grip::after {
+  content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px;
+  background: transparent; transition: background 0.15s;
+}
+#assetPane .asset-grip:hover::after { background: var(--accent); }
+body.asset-resizing { cursor: col-resize; user-select: none; }
+body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 #assetPane header {
   display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
   padding: 12px 14px; border-bottom: 1px solid var(--line);
@@ -2338,6 +2419,11 @@ button.primary:hover,
 /* 「选择」是开关，不是一次性动作：开着的时候整格变浅、点击改判勾选。
    用描边而不是填充，和来源页签的实心 .on 区分开——两者会同时亮。 */
 #assetPane .asset-pick.on { color: var(--accent); border-color: var(--accent); }
+/* 多选态里这个按钮让位：退出由动作条右端的「完成」负责，两个「完成」并排只会让人犹豫。
+   让出来的一截正好给搜索框——多选态下「搜一下再全选」是最常见的动作。
+   注意别用 display:none 之外的写法（hidden 属性 / visibility）以外的办法“藏”它：
+   脚本里 .asset-pick 的 click 仍要能触发，display:none 的元素 .click() 照常派发。 */
+#assetPane .asset-pick.gone { display: none; }
 
 /* 分组那一行。分组是用户自己建的、数量不定，所以横向滚动而不是换行——
    换行会把下面的宫格挤矮，而这个抽屉的高度是固定的。 */
@@ -2360,14 +2446,32 @@ button.primary:hover,
 #assetPane .asset-groups .asset-g-ops button { border-color: transparent; padding: 3px 6px; }
 #assetPane .asset-groups .asset-g-ops button:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 #assetPane .asset-grid {
+  position: relative;                 /* 框选框按它定位 */
   flex: 1; min-height: 0; overflow-y: auto;
-  padding: 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  padding: 12px;
+  /* auto-fill：拉宽抽屉就多排几列，而不是把三列拉得更大。
+     104px 是「缩略图还看得清、一行放得下三张」的下限。 */
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px;
   align-content: start;
+  overscroll-behavior: contain;
+}
+/* 框选时别让拖拽选中文字 / 拖起图片影子 */
+#assetPane .asset-grid.marquee-on { user-select: none; }
+#assetPane .asset-grid.marquee-on .asset-cell { pointer-events: none; }
+#assetPane .asset-marquee {
+  position: absolute; z-index: 4; pointer-events: none;
+  border: 1px solid var(--accent);
+  background: rgba(110, 168, 254, 0.16);
+  border-radius: 4px;
 }
 #assetPane .asset-cell {
   position: relative; display: block; height: 0; padding: 0 0 100%;
   border: 1px solid var(--line); border-radius: 9px;
   background: #141414; overflow: hidden; cursor: pointer;
+  /* 屏幕外的格子跳过渲染：几百张图的时候，这一条比什么都管用。
+     contain-intrinsic-size 给个占位高度，滚动条不会因为「还没算」而跳。 */
+  content-visibility: auto;
+  contain-intrinsic-size: 118px;
 }
 #assetPane .asset-cell:hover { border-color: var(--accent); }
 /* 勾选态用内阴影描边：border 已经占着位置，改 border 会让格子抖一下 */
@@ -2426,7 +2530,15 @@ button.primary:hover,
   padding: 9px 12px; border-top: 1px solid var(--line);
 }
 #assetPane .asset-arow { display: flex; align-items: center; gap: 6px; }
-#assetPane .asset-actions .asset-sel { flex: 1; font-size: 11px; color: var(--dim); }
+#assetPane .asset-actions .asset-sel {
+  flex: 1; min-width: 0; font-size: 11px; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#assetPane .asset-actions .asset-all,
+#assetPane .asset-actions .asset-none { flex: 0 0 auto; }
+/* 「完成」是退出多选态的正门：给它强调色，和旁边的全选 / 清空分开。
+   它在上行最右，离下行的「删除」最远——手一滑不会把选中的图删了。 */
+#assetPane .asset-actions .asset-done { flex: 0 0 auto; color: var(--accent); border-color: rgba(255, 255, 255, 0.22); }
 #assetPane .asset-actions button, #assetPane .asset-actions select {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
   border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 11.5px; cursor: pointer;
@@ -2583,13 +2695,15 @@ button.primary:hover,
 
 /* 端口中央的「+」不用文字画。
    文字字形按字体基线排版，实测在圆环里偏下 0.67px（20px 端口），放大后一眼就歪；
-   两条渐变画十字，中心由 flex/grid 居中对齐决定，任何字体、任何缩放都同心。 */
+   两条渐变画十字，中心由 grid 居中对齐决定，任何字体、任何缩放都同心。
+   笔画用 2px 整数：1.5px 这种半像素线在非整数缩放下会被拆成两边不对称的抗锯齿，
+   看着像「加号歪了」，2px 在 1x / 2x / 3x 下都落在整像素上。 */
 .port::after {
   content: '';
   width: 8px; height: 8px;
   background:
-    linear-gradient(currentColor, currentColor) center / 8px 1.5px no-repeat,
-    linear-gradient(currentColor, currentColor) center / 1.5px 8px no-repeat;
+    linear-gradient(currentColor, currentColor) center / 8px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) center / 2px 8px no-repeat;
 }
 
 /* ---------------- 风格选择器 ----------------
@@ -2719,7 +2833,7 @@ button.primary:hover,
 
 /* ---------- 图片工具条（选中一张有图的节点时浮在它上方） ---------- */
 /* 和 #alignBar 同一套观感：屏幕坐标、不吃画布缩放、深色玻璃底 */
-#imgTools {
+#imgTools, #textTools {
   position: fixed; z-index: 46;
   display: flex; align-items: center; gap: 2px; padding: 4px;
   background: rgba(38, 38, 38, 0.96);
@@ -2730,9 +2844,9 @@ button.primary:hover,
      压住标题时至少还能点中标题，不至于「点了没反应」。 */
   pointer-events: none;
 }
-#imgTools .it-btn { pointer-events: auto; }
-#imgTools.hidden { display: none; }
-#imgTools .it-btn {
+#imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn { pointer-events: auto; }
+#imgTools.hidden, #textTools.hidden { display: none; }
+#imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn {
   position: relative;
   display: inline-flex; align-items: center; gap: 4px;
   height: 26px; padding: 0 6px; border: none; border-radius: 8px;
@@ -2740,19 +2854,164 @@ button.primary:hover,
   font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-#imgTools .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
-#imgTools .it-btn:active { background: rgba(255, 255, 255, 0.2); }
+#imgTools .it-btn:hover, #textTools .it-btn:hover, .tf-bar .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+#imgTools .it-btn:active, #textTools .it-btn:active, .tf-bar .it-btn:active { background: rgba(255, 255, 255, 0.2); }
 /* 「扩图」是开关：开着的时候按钮亮着，提示「再点一次收起」 */
-#imgTools .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
-#imgTools .it-btn .oi { width: 15px; height: 15px; }
+#imgTools .it-btn.on, #textTools .it-btn.on, .tf-bar .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
+#imgTools .it-btn .oi, #textTools .it-btn .oi, .tf-bar .it-btn .oi { width: 15px; height: 15px; }
 /* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，十个图标里有五个是「涂抹 / 编辑」类，
    猜不出来。整条因此宽到 ~560px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
    整条往上抬、再不行改成和节点边缘对齐，不靠缩窄来回避。 */
-#imgTools .it-btn span { display: inline; }
+#imgTools .it-btn span, #textTools .it-btn span, .tf-bar .it-btn span { display: inline; }
 /* 本地变换 / 涂抹类 / 整图编辑 / 导出 四段之间的分隔线 */
-#imgTools .it-sep {
+#imgTools .it-sep, #textTools .it-sep, .tf-bar .it-sep {
   width: 1px; height: 16px; margin: 0 2px;
   background: rgba(255, 255, 255, 0.16);
+}
+
+/* 格式条上的字形按钮（B / I / 1. / —）：没有对应图标，用字排更直观 */
+#textTools .it-glyph, .tf-bar .it-glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; font-size: 12px; font-style: normal; line-height: 1;
+  color: #e6e6e6;
+}
+#textTools .it-glyph.is-bold, .tf-bar .it-glyph.is-bold { font-weight: 700; }
+/* 斜体的「I」用衬线体：无衬线的斜 I 就是一根斜杠，跟分隔线撞脸，认不出是「斜体」 */
+#textTools .it-glyph.is-italic, .tf-bar .it-glyph.is-italic {
+  font-style: italic; font-family: Georgia, 'Times New Roman', serif; font-size: 13px;
+}
+/* 「颜色」按钮上那颗小方块 = 当前底色（深色底上必须留一圈亮边，否则看不见） */
+#textTools .it-dot, .tf-bar .it-dot {
+  width: 10px; height: 10px; border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+}
+
+/* ---------- 提示词底色气泡 ---------- */
+.text-color-pop {
+  position: fixed; z-index: 140; padding: 8px; border-radius: 12px;
+  background: rgba(38, 38, 38, 0.98); border: 0.5px solid #3a3a3a;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.tcp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.tcp-swatch {
+  width: 28px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.tcp-swatch:hover { border-color: rgba(255, 255, 255, 0.5); }
+.tcp-swatch.on { box-shadow: 0 0 0 2px #6ea8fe; border-color: transparent; }
+.tcp-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 11px; color: var(--dim);
+}
+.tcp-row input[type="color"] {
+  width: 28px; height: 22px; padding: 0; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 6px; background: transparent;
+}
+.tcp-reset {
+  margin-left: auto; height: 22px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16); background: transparent;
+  color: #cfcfcf; font-size: 11px; cursor: pointer;
+}
+.tcp-reset:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+
+/* ---------- 提示词预设气泡 ---------- */
+.text-preset-pop {
+  position: fixed; z-index: 140;
+  width: 288px; max-height: min(60vh, 460px);
+  display: flex; flex-direction: column; padding: 8px;
+  border-radius: 12px;
+  background: rgba(38, 38, 38, 0.98); border: 0.5px solid #3a3a3a;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.tpp-head {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+  padding: 2px 2px 8px; font-size: 11.5px; color: var(--dim);
+}
+.tpp-head > span { flex: 1; }
+.tpp-btn {
+  height: 22px; padding: 0 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.16); background: transparent;
+  color: #cfcfcf; font: inherit; font-size: 11px; line-height: 1;
+}
+.tpp-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.tpp-save { color: var(--accent); border-color: rgba(255, 255, 255, 0.22); }
+/* 单列显式写 minmax(0,1fr)：隐式 auto 列会被「nowrap 的预览文字」撑到比弹窗还宽，
+   于是文字一路顶到弹窗外沿、连省略号都来不及画（截图里就是这样）。 */
+.tpp-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start;
+}
+.tpp-empty { margin: 0; padding: 8px 4px; font-size: 11px; line-height: 1.6; color: var(--faint); }
+.tpp-item {
+  position: relative; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; min-width: 0;
+}
+.tpp-item:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.12); }
+.tpp-name {
+  font-size: 11.5px; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* 右边要一直给「替换 / ×」留着位置，名字长了就省略 */
+  padding-right: 68px;
+}
+.tpp-prev {
+  margin-top: 2px; font-size: 10.5px; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding-right: 62px;
+}
+/* 常驻但压暗：只在悬停时冒出来，用户永远不知道这条能「替换」和删。
+   压到 .5 不抢戏，鼠标进到条目上再提亮。 */
+.tpp-ops {
+  position: absolute; right: 6px; top: 4px;   /* 对齐标题那一行，别骑在标题和预览中间 */
+  display: flex; gap: 4px; opacity: 0.5; transition: opacity 0.12s;
+}
+.tpp-item:hover .tpp-ops, .tpp-ops:focus-within { opacity: 1; }
+.tpp-del { color: #ff9a9a; border-color: rgba(255, 120, 120, 0.4); }
+.tpp-del:hover { background: rgba(255, 90, 90, 0.16); color: #fff; }
+
+/* ---------- 提示词全屏编辑 ---------- */
+#textFull {
+  position: fixed; inset: 0; z-index: 150;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+#textFull .tf-panel {
+  width: min(880px, 92vw); height: min(78vh, 760px);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: #1b1b1b; border: 0.5px solid #3a3a3a; border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+#textFull .tf-head {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  height: 48px; padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12.5px; color: #fff;
+}
+#textFull .tf-done {
+  margin-left: auto; height: 28px; padding: 0 14px; border-radius: 8px;
+  border: none; background: #fff; color: #111; font-size: 12px; cursor: pointer;
+}
+#textFull .tf-done:hover { background: #e6e6e6; }
+#textFull .tf-bar {
+  display: flex; align-items: center; gap: 2px; flex: 0 0 auto; padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#textFull .tf-ed {
+  flex: 1; min-height: 0; overflow: auto; outline: none;
+  /* 全屏就是为了好改：字比节点里（12.5px）大一号，行距也放宽。
+     四边留白给同一个值——上下比左右小会显得文案「顶着」上沿。 */
+  padding: 20px; font-size: 14.5px; line-height: 1.7; color: #e9e9e9;
+  white-space: pre-wrap; word-break: break-word;
+}
+#textFull .tf-ed h1, #textFull .tf-ed h2, #textFull .tf-ed h3 {
+  margin: 0 0 4px; font-size: 17px; line-height: 1.4; font-weight: 600; color: #fff;
+}
+#textFull .tf-ed ol, #textFull .tf-ed ul { margin: 4px 0; padding-left: 22px; }
+#textFull .tf-ed hr {
+  border: none; border-top: 1px solid rgba(255, 255, 255, 0.22); margin: 12px 0;
 }
 
 /* ---------- 调色面板 ---------- */
@@ -3370,3 +3629,92 @@ button.primary:hover,
   background: none; color: var(--muted);
 }
 #imgTools .it-btn:disabled:hover { background: none; color: var(--muted); }
+
+/* =========================================================
+   悬浮控制条统一：同一高度 · 同一圆角 · 圆角矩形
+   ---------------------------------------------------------
+   以前四条单行控制条各写各的：项目栏 42、状态条 34、视图工具 46、底部工具条 52，
+   圆角是 16 / 16 / 999 / 999，条内按钮又是 50% 正圆——一排东西放在一起，
+   高度差半格、端点一半是胶囊一半是方角，看着像四个人各画了一块。
+   这里统一成一套 token：条高 40、条圆角 12、条内控件 28×28 圆角 8。
+   只覆盖这四条悬浮条和条内控件，节点卡片、弹窗、生成面板内部都不动。 */
+:root {
+  --ui-bar-h: 40px;    /* 单行悬浮条高度（28 控件 + 5×2 内边距 + 1×2 边框） */
+  --ui-ctl: 28px;      /* 条内按钮 / 输入框高度 */
+  --ui-bar-r: 12px;    /* 悬浮条圆角 */
+  --ui-ctl-r: 8px;     /* 条内按钮圆角：圆角矩形，不再是正圆 / 胶囊 */
+  --ui-pad: 5px;       /* 悬浮条内边距 */
+}
+
+/* 四条单行悬浮条：高度、圆角、内边距、垂直居中对齐 */
+#projectBar,
+#statusChip,
+#viewTools,
+#bar {
+  height: var(--ui-bar-h);
+  padding: 0 var(--ui-pad);
+  border-radius: var(--ui-bar-r);
+  box-sizing: border-box;
+  align-items: center;
+}
+#viewTools, #bar { padding: var(--ui-pad); gap: 4px; }
+
+/* 条内控件：一律 28×28 + 8px 圆角矩形。
+   选择器前面必须带 #app：文件上方那条
+   `button:not(#newCanvas):not(.cap-btn)…` 的 :not() 链里含一个 id，
+   实际特异性是 (1,12,1)，光写 `#bar .icon`(1,1,0) 压不住，圆角会被它改回 999px。 */
+#app #projectBar .icon.tiny,
+#app #bar .icon,
+#app #bar .icon.prime,
+#app #viewTools .vt {
+  width: var(--ui-ctl);
+  height: var(--ui-ctl);
+  flex: 0 0 var(--ui-ctl);
+  border-radius: var(--ui-ctl-r);
+}
+#app #viewTools .vt.zoom {
+  width: auto; min-width: 44px; height: var(--ui-ctl);
+  padding: 0 8px; border-radius: var(--ui-ctl-r);
+}
+/* 输入框 / 下拉按钮跟按钮同高同圆角，项目栏里不会比图标矮一截 */
+#projectName,
+#canvasMenuBtn {
+  height: var(--ui-ctl);
+  border-radius: var(--ui-ctl-r);
+}
+#projectName { width: 132px; }
+
+/* 状态条里的「任务」小按钮：高度收到 24，圆角跟同一套 */
+#app #statusChip .chip-btn { height: var(--ui-ctl); border-radius: var(--ui-ctl-r); }
+#queueCount { border-radius: 6px; }
+
+/* 分隔线跟着变矮，不然 40 高的条里会顶满上下边 */
+#bar .vsep, #projectBar .vsep { height: 18px; margin: 0 3px; }
+
+/* 小地图：同一套圆角，尺寸不变（它是画布视口，不是按钮条） */
+#minimap { border-radius: var(--ui-bar-r); }
+
+/* 左下角那颗 app 图标：和工具条同高、圆角同一档，不再单独一个 48 的方块 */
+#dockWrap .dock-orb {
+  width: var(--ui-bar-h); height: var(--ui-bar-h);
+  border-radius: 10px;
+}
+
+/* 竖排停靠时高度交给内容（列方向不能写死 40），内边距和圆角保持同一套 */
+#dockWrap[data-dock="left"] #bar,
+#dockWrap[data-dock="right"] #bar {
+  height: auto; padding: var(--ui-pad); border-radius: var(--ui-bar-r);
+}
+
+/* 四条条的屏幕边距也统一成 12px：以前 8 / 10 / 12 / 14 混着来，四角不齐 */
+#topBar { padding: 12px; }
+#viewTools { left: 12px; bottom: 12px; }
+#dockWrap { bottom: 12px; }
+#dockWrap[data-dock="bottom"] { bottom: 12px; }
+#dockWrap[data-dock="left"] { left: 12px; }
+#dockWrap[data-dock="right"] { right: 12px; }
+/* 小地图跟着回到右下角：12px 内边距和另外四条对齐。
+   底部工具条停靠只到「左/右居中」或「底部居中」，右下角不会跟它撞。 */
+#minimap { right: 12px; bottom: 12px; }
+/* 缩放下拉跟着视图工具条一起挪到 12px：它挂在工具条正上方，左边对齐才不歪 */
+#zoomMenu { left: 12px; bottom: 60px; border-radius: var(--ui-bar-r); }
