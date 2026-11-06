@@ -7,6 +7,10 @@
 
 ![图片节点的生成器面板](docs/screenshot-genpanel.png)
 
+| 提示词格式条 + 预设 | 资产库：框选多选 |
+|---|---|
+| <img src="docs/screenshot-prompt.png" width="470" alt="提示词格式条与预设"> | <img src="docs/screenshot-assets.jpg" width="300" alt="资产库：框选多选"> |
+
 ## 快速开始
 
 按系统双击对应入口，或命令行启动：
