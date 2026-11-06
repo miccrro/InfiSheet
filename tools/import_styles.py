@@ -17,8 +17,8 @@
 前端读法见 app.js 的「风格」一节：fetch('styles/index.json') → fetch('styles/<file>')。
 
 用法（需要能读图：本机系统 Python 带 PIL，托管 Python 没有）：
-    E:\\python-3.13.11\\python.exe tools\\import_styles.py
-    E:\\python-3.13.11\\python.exe tools\\import_styles.py --src "D:/别的素材包/styles"
+    python tools/import_styles.py
+    python tools/import_styles.py --src "/path/to/别的素材包/styles"
 """
 import argparse
 import json
@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEST = ROOT / "static" / "styles"
-DEFAULT_SRC = Path(r"C:\Users\<用户名>\Desktop\风格提示词\styles")
+DEFAULT_SRC = Path.home() / "Desktop" / "风格提示词" / "styles"
 THUMB = 160          # 缩略图边长：卡片实际显示 76~88px，2 倍够视网膜屏
 QUALITY = 80
 
@@ -58,7 +58,7 @@ def main() -> int:
     try:
         from PIL import Image
     except ImportError:
-        print("缺少 Pillow：换系统 Python 跑（E:\\python-3.13.11\\python.exe），托管 Python 是裸环境")
+        print("缺少 Pillow：换装好 Pillow 的系统 Python 跑，托管 Python 是裸环境")
         return 1
 
     thumbs_dir = DEST / "thumbs"

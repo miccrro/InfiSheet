@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 rem 找 Python：py 启动器 > PATH 里的 python > 常见安装位置。
-rem 旧版把 E:\python-3.13.11\python.exe 写死在这里，换一台机器就废了。
+rem 旧版把某个 python.exe 的绝对路径写死在这里，换一台机器就废了。
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY (

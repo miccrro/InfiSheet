@@ -69,7 +69,7 @@ Claude Desktop 重启客户端。接上之后灯自己变绿，不用刷新页�
 ```
 
 端口不是 8788 就加 `--port 9000`；不想让它自动起服务就加 `--no-autostart`。
-`python` 换成绝对路径更稳（Windows 上可以是 `E:\\python-3.13.11\\python.exe`）。
+`python` 换成绝对路径更稳（Windows 上可以是 `C:\\Python313\\python.exe`）。
 
 ### 方式 B：HTTP（自己先开服务）
 
