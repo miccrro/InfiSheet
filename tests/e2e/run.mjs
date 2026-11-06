@@ -5684,6 +5684,34 @@ try {
   check('生成完原节点的图原样留着（不被这次的产物覆盖）',
     !!autoImp.after && !!autoImp.before && autoImp.after.src === autoImp.before.src,
     JSON.stringify({ before: autoImp.before, after: autoImp.after }));
+  // 新节点得带着这次的整套参数：打开大图详情就能看到「这张是用什么词出的」，
+  // 不用回头翻原节点。以前这一步是空的（新节点 gen 只有默认工作流）。
+  const bornInfo = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const node = [...document.querySelectorAll('#nodes .node')]
+      .find((el) => ((el.querySelector('.n-name') || {}).textContent || '') === '图片（生成）');
+    if (!node) return { found: false };
+    const zoom = node.querySelector('.img-zoom');
+    if (!zoom) return { found: true, zoom: false };
+    zoom.click();
+    await sleep(200);
+    const box = document.querySelector('#lightboxInfo');
+    const out = {
+      found: true, zoom: true,
+      prompt: box ? ((box.querySelector('.lbi-prompt') || {}).textContent || '') : '',
+      rows: box ? [...box.querySelectorAll('.lbi-row')].map((r) => r.textContent.replace(/\\s+/g, ' ').trim()) : [],
+    };
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await sleep(100);
+    return out;
+  })()`);
+  check('新节点的图片详情里带着这次用的提示词（继承参数，不用回头翻原节点）',
+    bornInfo.prompt === 'auto import', JSON.stringify(bornInfo));
+  // 种子这行要真跑工作流才有（这里的 /api/analyze 被 mock 成空 slots，没有种子插槽），
+  // 所以只验「工作流」这一行：参数确实是随图一起带过来的，不是空壳。
+  check('新节点详情里带着这次的工作流（整套参数一起继承）',
+    (bornInfo.rows || []).some((r) => /^工作流.+/.test(r) && !/工作流$/.test(r)),
+    JSON.stringify(bornInfo.rows));
 
   // ---- 连点生成只提交一次 ----
   // 准备阶段（上传参考图 / 烘焙遮罩 / 读风格）是一串 await，一次几秒。以前 busy 要等

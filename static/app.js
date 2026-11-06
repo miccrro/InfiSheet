@@ -3128,8 +3128,19 @@
           runsOf(n);
           // 出图不再覆盖原节点：原节点摆的是这一轮的初始图，覆盖掉就再也回不到改之前的样子。
           // 每张产物各建一个纯图片节点摆在右侧，并连回原节点当参考输入（接着图生图不用再拖线）。
+          // 新节点把这次的**整套参数**带上（提示词 / 风格 / 种子 / 尺寸 / 张数 / 工作流），
+          // 图片详情里就能看到这张是用什么词出的；点「生成」开面板时也直接是这套参数。
           const batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
-          const born = spawnResultNodes(n, batchItems);
+          const born = spawnResultNodes(n, batchItems, {
+            prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
+            wf: g.wf || '', wfAuto: !!g.wfAuto,
+            style: g.style ? { ...g.style } : null,
+            seed: built.seed ? built.seed.value : null,
+            aspect: g.aspect, aspectAuto: !!g.aspectAuto,
+            autoW: g.autoW, autoH: g.autoH, autoScale: g.autoScale,
+            size: g.size, custom: g.custom ? { ...g.custom } : null,
+            batch: Number(g.batch) || 1,
+          });
           // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
           // 这里记的是「这次用的什么参数、出了哪几张」。原节点的图不再被这一批顶掉，
           // 所以 gallery 也不再改——历史里存的是这一批的完整清单。
@@ -6684,8 +6695,32 @@
   // 覆盖掉就再也回不到「改之前」的样子（以前 n.dataURL 直接被这批图顶掉）。
   // 步长用固定宽度 380（图片节点宽固定），按行排就不会叠；多张时左右铺开而不是往下堆，
   // 竖图最高能到 760px，往下堆按固定步长一定会压到下一张。
-  function spawnResultNodes(src, items) {
+  // inherit 是这一轮真正用的那套参数：写进新节点的 gen 里，图片详情（nodeImageInfo）与
+  // 资产库详情（assetImageInfo）都读 gen，于是「这张是用什么词出的」当场能查到；
+  // 点标题上的「生成」打开面板时也是这套参数，不用重新敲一遍。
+  function spawnResultNodes(src, items, inherit) {
     if (!src || !items || !items.length) return [];
+    const p = inherit || {};
+    // 每个节点一份独立对象：共享同一个 gen 会变成「改 A 的提示词，B 跟着变」
+    const genOf = () => ({
+      prompt: p.prompt || '',
+      wf: p.wf || pickWorkflow('txt2img'),
+      wfAuto: !!p.wfAuto,
+      aspect: p.aspect || '1:1',
+      aspectAuto: !!p.aspectAuto,
+      autoW: p.autoW || null,
+      autoH: p.autoH || null,
+      autoScale: p.autoScale || 1,
+      size: p.size || '1k',
+      custom: p.custom ? { ...p.custom } : null,
+      batch: p.batch || 1,
+      // 种子钉住这张实际用的数：详情里查得到，切「固定」也能原样复现
+      seedMode: p.seed == null ? 'random' : 'fixed',
+      seed: p.seed == null ? null : p.seed,
+      style: p.style ? { ...p.style } : null,
+      extras: [],
+      gallery: [], idx: 0, runs: [],
+    });
     const stepX = 380 + 40;
     const x0 = Math.round(src.x + nodeWidth(src) + 60);
     // 连着生成第二、第三批时不能落在同一处：把这一列里已有节点的底边让出来（高度取实测值，
@@ -6698,7 +6733,7 @@
       }, Math.round(src.y));
     const born = items.map((it, i) => addImageNode(x0 + i * stepX, y0, {
       dataURL: it.url, filename: it.filename || '', uploaded: null,
-      title: '图片（生成）', plain: true,
+      title: '图片（生成）', plain: true, gen: genOf(),
     }, true));
     born.forEach((nd) => {
       state.links.push({ id: uid('l'), from: nd.id, to: src.id, toKey: 'in' });
