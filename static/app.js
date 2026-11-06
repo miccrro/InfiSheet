@@ -6690,11 +6690,11 @@
   }
 
   // 生成完成后产物的落点：每张图各建一个**纯图片节点**（plain，不带生成面板），
-  // 摆在原节点右侧一行，并连回原节点的 `in` 口——新图直接成为它的参考输入，
-  // 想接着图生图不用再手动拖线。原节点的图一动不动：它是这一轮用的初始图，
-  // 覆盖掉就再也回不到「改之前」的样子（以前 n.dataURL 直接被这批图顶掉）。
-  // 步长用固定宽度 380（图片节点宽固定），按行排就不会叠；多张时左右铺开而不是往下堆，
-  // 竖图最高能到 760px，往下堆按固定步长一定会压到下一张。
+  // 排在原节点右侧一行，并由原节点的 out 口连到新节点的 in 口——线的方向就是生成顺序
+  // （提示词 → 原图 → 生成图），从左往右走，不会从产物绕回上游。
+  // 新节点自己再生成时，这条上游线正好被当成参考图，迭代链天然成立。
+  // 原节点的图一动不动：它是这一轮用的初始图，覆盖掉就再也回不到「改之前」的样子
+  // （以前 n.dataURL 直接被这批图顶掉）。
   // inherit 是这一轮真正用的那套参数：写进新节点的 gen 里，图片详情（nodeImageInfo）与
   // 资产库详情（assetImageInfo）都读 gen，于是「这张是用什么词出的」当场能查到；
   // 点标题上的「生成」打开面板时也是这套参数，不用重新敲一遍。
@@ -6722,21 +6722,26 @@
       gallery: [], idx: 0, runs: [],
     });
     const stepX = 380 + 40;
-    const x0 = Math.round(src.x + nodeWidth(src) + 60);
-    // 连着生成第二、第三批时不能落在同一处：把这一列里已有节点的底边让出来（高度取实测值，
-    // 竖图能到 760px，按固定值估一定会压上），新的一批从它下面开始排。
-    const y0 = state.nodes
-      .filter((o) => o !== src && o.x < x0 + 380 && o.x + nodeWidth(o) > x0)
-      .reduce((m, o) => {
-        const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(o.id)}"]`);
-        return Math.max(m, o.y + ((el && el.offsetHeight) || 420) + 40);
-      }, Math.round(src.y));
+    const y0 = Math.round(src.y);
+    // 这一行已经有节点（上一批的产物）就继续往右让，别叠上去。
+    // 高度取实测值：竖图能到 760px，按固定值估会把「其实不挡路」的节点也算成障碍。
+    const hOf = (o) => {
+      const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(o.id)}"]`);
+      return (el && el.offsetHeight) || 420;
+    };
+    const busy = (x) => state.nodes.some((o) => o !== src
+      && x < o.x + nodeWidth(o) && x + 380 > o.x
+      && y0 < o.y + hOf(o) && y0 + 420 > o.y);
+    let x0 = Math.round(src.x + nodeWidth(src) + 60);
+    for (let guard = 0; guard < 60 && busy(x0); guard++) x0 += stepX;
     const born = items.map((it, i) => addImageNode(x0 + i * stepX, y0, {
       dataURL: it.url, filename: it.filename || '', uploaded: null,
       title: '图片（生成）', plain: true, gen: genOf(),
     }, true));
+    // 方向：原节点 → 新节点。反过来（新 → 原）画出来是「产物指回上游」，
+    // 线要从产物右侧绕一大圈才够得着原节点的 in 口，看着就是反的。
     born.forEach((nd) => {
-      state.links.push({ id: uid('l'), from: nd.id, to: src.id, toKey: 'in' });
+      state.links.push({ id: uid('l'), from: src.id, to: nd.id, toKey: 'in' });
     });
     renderAll(); queueSave(); commit();
     return born;

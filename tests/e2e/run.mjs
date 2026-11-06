@@ -5647,6 +5647,7 @@ try {
     // 出图前后各拍一张快照：这次生成要验「原节点的图不被覆盖、结果落到新节点上」
     const shot = () => ({
       nodes: document.querySelectorAll('#nodes .node').length,
+      links: document.querySelectorAll('#links .link-line').length,
       src: (document.querySelector('#nodes .node[data-id="i2"] .thumb img') || { getAttribute: () => '' }).getAttribute('src') || '',
     });
     const before = shot();
@@ -5683,6 +5684,10 @@ try {
     JSON.stringify({ before: autoImp.before, after: autoImp.after }));
   check('生成完原节点的图原样留着（不被这次的产物覆盖）',
     !!autoImp.after && !!autoImp.before && autoImp.after.src === autoImp.before.src,
+    JSON.stringify({ before: autoImp.before, after: autoImp.after }));
+  // 方向：原节点 → 新节点（从左往右）。以前是反的，线要从产物右侧绕回原节点的 in 口
+  check('新节点由原节点连出（连线条数 +1）',
+    !!autoImp.after && !!autoImp.before && autoImp.after.links === autoImp.before.links + 1,
     JSON.stringify({ before: autoImp.before, after: autoImp.after }));
   // 新节点得带着这次的整套参数：打开大图详情就能看到「这张是用什么词出的」，
   // 不用回头翻原节点。以前这一步是空的（新节点 gen 只有默认工作流）。
