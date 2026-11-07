@@ -22,7 +22,8 @@
     projectId: null,
     rev: 0,            // 服务端给的存档版本号：保存时回传，落后就说明有人（MCP）改过
     groups: [],
-    workflows: { presets: [], items: [], categories: [] },   // boot 时从 /api/library 拉取
+    workflows: { items: [], categories: [] },                // boot 时从 /api/library 拉取
+    wfDefaults: {},                                          // 能力分类 → 默认工作流 id（服务端存）
     name: '未命名画布',
     snap: false,
     linksHidden: false,
@@ -833,7 +834,7 @@
   const AUTO_SCALES = [[1, '1×'], [1.5, '1.5×'], [2, '2×']];
   const OLD_SIZE = { preview: '1k', standard: '1k', hd: '2k' };   // 高清 2K：16:9 下 ~2MP，最接近原来那张图的大小
 
-  // 生成器下拉只用内置预设：库工作流是「我的存档」，容易和模板混在一起
+  // 生成器下拉 / 节点选择器都读同一份列表（data/library/）：内置模板已经没有了。
   // takes_image 由服务端扫图得出（server.py: graph_takes）：
   // 挑工作流必须看能力，不能看名字里的「图像编辑」——Moss_图像编辑 其实是纯文生图。
   // 分类由服务端扫图给出（server.py: graph_category）：文生图 / 图生图 / 高清 / 视频 / 音频。
@@ -859,59 +860,122 @@
     return hit ? hit.name : (CAT_LABEL[id] || id || '其他');
   }
 
-  // 预设 + 工作流库**合成一份**：设置里的默认工作流、节点上的工作流选择器、
-  // 自动挑工作流，看到的都该是同一个列表。以前只有预设能选，自己存进库的工作流
-  // 就永远进不了这些下拉——用户的感受就是「工作流被固定死了」。
-  function presetOptions() {
-    const w = state.workflows || { presets: [], items: [] };
-    const norm = (it, id, source) => ({
-      id,
-      label: it.title || it.name,
-      image: !!it.takes_image,
-      // 遮罩能力由服务端扫图给出，不看名字：
-      // alphaMask = 有人在消费 LoadImage 的 MASK 输出（烘 alpha 路线，唯一主路径）
-      alphaMask: !!it.takes_alpha_mask,
-      category: it.category || 'other',
-      group: it.group || it.category || 'other',
-      catLabel: catName(it.group || it.category || 'other'),
-      source,
-      nodes: it.nodes || 0,
-      // 删除时要用真实文件名（presets/ 下的 xxx.api.json）或库名，id 里带着前缀不能直接用。
-      // 以前这里没给 file，deleteWfItem 拿到的永远是 undefined，删预设必然 400「预设名非法」。
-      file: source === 'preset' ? it.file : it.name,
-    });
-    return (w.presets || []).map((p) => norm(p, `preset:${p.file}`, 'preset'))
-      .concat((w.items || []).map((it) => norm(it, `lib:${it.name}`, 'lib')));
+  // ---------------- 工作流图标 ----------------
+  // 一个工作流可以有自己的标：一批内置的**模型官方商标** + 用户自己传的图。
+  //
+  // 内置这批是各家的真实 logo（PNG 在 static/logos/），不是拿字母画的仿标：
+  // 用户要的就是「一眼认出这是 Qwen 还是 FLUX」，仿标做不到这件事。
+  // 商标归各自所有者，这里只用来标识对应的模型（合理使用）；要换掉某一张，
+  // 直接把 static/logos/<id>.png 换成新图即可，前端只认文件名。
+  //
+  // 只收**拿得到官方商标**的：Chroma、CogVideoX 这类没有独立 logo 的宁可空着，
+  // 也不编一个字母牌混在里面。
+  const WF_ICONS = [
+    { id: 'qwen', name: 'Qwen · 通义千问' },
+    { id: 'flux', name: 'FLUX.1 · Black Forest Labs' },
+    { id: 'sd', name: 'Stable Diffusion · Stability AI' },
+    { id: 'krea', name: 'Krea' },
+    { id: 'wan', name: 'Wan · 万相（阿里）' },
+    { id: 'hunyuan', name: 'Hunyuan · 混元（腾讯）' },
+    { id: 'kolors', name: 'Kolors · 可图（快手）' },
+    { id: 'hidream', name: 'HiDream' },
+    { id: 'ltx', name: 'LTX-Video · Lightricks' },
+    { id: 'mochi', name: 'Mochi · Genmo' },
+  ];
+  const WF_ICON_MAP = {};
+  WF_ICONS.forEach((ic) => { WF_ICON_MAP[ic.id] = ic; });
+
+  // 静态根就是站点根（index.html 里是 /app.js、/style.css），所以商标图走 /logos/，
+  // 不是 /static/logos/ ——写成后者会 404，而且只在浏览器控制台里留一行，界面上就是一片空白。
+  //
+  // 后面挂的 ?v= 是缓存版本号。server.py 给 logos/ 下的是 max-age=86400，
+  // 换图后旧 URL 会继续吃一天缓存，界面看着像「改了没生效」。改图就把版本号加一。
+  const WF_LOGO_VER = 2;
+  function wfLogoSrc(id) { return `/logos/${id}.png?v=${WF_LOGO_VER}`; }
+
+  // 把存的值画成 HTML。只有两种形态，认不出来的（比如手改坏的）当没设。
+  function wfIconHTML(v, size) {
+    const px = size || 22;
+    const raw = String(v || '');
+    let inner = '';
+    if (raw.startsWith('preset:')) {
+      const hit = WF_ICON_MAP[raw.slice(7)];
+      inner = hit ? `<img class="wf-logo" src="${wfLogoSrc(hit.id)}" alt="">` : '';
+    } else if (raw.startsWith('file:')) {
+      const fn = raw.slice(5).replace(/^icons\//, '');
+      inner = `<img src="/api/icon/${encodeURIComponent(fn)}" alt="" loading="lazy">`;
+    }
+    if (!inner) {
+      // 没设图标：默认那颗灰线工作流标 + 虚线框，一眼能看出「这儿可以点」
+      return `<span class="wf-ico is-none" style="width:${px}px;height:${px}px">${icon('wf')}</span>`;
+    }
+    // 官方商标统一是「白色 + 透明底」（static/logos/ 那 10 张），直接落在深色面板上
+    // 就是最终效果，不能再垫浅色板——垫了白图标就整个消失。
+    return `<span class="wf-ico${raw.startsWith('preset:') ? ' is-logo' : ''}"`
+      + ` style="width:${px}px;height:${px}px">${inner}</span>`;
   }
 
-  // 按用途挑工作流。need 可以是类别，也可以是按优先级排的数组。
-  // 挑不到同类就退到第一个可用预设——宁可给个可能不对的，也别返回空让节点跑不起来。
+  // 预设 + 工作流库**合成一份**：节点上的工作流选择器、设置里那份列表、遮罩 / 扩图
+  // 找同类工作流时，看到的都该是同一个列表。以前只有预设能选，自己存进库的工作流
+  // 就永远进不了这些下拉——用户的感受就是「工作流被固定死了」。
+  // 工作流列表：**只有一份来源**——服务端的 data/library/。
+  // 以前这里还把随程序分发的 presets/ 拼在后面，同一份工作流能出现两次（内置一条、
+  // 自己存一条），删除还只能「隐藏」。内置预设整档删掉之后，列表就是库本身。
+  function wfOptions() {
+    const w = state.workflows || { items: [] };
+    return (w.items || []).map((it) => {
+      const id = `lib:${it.name}`;
+      const cat = it.category || 'other';
+      return {
+        id,
+        label: it.title || it.name,
+        icon: it.icon || '',
+        image: !!it.takes_image,
+        // 遮罩能力由服务端扫图给出，不看名字：
+        // alphaMask = 有节点在消费 LoadImage 的 MASK 输出 → 烘 alpha 整张送（原生遮罩）；
+        // image     = 只吃图不吃遮罩 → 走裁切局部重绘（裁出涂的范围单独跑，出图贴回原位）
+        alphaMask: !!it.takes_alpha_mask,
+        category: cat,
+        group: it.group || cat,
+        catLabel: catName(it.group || cat),
+        nodes: it.nodes || 0,
+        kinds: it.kinds || [],
+        // 删除 / 覆盖写回都要真实库名（文件名去掉 .json），id 里带着前缀不能直接用
+        file: it.name,
+        // 是不是它所在能力分类的默认（默认表在服务端 data/wf-defaults.json）
+        isDefault: wfDefaultId(cat) === id,
+      };
+    });
+  }
+
+  // 某个能力分类当前的默认工作流 id（没设过 / 设的那份已经不在了 → 空串）。
+  // 分类键只用 CAT_ORDER 那六个：它们是「这个工作流干什么用的」，不随用户改分类而变。
+  function wfDefaultId(cat) {
+    const d = (state.wfDefaults || {})[cat];
+    return d ? String(d) : '';
+  }
+
+  // 按用途找**同类**工作流。need 可以是类别，也可以是按优先级排的数组。
+  //
+  // 顺序：该分类**设过的默认** → 同分类里排在前面的那一份 → 空串。
+  // 默认是用户在设置里显式选过的（存在服务端 data/wf-defaults.json），
+  // 所以「替他挑一个」这件事有了出处，面板上也会把名字显示出来。
+  // 没设默认时仍不做「退到第一个能用的」那种跨类兜底：那层兜底正是以前
+  // 「工作流被固定死了」的来源——高清按钮挑到纯文生图，出来的是一张全新的画。
+  //
+  // 靠遮罩驱动的（局部重绘）不进这个挑选：它的 mask 来自图片的 alpha 通道，
+  // 一张普通参考图喂进去 alpha 全是不透明 → mask 全 0 → 什么都不重绘，出图跟原图逐位相同。
+  // 只有用户在遮罩编辑器里明确要重绘时，才由 ensureMaskWorkflow 显式选它。
   function pickWorkflow(need) {
-    const list = presetOptions();
     const wants = Array.isArray(need) ? need : [need];
-    let saved = '';
-    try { saved = localStorage.getItem('infisheet-default-wf') || ''; } catch { /* 隐私模式 */ }
-    // 靠遮罩驱动的（局部重绘）不进自动挑选：它的 mask 来自图片的 alpha 通道，
-    // 一张普通参考图喂进去 alpha 全是不透明 → mask 全 0 → 什么都不重绘，出图跟原图逐位相同。
-    // 只有用户在遮罩编辑器里明确要重绘时，才由 ensureMaskWorkflow 显式选它。
-    const auto = list.filter((o) => !o.alphaMask);
+    const auto = wfOptions().filter((o) => !o.alphaMask);
     for (const want of wants) {
-      // 设置里指定的「默认工作流」只要同类就优先用——否则那个设置就成了摆设
-      const mine = saved ? list.find((o) => o.id === saved) : null;
-      if (mine && mine.category === want) return saved;
+      const def = auto.find((o) => o.id === wfDefaultId(want));
+      if (def) return def.id;
       const hit = auto.find((o) => o.category === want);
       if (hit) return hit.id;
     }
-    return (auto[0] || list[0] || {}).id || '';
-  }
-  function defaultWorkflowId() {
-    const list = presetOptions();
-    let saved = '';
-    try { saved = localStorage.getItem('infisheet-default-wf') || ''; } catch { /* 隐私模式 */ }
-    if (saved && list.some((o) => o.id === saved)) return saved;
-    // 同上：兜底别落到局部重绘上，否则新建的图片节点一生成就是「原图原样回来」
-    const auto = list.filter((o) => !o.alphaMask);
-    return (auto[0] || list[0] || {}).id || '';
+    return '';
   }
 
   // 工作流库变了（新增/删除/导入）就重新拉一次：
@@ -920,10 +984,11 @@
     try {
       const lib = await api('/api/library');
       state.workflows = {
-        presets: lib.presets || [],
         items: lib.items || [],
         categories: lib.categories || [],
       };
+      // 默认工作流按能力分类各一份，跟列表同一份响应回来
+      state.wfDefaults = lib.defaults || {};
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
     return state.workflows;
@@ -931,15 +996,42 @@
 
   async function loadGraphById(id) {
     if (!id) return null;
-    // 不直接拼 /presets/<文件名>：文件名是可变的，却被写进了每个项目。
-    // 服务端 resolve 依次认 文件名 / stem / 改名兼容表 / 标题 / uid，改预设名就不再让老画布 404。
+    // 不直接拼库文件名：文件名会被改，却被写进了每个项目。
+    // 服务端 resolve 依次认 名字 / 去掉 .api 的短名 / 标题，老画布上的 preset: 引用也按名字映射。
     const r = await api(`/api/wf/resolve?id=${encodeURIComponent(id)}`);
     if (r && r.graph && Object.keys(r.graph).length) return r.graph;
     if (r && r.ok === false && 'candidates' in r) return null;   // 真找不到：让调用方如实报错
     // 服务端还是旧版本（没有这个接口）→ 退回直连，别把整块画布拖死
-    if (id.startsWith('preset:')) return (await api(`/presets/${encodeURIComponent(id.slice(7))}`)).graph;
-    if (id.startsWith('lib:')) return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
-    return (await api(`/api/library/${encodeURIComponent(id.slice(4))}`)).graph;
+    const name = id.startsWith('lib:') ? id.slice(4) : id.startsWith('preset:') ? id.slice(7) : id;
+    return (await api(`/api/library/${encodeURIComponent(name.replace(/\.api$/, ''))}`)).graph;
+  }
+
+  // 节点上存的工作流 id 可能是**旧文件名**：老画布写的是 `preset:xxx.api.json`，
+  // 而内置预设已经整档删掉了。服务端 resolve 按名字把它映射到库里同名的那份，
+  // 认出来 → 把节点上的 id 换成 `lib:名字`（惰性迁移）；真没有同名工作流才清空。
+  // 只在「id 不在当前列表里」时才会被叫到，所以不会对正常节点发请求。
+  const resolvingWf = new Set();
+  async function resolveWfId(n) {
+    const g = n && n.gen;
+    if (!g || !g.wf || resolvingWf.has(g.wf)) return;
+    const want = g.wf;
+    resolvingWf.add(want);
+    let r = null;
+    try { r = await api(`/api/wf/resolve?id=${encodeURIComponent(want)}`); }
+    catch { /* 服务端没答上来：别动它，留着下次再说 */ }
+    resolvingWf.delete(want);
+    if (!r || g.wf !== want) return;      // 期间用户可能已经自己选了别的
+    if (r.ok && r.id) {
+      g.wf = r.id;
+      paintWfChip(n);
+      queueSave();
+      return;
+    }
+    if (r.ok === false && 'candidates' in r) {   // 真找不到（不是网络问题）
+      g.wf = '';
+      paintWfChip(n);
+      queueSave();
+    }
   }
 
   // 分类表整体存回服务端：改名 / 新增 / 删除 / 排序都走这一条
@@ -1351,6 +1443,85 @@
     return { kind: 'unknown', title: '生成失败', hint: '', retry: false };
   }
 
+  // 生成失败的统一落点。状态行只写「一句话 + 出错的位置」，完整内容进详情卡片。
+  // 重点是**哪里**报错：以前只有 `失败：<一坨字符串>`，用户既分不清是上传、构建还是
+  // ComfyUI 里某个节点，也看不到被那一行截掉的后半句。
+  function setGenError(n, err, stage, detail) {
+    const g = n && n.gen;
+    if (!g) return;
+    const c = classifyGenError(err);
+    const d = detail || {};
+    g.error = {
+      title: c.title || '生成失败',
+      stage: stage || '',
+      where: d.where || stage || '',
+      node: d.node_id || '',
+      nodeType: d.node_type || '',
+      nodeTitle: d.title || '',
+      message: String(d.message || err || '').trim(),
+      type: d.exception_type || '',
+      hint: c.hint || '',
+      at: Date.now(),
+    };
+    g.status = g.error.where ? `${c.title} · ${g.error.where}` : c.title;
+  }
+
+  // 失败详情：和残留卡片同一套骨架，但这里只读——一行「在哪」、一行「什么错」、一行「怎么办」。
+  // 「复制错误」是给报障用的：这一屏的字用户抄不下来，也不该让他抄。
+  function openErrorCard(n) {
+    const e = n && n.gen && n.gen.error;
+    if (!e) return;
+    const old = document.getElementById('errCard');
+    if (old) old.remove();
+    const row = (k, v, cls) => (v
+      ? `<div class="err-row ${cls || ''}"><span class="err-k">${esc(k)}</span>`
+        + `<span class="err-v">${esc(v)}</span></div>`
+      : '');
+    const nodeBits = [e.nodeTitle, e.nodeType, e.node ? `节点 ${e.node}` : '']
+      .filter(Boolean).join(' · ');
+    // 「在哪」已经把标题 / 类型 / 节点号拼在一起了，再单列一行「节点」就是同一句话抄两遍。
+    // 只有拼不进去的时候（比如服务端只给了 node_id、没有标题）才单列。
+    const nodeRedundant = !!nodeBits && !!e.where && e.where.includes(e.nodeTitle || e.nodeType || '');
+    const wrap = document.createElement('div');
+    wrap.id = 'errCard';
+    wrap.innerHTML = `
+      <div class="sheet rs-sheet" role="dialog" aria-label="生成失败">
+        <header><strong>${esc(e.title || '生成失败')}</strong></header>
+        <div class="rs-body">
+          ${row('在哪', e.where, 'where')}
+          ${nodeRedundant ? '' : row('节点', nodeBits)}
+          ${row('阶段', e.stage)}
+          ${row('异常', e.type)}
+          ${row('消息', e.message, 'msg')}
+          ${e.hint ? `<p class="rs-note">建议：${esc(e.hint)}</p>` : ''}
+          <p class="rs-note">这条也会进「运行记录」，队列面板里能翻到同一条。</p>
+        </div>
+        <footer class="rs-foot">
+          <button type="button" class="err-close">关闭</button>
+          <button type="button" class="err-copy">复制错误</button>
+        </footer>
+      </div>`;
+    document.body.appendChild(wrap);
+    const done = () => {
+      wrap.remove();
+      document.removeEventListener('keydown', onKey, true);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation();
+      done();
+    };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.err-close').onclick = done;
+    wrap.querySelector('.err-copy').onclick = async () => {
+      const txt = [e.title, e.where, e.stage, e.type, e.message,
+        e.hint ? `建议：${e.hint}` : ''].filter(Boolean).join('\n');
+      try { await navigator.clipboard.writeText(txt); flash('错误信息已复制'); }
+      catch { flash('复制失败：浏览器不让写剪贴板，手动选一下吧'); }
+    };
+    wrap.onclick = (ev) => { if (ev.target === wrap) done(); };
+  }
+
   function pollPrompt(pid, onTick, onDone) {
     const t0 = Date.now();
     let lostPolls = 0;
@@ -1361,7 +1532,10 @@
       const res = await api(`/api/job?pid=${encodeURIComponent(pid)}`);
       if (stopped) return;
       const secs = Math.round((Date.now() - t0) / 1000);
-      if (!res.ok) { clearInterval(timer); onDone([], res.error || '查询失败', secs); return; }
+      // 第 4 个参数是「哪里报错」：服务端从 execution_error 里拆出来的节点 id / 标题 / 异常。
+      // 少了它，前端只能拿到一坨字符串，说不清是哪个节点坏的。
+      const det = res.error_detail || null;
+      if (!res.ok) { clearInterval(timer); onDone([], res.error || '查询失败', secs, det); return; }
       if (res.status === 'queued' || res.status === 'running') {
         lostPolls = 0;
         onTick(res.status === 'queued' ? '排队中' : '生成中', secs, res.progress ?? null);
@@ -1371,11 +1545,11 @@
         lostPolls += 1;
         if (lostPolls <= 4) { onTick('等待任务', secs); return; }
         clearInterval(timer);
-        onDone([], '任务记录已丢失（ComfyUI 可能已重启）', secs);
+        onDone([], '任务记录已丢失（ComfyUI 可能已重启）', secs, det);
         return;
       }
       clearInterval(timer);
-      onDone(res.artifacts || [], res.error, secs);
+      onDone(res.artifacts || [], res.error, secs, det);
     }, 1500);
     // 返回「停止轮询」的句柄（对象，不是函数）：队列面板取消任务时用它把前端这侧掐掉
     return { stop() { stopped = true; clearInterval(timer); } };
@@ -1679,9 +1853,7 @@
   }
 
   const REF_VIA_SHORT = { link: '连线', text: '经文本', at: '@', canvas: '画布' };
-  const REF_SEARCH_ICON = '<svg class="oi" viewBox="0 0 48 48" fill="none" aria-hidden="true">'
-    + '<path d="M37 37L31.5 31.5" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>'
-    + '<circle cx="21" cy="21" r="13" stroke="currentColor" stroke-width="4"/></svg>';
+  const REF_SEARCH_ICON = icon('search');
 
   // 光标矩形：菜单贴着正在打的那个 @ 弹出来，而不是挂在整块编辑区底下（会掉出面板外）
   function caretRect(el, fallback) {
@@ -2542,21 +2714,12 @@
     });
   }
 
-  // 生成面板底栏那颗「工作流」图标：三个圆环落在同一个圆上 120° 均分，三段沿该圆的外弧
-  // 把它们连成一圈——就是「节点串成一条链」最直白的画法。
-  // 没用 IconPark：库里没有这个形状，试过的 LinkOne（链环）读起来像「超链接」，
-  // Layers（四层叠纸）像「图层/素材」，手绘的三框流程图缩到 13px 糊成一团。
-  // 比例是从参考图上量出来的：圆周半径 17、节点外径 5.6（≈R/3）、弧几乎贴着节点外缘
-  // （只留 0.45 的空隙，所以三段弧各占 120°−2×27°）。线宽 3.4 而不是 IconPark 的 4：
-  // 参考图本身是细线，但再细到 2.6 在 13px 下只剩 0.7px，会灰得看不见。
-  // 垂直居中要单独挪：上面顶出去的是节点外缘（R+5.6），下面伸出去的是弧的半线宽（R+1.7），
-  // 不补偿的话整颗图标会偏下 2px。
-  const WF_ICON = '<svg class="oi" viewBox="0 0 48 48" fill="none" aria-hidden="true">'
-    + '<path d="M16.25 10.82A17 17 0 0 0 7.02 26.8M14.77 40.23A17 17 0 0 0 33.23 40.23'
-    + 'M40.98 26.8A17 17 0 0 0 31.75 10.82" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/>'
-    + '<circle cx="24" cy="8.95" r="3.9" stroke="currentColor" stroke-width="3.4"/>'
-    + '<circle cx="9.28" cy="34.45" r="3.9" stroke="currentColor" stroke-width="3.4"/>'
-    + '<circle cx="38.72" cy="34.45" r="3.9" stroke="currentColor" stroke-width="3.4"/></svg>';
+  // 生成面板底栏那颗「工作流」图标：直接用图标表里的 wf（两个方框 + 肘形连线），
+  // 和「新建节点」菜单、节点标题栏上的那一颗是同一张图。
+  // 这里原来是一张 48 栅格、stroke 3.4、三个圆环串一圈的手绘图——它自带 stroke-width，
+  // 会把 style.css 的 --oi-stroke 光学补偿压死，缩到 14px 时有效线宽只剩 1.0px 且糊成一团，
+  // 也是整个界面里唯一一颗不在 24 栅格体系里的图标（审计里唯一报「出栅格」的就是它）。
+  const WF_ICON = icon('wf');
 
   function buildGenPanel(n) {
     // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值。
@@ -2568,7 +2731,8 @@
     //    gallery / prompt 一起冲掉，多图节点会当场变成空图（e2e 抓到的）。
     const g = n.gen || (n.gen = {});
     const DEFAULTS = {
-      prompt: '', wf: pickWorkflow('txt2img'), aspect: '1:1', aspectAuto: false,
+      // wf 留空：新节点的第一件事就是「选一个工作流」，不再有默认
+      prompt: '', wf: '', aspect: '1:1', aspectAuto: false,
       autoScale: 1,   // 智能档的倍数（原图 ×N）；不在智能档时它不起作用，留着是为了切回来还记得
       size: '1k', custom: null,
       batch: 1, seedMode: 'random', seed: null,
@@ -2583,8 +2747,11 @@
       // 宽高不全（旧存档 / 手改坏了）才回落，否则 'custom' 会被下面那条当成非法档位
       if (!(g.custom && g.custom.w > 0 && g.custom.h > 0)) g.size = '1k';
     } else if (!SIZES.some((s) => s[0] === g.size)) g.size = OLD_SIZE[g.size] || '1k';
-    // 存档里的工作流可能已被删掉/改名：回落到第一个可用工作流，避免点生成才报错
-    if (!presetOptions().some((o) => o.id === g.wf)) g.wf = defaultWorkflowId();
+    // 存档里的工作流 id 可能指向一个**改过名**的预设（id 里带的是文件名，文件名会变）。
+    // 这里不清空也不回落：问一次 /api/wf/resolve，认出来就把 id 换成新的、chip 跟着改。
+    // 真删掉了才清空成「未选择工作流」——以前这里一律回落到「默认工作流」，
+    // 等于删了一个却悄悄换成另一个，用户根本不知道自己手上这版参数变成了什么。
+    if (g.wf && !wfOptions().some((o) => o.id === g.wf)) resolveWfId(n);
     const panel = document.createElement('div');
     // 不再有「加宽面板」这一档：那颗按钮改成开独立放大编辑区了，宽度固定在左右各外扩 20px
     panel.className = 'gen-panel';
@@ -2601,7 +2768,7 @@
       expand: icon('expand'),
       palette: icon('palette'),
       wf: WF_ICON,
-      arrow: icon('arrowUpBold'),
+      arrow: icon('arrowUp'),
     };
 
     // 顶部 chips
@@ -2740,15 +2907,17 @@
     bar.className = 'gen-bar';
 
     // 原生 select 在 #world 的 transform 里弹层会被裁/错位，统一换自绘菜单
-    const mkMenu = (iconSvg, optsIn, cur, onPick, placeholder, extras) => {
+    const mkMenu = (iconSvg, optsIn, cur, onPick, placeholder, extras, iconFn) => {
       const resolve = () => (typeof optsIn === 'function' ? optsIn() : optsIn);
       const box = document.createElement('label');
       box.className = 'gensel';
+      let icoEl = null;
       if (iconSvg) {
         const i = document.createElement('span');
         i.className = 'gensel-icon';
         i.innerHTML = iconSvg;
         box.appendChild(i);
+        icoEl = i;
       }
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -2761,8 +2930,14 @@
       const setLabel = (v) => {
         const list = resolve();
         const hit = list.find(([val]) => String(val) === String(v));
-        txt.textContent = hit ? hit[1] : (list[0] ? list[0][1] : (placeholder || '（空）'));
+        // 没值（或指向一个已经删掉的 id）就显示占位语，**绝不退到 list[0]**：
+        // 工作流没有默认之后，退到第一项等于「没选却显示选了」——面板上写着
+        // 「Krea2 · 文生图」，用户当然以为已经在用它了。
+        txt.textContent = hit ? hit[1] : (placeholder || '（空）');
         btn.title = txt.textContent;
+        // 带 iconFn 的那颗（工作流）跟着选择一起换标：选完 Qwen 还挂着通用图标，
+        // 这一眼就白看了
+        if (icoEl && iconFn) icoEl.innerHTML = iconFn(v, hit);
       };
       setLabel(current);
       btn.onclick = (ev) => {
@@ -2770,11 +2945,16 @@
         ev.stopPropagation();
         const list = resolve();          // 每次打开都取最新列表：新加的预设/库工作流立刻出现
         if (!list.length && !(extras && extras.length)) return;
-        const items = list.map(([val, text, menuText]) => [menuText || text, () => {
+        // 只要这一份列表里有**任何**一项带图标，所有项就都留出那一格：
+        // 否则有标的缩进 32px、没标的只缩进 12px，一列文字参差不齐，比不画还乱。
+        const anyIcon = list.some((x) => x[3]);
+        const items = list.map(([val, text, menuText, ico]) => [menuText || text, () => {
           current = val;
           setLabel(val);
           onPick(val);
-        }, String(val) === String(current) ? 'active' : '']);
+        }, String(val) === String(current) ? 'active' : '',
+          // 第 4 项只有工作流菜单会给（其余菜单没有图标，走纯文字那条）
+          !anyIcon ? '' : (ico ? wfIconHTML(ico, 16) : '<span class="wf-ico is-empty" style="width:16px;height:16px"></span>')]);
         (extras || []).forEach(([label, fn]) => items.push([label, fn, 'add']));
         openPopMenu(btn, items);
       };
@@ -2782,12 +2962,23 @@
       return box;
     };
 
+    // 工作流：**不预选**。新节点进来是空的，这里显示「未选择工作流」，
+    // 选了就是选了——之后没有任何「按参考图 / 纯文生图自动换一个」。
     const wfBox = mkMenu(ICON.wf,
-      () => presetOptions().map((o) => [o.id, o.label, `${o.catLabel} · ${o.label}`]),
-      g.wf || defaultWorkflowId(),
-      (v) => { g.wf = v; g.wfAuto = false; queueSave(); commit(); },   // 手选过就别再自动换
-      '（没有可用工作流）');
+      // 第 4 项是图标：菜单里不画（一行字已经够长），但芯片要跟着换
+      () => wfOptions().map((o) => [o.id, o.label, `${o.catLabel} · ${o.label}`, o.icon]),
+      g.wf || '',
+      (v) => {
+        g.wf = v;
+        delete g.wfMaskBack;      // 用户自己选了，之前那次「换走」就不用还了
+        wfBox.classList.toggle('is-empty', !v);
+        queueSave();
+        commit();
+      },
+      '未选择工作流', null,
+      (v, hit) => wfIconHTML(hit ? hit[3] : '', 16));
     wfBox.classList.add('wfsel');
+    wfBox.classList.toggle('is-empty', !g.wf);
     bar.appendChild(wfBox);   // 工作流放在最左，后面接画幅 / 尺寸 / 张数（同一行）
 
     // 两个下拉之间那根竖线：底栏去胶囊之后，全靠「icon 名称 | icon 名称」这条线
@@ -2842,10 +3033,6 @@
       openGenOpts(optBtn, g, syncOpts, n);
     };
     bar.appendChild(optBox);
-    const status = document.createElement('span');
-    status.className = 'gen-status';
-    status.textContent = g.status || '';
-    bar.appendChild(status);
 
     const run = document.createElement('button');
     run.className = 'gen-run';
@@ -2856,7 +3043,18 @@
     run.onclick = (ev) => { ev.stopPropagation(); generateImage(n); };
     bar.appendChild(run);
 
+    // 状态行从底栏里搬出来了，单独占一整行（可以换行）。
+    // 底栏那一行还要放工作流名、画幅、生成键，谁长了都得截；而状态行恰恰是
+    // 「报错要说清楚」的地方——报错被截掉半句，等于没说。
+    const statusRow = document.createElement('div');
+    statusRow.className = 'gen-status-row';
+    const status = document.createElement('span');
+    status.className = 'gen-status';
+    statusRow.appendChild(status);
+    panel.appendChild(statusRow);
+
     panel.appendChild(bar);
+    syncStatus(n);
 
     ta.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); generateImage(n); }
@@ -2892,11 +3090,33 @@
     if (el && typeof el._syncOpts === 'function') el._syncOpts();
   }
 
+  // 状态行：整宽一行、可以换行；空的时候整行收起来（不占高度）。
+  // 有 error 时变红并且可点——点开是完整的那张卡片（见 openErrorCard）。
+  function syncStatus(n) {
+    const el = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
+    if (!el) return;
+    // 找 span 而不是找行：扩图面板会把状态文字**搬进**参数行（见 openOutpaintBar），
+    // 那时候它已经不在 .gen-status-row 里了，按行找会找不到、状态就不刷了。
+    const st = el.querySelector('.gen-status');
+    if (!st) return;
+    const row = st.closest('.gen-status-row');
+    const g = n.gen || {};
+    const txt = g.status || '';
+    const bad = !!g.error;
+    st.textContent = txt;
+    // 行里已经没有状态文字了（被扩图面板搬走）就别占着那一行高度
+    if (row) row.classList.toggle('hidden', !txt || !row.contains(st));
+    st.classList.toggle('is-err', bad);
+    if (row) row.classList.toggle('is-err', bad);
+    // title 里放完整消息：状态行再宽也可能被面板宽度限制，悬停至少能看到全文
+    st.title = bad && g.error.message ? g.error.message : txt;
+    st.onclick = bad ? (ev) => { ev.stopPropagation(); openErrorCard(n); } : null;
+  }
+
   function refreshGenPanel(n) {
     const el = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
     if (!el) return;
-    const st = el.querySelector('.gen-status');
-    if (st) { st.textContent = n.gen.status || ''; st.title = n.gen.status || ''; }
+    syncStatus(n);
     const btn = el.querySelector('.gen-run');
     if (btn) {
       btn.disabled = !!n.gen.busy;
@@ -2936,7 +3156,19 @@
     const keepJob = g.jobReuse && g.job ? g.job : null;
     g.jobReuse = false;
     g.retried = 0;          // 手动发起的一次生成，重置「已自动重试」标记
-    if (!g.wf) { flash('先在面板里选一个工作流'); bail(); return; }
+    g.error = null;         // 上一轮的失败详情不能留到这一轮（否则状态行一直是红的）
+    // 「阶段」跟着流程往下走：失败时要说得清是卡在载入、分析、构建还是提交，
+    // 否则用户拿到一句 `工作流为空` 不知道是自己少选了东西还是文件坏了。
+    let stage = '载入工作流';
+    // 没选工作流就不出图。除了那句话，顺手把左下角那颗菜单**打开**——
+    // 只丢一句「先选一个工作流」，用户还得自己找按钮在哪，等于让他多点两次。
+    if (!g.wf) {
+      flash('先选一个工作流：面板左下角那颗「工作流」按钮');
+      const sel = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .wfsel .gm-btn`);
+      if (sel) sel.click();
+      bail();
+      return;
+    }
     // 扩图：先把边框烘成像素 + 遮罩，再走后面那条完全不懂扩图的生成流程。
     // 必须排在「取参考图 / 算遮罩」前面——它换的正是这两样东西。
     if (outpaintOn(n)) {
@@ -2968,6 +3200,7 @@
     const refs = refsOf(n);
     const labelOf = refLabelFn(n);
     const picked = [];
+    stage = '上传参考图';
     for (const r of refs) {
       try {
         const name = await ensureUploaded(r.node);
@@ -2981,33 +3214,49 @@
         if (name) picked.push({ node: n, name, label: labelOf(n) });
       } catch { /* 纯文生图 */ }
     }
-    // 遮罩：涂过就必须让这张图进模型，否则等于白涂。
-    // 它是 unshift 进 picked 的第一张——工作流的第一个 image 插槽拿到它，
-    // 而它本身就是「原图 + alpha」，所以图和遮罩天然配对，不存在两个文件错位的可能。
+    // 遮罩：涂过就必须让这张图进模型，否则等于白涂。它永远是 unshift 进 picked 的第一张——
+    // 工作流的第一个 image 插槽拿到它，提示词里的「图1」指的就是它。
+    // 落地方式有两条，由**工作流能力**决定（不看用户选的是哪张）：
+    //   native —— 有节点消费 LoadImage 的 MASK 输出：把笔画烘进原图 alpha，整张送进去，
+    //             图和遮罩天然配对，不存在两个文件错位的可能；
+    //   crop   —— 只吃图、不吃遮罩（Qwen-Image-Edit 把 4 个 LoadImage 全接在参考图插槽上）：
+    //             裁出涂到的范围单独跑一次，出图再缩放贴回原位（见 stitchPatch）。
+    // 第二条是为了「换个工作流就得重涂一遍」这件事不再发生——以前这种流一涂遮罩就被
+    // 静默换成 Krea2 局部重绘，用户看到的就是「我选的流一点生成就跳走」。
     const mdoc = maskDocOf(n);
     const needMask = !!(mdoc && mdoc.strokes.length && n.dataURL);
-    if (!reconcileWorkflow(n, picked, needMask)) { bail(); return; }
+    if (!reconcileWorkflow(n, needMask)) { bail(); return; }
+    const wfNow = wfOptions().find((o) => o.id === g.wf);
+    const cropMode = needMask && !(wfNow && wfNow.alphaMask);
+    let cropRect = null;
     if (needMask) {
       try {
-        const name = await uploadMaskedImage(n, mdoc);
-        if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+        if (cropMode) {
+          const img = await loadImageEl(n.dataURL);
+          cropRect = cropRectFor(mdoc, img.naturalWidth || img.width, img.naturalHeight || img.height);
+          if (!cropRect) throw new Error('涂的范围算不出来（遮罩是空的？）');
+          const name = await uploadCropImage(img, cropRect, n.id);
+          if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+        } else {
+          const name = await uploadMaskedImage(n, mdoc);
+          if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+        }
       } catch (err) {
-        flash(`遮罩上传失败：${err.message}`);
+        flash(`遮罩${cropMode ? '裁切' : '上传'}失败：${err.message}`);
         bail();
         return;
       }
     }
-    // 自动挑的工作流按「有没有参考图」纠正一次：有图走图生图，没图走文生图。
-    // 这段逻辑已经挪进 reconcileWorkflow（上面调用），因为它必须先和遮罩对齐——
-    // 分两处判断时，遮罩那边切到「局部重绘」，这边又按分类切回去，最后涂了等于没涂。
     g.status = '准备工作流…'; refreshGenPanel(n);
     // 队列条目在这里就建：上传参考图、分析工作流、构建图都有可能失败，
     // 那些失败同样要能在队列里看到（否则「点了生成没反应」查无实据）。
     g.job = keepJob || newJob(n, 'image', { wf: g.wf, title: rawPrompt });
     patchJob(g.job, { phase: 'running', note: '准备中' });
     try {
+      stage = '载入工作流';
       const graph = await loadGraphById(g.wf);
       if (!graph) throw new Error('工作流为空');
+      stage = '分析工作流';
       const a = await postJson('/api/analyze', { graph });
       // 分析这一步也要几十毫秒到几秒：取消可能就发生在这里
       if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
@@ -3017,15 +3266,19 @@
         const s = autoSizeFor(n);
         if (s) { g.aspect = s.aspect; g.autoW = s.w; g.autoH = s.h; }
       }
-      const dims = dimsOf(g);
+      // 裁切重绘时尺寸必须跟着**裁剪框**走：模型只看到那一小块，给它整图尺寸等于让它
+      // 按原图比例重算一张小图，贴回去要缩两次、细节全糊。对齐 16 由 cropRectFor 保证。
+      const dims = cropRect ? { width: cropRect.w, height: cropRect.h } : dimsOf(g);
       // 工作流能吃几张图（Qwen 编辑流是 images.image_1..4）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
       const cap = (a.slots || []).filter((s) => s.kind === 'image').length;
       const use = cap > 0 ? picked.slice(0, cap) : [];
       const prompt = refMarks(promptText, use);   // @[甲] → 图1，和送进去的顺序一一对应
       if (!prompt) throw new Error('提示词里只有 @ 引用，没有文字');
+      stage = '构建参数';
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
         { mode: g.seedMode, value: g.seed });
+      stage = '提交任务';
       const res = await postJson('/api/run', { graph: built.graph });
       if (!res.ok) throw new Error(JSON.stringify(res.error || {}).slice(0, 180));
       // 取消发生在「提交请求已经发出」这段缝里：图确实进了 ComfyUI 队列，得再撤一次，
@@ -3067,8 +3320,10 @@
         : '';
       // 风格：拼进提示词的英文模板在画布上是看不见的，不说一句用户会以为「我明明选了风格」
       const styleNote = styleEntry ? ` · 风格 ${(g.style && g.style.cn) || styleEntry.name_cn || ''}` : '';
+      // 裁切重绘：状态栏里的宽高是**裁剪框**的尺寸，不点明的话用户会以为出图变小了
+      const maskNote = cropRect ? ' · 裁切重绘（贴回原位）' : '';
       g.pid = res.prompt_id;
-      g.status = `排队中 · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote}`;
+      g.status = `排队中 · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote}${maskNote}`;
       // 队列条目补上「多大、跑到哪一步」：条目在建的时候还不知道工作流吃不吃尺寸
       patchJob(g.job, {
         phase: 'queued', pid: res.prompt_id, progress: null, note: '',
@@ -3086,12 +3341,12 @@
           // 来回跳——用户看到的就是「百分比会消失」（遮罩那边早就做了同样的沿用，
           // 只有这一行和队列条目还在用当拍的 p，所以只消失半秒又回来）。
           const pct = typeof p === 'number' ? p : (typeof n.progress === 'number' ? n.progress : null);
-          g.status = `${label}${pctText(pct)} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote} · ${secs}s`;
+          g.status = `${label}${pctText(pct)} · ${dims.width}×${dims.height}${batchNote}${seedNote}${refNote}${pruneNote}${promptNote}${sizeNote}${styleNote}${maskNote} · ${secs}s`;
           setProgress(n, p);
           patchJob(g.job, { phase: label === '排队中' ? 'queued' : 'running', progress: pct, secs });
           refreshGenPanel(n);
         },
-        async (arts, err, secs) => {
+        async (arts, err, secs, detail) => {
           g.busy = false;
           if (err) {
             clearProgress(n);
@@ -3108,7 +3363,7 @@
               return;
             }
             g.retried = 0;
-            g.status = `${c.title}：${err}${c.hint ? ' · ' + c.hint : ''}`;
+            setGenError(n, err, '', detail);
             finishJob(g.job, 'error', c.title);
             refreshGenPanel(n);
             return;
@@ -3130,10 +3385,17 @@
           // 不再另起一个节点——空节点本身就是这块结果的落点，凭空多一个空壳节点只会让人以为
           // 「生成没生效」。节点上已经有初始图时才另起节点，把原图留着不动。
           const hadImage = !!n.dataURL;
-          const batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
+          let batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
+          // 裁切重绘：模型出的是「那一小块」，得贴回原图原位才是一张完整的图。
+          // 单张贴不回去（解码失败、ComfyUI 断了）就退回原样——宁可给一张没贴的局部图，
+          // 也不能因为贴图这一步把整次生成丢掉。
+          if (cropRect) {
+            batchItems = await Promise.all(batchItems.map(
+              (it) => storeStitched(n, it, cropRect, mdoc).catch(() => it)));
+          }
           const born = hadImage ? spawnResultNodes(n, batchItems, {
             prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
-            wf: g.wf || '', wfAuto: !!g.wfAuto,
+            wf: g.wf || '',
             style: g.style ? { ...g.style } : null,
             seed: built.seed ? built.seed.value : null,
             aspect: g.aspect, aspectAuto: !!g.aspectAuto,
@@ -3161,7 +3423,7 @@
           // 自动存一份进资产库（时间+序号命名）。放在 pushRun 之后、状态文案之前：
           // 不 await，出图该立刻显示，存库慢不该拖着界面；失败也只是没存下，不影响这次生成。
           autoImportAssets(batchItems);
-          g.status = `完成 · ${secs}s · ${imgs.length} 张`;
+          g.status = `完成 · ${secs}s · ${imgs.length} 张${cropRect ? ' · 已贴回原位' : ''}`;
           // 面板上选了 4 张、图里只回来 1 张：这不是"多图生成坏了"，而是**图提交上去了、
           // 工作流自己把批量抹平了**（二次采样链、ImageBatch、单张后处理之类）。不吭声的话
           // 用户只会反复重试；说清楚，才知道该去改工作流还是改面板。
@@ -3173,17 +3435,27 @@
           finishJob(g.job, 'done', `${imgs.length} 张`);
           finishProgress(n);
           rerenderNode(n.id, true);
+          // 重建之后再刷一次状态行：`buildGenPanel` 是在节点插进 #nodes **之前**跑的，
+          // 它末尾那次 syncStatus 按 `[data-panel-for]` 找不到面板，等于空跑——于是出图成功
+          // 之后状态行会停在一片空白（「完成 · 2s · 1 张」一个字都不写），用户以为这次没跑。
+          refreshGenPanel(n);
           queueSave();
           // 新节点摆在右侧，可能正好在视口外：说一句，免得用户以为没出图
-          if (born.length && !short) flash(`已生成 ${born.length} 个图片节点（在右侧，原节点保留原图）`);
+          if (born.length && !short) {
+            flash(cropRect
+              ? `重绘结果已贴回原图原位，另存 ${born.length} 个图片节点（在右侧，原节点保留原图）`
+              : `已生成 ${born.length} 个图片节点（在右侧，原节点保留原图）`);
+          }
         });
     } catch (err) {
       g.busy = false;
       clearProgress(n);
-      g.status = `失败：${err.message}`;
-      // 还没提交到 ComfyUI 就失败（分析/构建阶段）：队列里留一条失败记录，
-      // 否则「点了生成、什么都没发生」在队列面板上查不到任何痕迹。
-      finishJob(g.job, 'error', err.message.slice(0, 40));
+      // 这里接的是「还没提交到 ComfyUI 就失败」的那一段：载入 / 分析 / 构建 / 提交。
+      // 光给一句 `工作流为空`，用户分不清是自己少选了东西、文件坏了、还是服务没起来，
+      // 所以连阶段一起记下来（状态行写「哪里」，点开是详情卡片）。
+      setGenError(n, err, stage);
+      // 队列里留一条失败记录，否则「点了生成、什么都没发生」在队列面板上查不到任何痕迹。
+      finishJob(g.job, 'error', `${stage}失败`.slice(0, 40));
       refreshGenPanel(n);
     }
   }
@@ -3454,7 +3726,8 @@
         <header>
           <strong>资产库</strong>
           <span class="asset-n"></span>
-          <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史">⟳</button>
+          <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史"
+                  aria-label="重新读取资产目录与 ComfyUI 历史">${icon('rotate')}</button>
           <button type="button" class="x" title="关闭（Esc）">×</button>
         </header>
         <div class="asset-bar">
@@ -4325,24 +4598,30 @@
 
   // ---------- 设置里的「工作流」区（就是工作流库） ----------
   // 这份列表以前被拆成三处：设置里的「默认工作流下拉」、设置里的列表、资产库弹窗里的卡片。
-  // 下拉能做的事（设默认）行里的 ☆ 也能做，弹窗能做的事（加到画布）行里的按钮也能做，
-  // 所以现在只剩这一份：搜索 + 列表 + 一排分类。
+  // 现在只剩这一份：搜索 + 列表 + 一排分类。**没有「默认工作流」这一档**——
+  // 谁被默认选中，就意味着用户没选过也照样出图，而他根本不知道用的是哪个模板。
+  // 用哪个工作流一律在节点的生成面板里当场选。
   let setWfQuery = '';
   function renderSetWorkflows(box) {
     const listEl = box.querySelector('#setWfList');
     const catsEl = box.querySelector('#setCats');
     const defEl = box.querySelector('#setWfDefault');
     if (!listEl || !catsEl) return;
-    const opts = presetOptions();
+    const opts = wfOptions();
     const cats = wfCategories();
-    const cur = defaultWorkflowId();
 
-    // ---- 默认工作流：一行读数（以前是一个下拉，和这份列表列的是同一批东西） ----
+    // ---- 一行说明：每个能力分类当前用的是哪一份 ----
     if (defEl) {
-      const d = opts.find((o) => o.id === cur);
-      defEl.textContent = d
-        ? `默认：${d.label}（${d.catLabel}）· 同类里优先用它，点行里的 ☆ 换`
-        : '还没有可用的工作流，点上面的「导入工作流…」加一个。';
+      const cats = CAT_ORDER.filter((c) => opts.some((o) => o.category === c));
+      if (!opts.length) {
+        defEl.textContent = '还没有可用的工作流，点上面的「导入工作流…」加一个。';
+      } else {
+        const parts = cats.map((c) => {
+          const hit = opts.find((o) => o.id === wfDefaultId(c));
+          return `${CAT_LABEL[c] || c}：${hit ? hit.label : '未设'}`;
+        });
+        defEl.textContent = `按分类默认 · ${parts.join(' · ')}（点行里的 ☆ 换；新建节点按用途预选）`;
+      }
     }
 
     // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 加到画布 / 删除 ----
@@ -4362,13 +4641,23 @@
     }
     hits.forEach((o) => {
       const row = document.createElement('div');
-      row.className = 'wf-item' + (o.id === cur ? ' is-default' : '');
+      row.className = 'wf-item';
       row.dataset.id = o.id;
 
       const name = document.createElement('b');
       name.textContent = o.label;
-      name.title = `${o.label} · ${o.nodes} 个节点（点一下改名）`;
+      name.title = `${o.label} · ${o.nodes} 个节点${o.cleaned ? ' · 已清理（原文件未改，可恢复出厂）' : ''}（点一下改名）`;
       name.onclick = () => renameWfItem(o);
+
+      // 图标：名字前面那一格。点开是「预设模型标 / 传一张自己的 / 恢复默认」。
+      // 放在名字左边而不是右边一排按钮里，是因为它和名字是同一个东西的两面
+      // （「这是哪个模型」），而右边那一排都是对它做的动作。
+      const ico = document.createElement('button');
+      ico.type = 'button';
+      ico.className = 'wf-ico-btn';
+      ico.innerHTML = wfIconHTML(o.icon, 20);
+      ico.title = o.icon ? '换图标' : '给它挑个图标（Qwen / FLUX / 自己的图…）';
+      ico.onclick = (ev) => { ev.stopPropagation(); openIconPicker(ico, o); };
 
       const cat = document.createElement('button');
       cat.type = 'button';
@@ -4384,17 +4673,6 @@
         openPopMenu(cat, items, '换分类');
       };
 
-      const star = document.createElement('button');
-      star.type = 'button';
-      star.className = 'wf-star';
-      star.textContent = o.id === cur ? '★' : '☆';
-      star.title = o.id === cur ? '当前默认' : '设为默认工作流';
-      star.onclick = () => {
-        try { localStorage.setItem('infisheet-default-wf', o.id); } catch { /* ignore */ }
-        flash(`默认工作流：${o.label}`);
-        renderSetWorkflows(box);
-      };
-
       // 「加到画布」：以前这一步在资产库弹窗里，现在就在这份列表上——
       // 挑和管是同一个对象的两个动作，没必要分成两个面板
       const use = document.createElement('button');
@@ -4404,6 +4682,38 @@
       use.title = '把这份工作流变成一个节点放到画布上';
       use.onclick = () => useWfItem(o);
 
+      // 「默认」：按**能力分类**各一份（文生图 / 图生图 / 高清…）。
+      // 存服务端而不是 localStorage：换浏览器、MCP 跑图都读同一份。
+      const star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'wf-star' + (o.isDefault ? ' on' : '');
+      star.textContent = o.isDefault ? '★' : '☆';
+      if (o.alphaMask) {
+        // 吃遮罩的那份只能由遮罩编辑器显式选中（普通图喂进去 mask 全 0，出图与原图逐位相同），
+        // 设成默认也永远不会被 pickWorkflow 挑中——那就别给一颗点了没反应的星。
+        star.classList.add('off');
+        star.setAttribute('aria-disabled', 'true');
+        star.title = '吃遮罩的工作流只能由遮罩编辑器选中，不能设为默认';
+        star.onclick = (ev) => {
+          ev.stopPropagation();
+          flash('这份工作流吃遮罩：只能在遮罩编辑器里用，设成默认也不会被自动挑中');
+        };
+      } else {
+        star.title = o.isDefault
+          ? `取消「${CAT_LABEL[o.category] || '其他'}」的默认`
+          : `设为「${CAT_LABEL[o.category] || '其他'}」的默认工作流`;
+        star.onclick = (ev) => { ev.stopPropagation(); setWfDefault(o, !o.isDefault); };
+      }
+
+      // 「查残留」：导入那一刻弹过一次之后，文件就躺在列表里了，想再确认一遍没别的入口。
+      // 图标用放大镜（和「搜索」同一颗）：它做的确实是「把这幅图翻一遍」这件事。
+      const chk = document.createElement('button');
+      chk.type = 'button';
+      chk.className = 'wf-check';
+      chk.innerHTML = icon('search');
+      chk.title = '查残留：这份工作流里有没有导出者留下的图 / 文字';
+      chk.onclick = (ev) => { ev.stopPropagation(); checkWfItem(o); };
+
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'wf-del';
@@ -4411,7 +4721,7 @@
       del.title = '删除这个工作流';
       del.onclick = () => deleteWfItem(o);
 
-      row.append(name, cat, star, use, del);
+      row.append(ico, name, cat, use, star, chk, del);
       listEl.appendChild(row);
     });
 
@@ -4467,27 +4777,209 @@
     }
   }
 
+  // ---- 工作流图标 ----
+  // 弹层不用 openPopMenu：那个只会排一列文字按钮，而这里要的是一格一格的标。
+  // 但定位和「点外面就关」复用同一套（placePopMenu / armPopClose），不然会出现
+  // 「点别处不消失、滚到屏幕外」这类只有自绘弹层才有的毛病。
+  function openIconPicker(anchor, o) {
+    if (popAnchor && popAnchor === anchor) { closePopMenu(); return; }
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu icon-pop';
+
+    const head = document.createElement('div');
+    head.className = 'popmenu-title';
+    head.textContent = `「${o.label}」的图标`;
+    menu.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'icon-grid';
+    WF_ICONS.forEach((ic) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'icon-pick' + (o.icon === `preset:${ic.id}` ? ' on' : '');
+      // 直接用商标原图（浅底 + 圆角裁切），和列表 / 芯片上看到的是同一张
+      b.innerHTML = wfIconHTML(`preset:${ic.id}`, 34);
+      b.title = ic.name;
+      b.onclick = () => { closePopMenu(); saveWfIcon(o, `preset:${ic.id}`); };
+      grid.appendChild(b);
+    });
+    menu.appendChild(grid);
+
+    const foot = document.createElement('div');
+    foot.className = 'icon-pop-row';
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '上传图片…';
+    up.onclick = () => { closePopMenu(); pickWfIconFile(o); };
+    const none = document.createElement('button');
+    none.type = 'button';
+    none.textContent = '恢复默认';
+    none.disabled = !o.icon;
+    none.onclick = () => { closePopMenu(); saveWfIcon(o, ''); };
+    foot.append(up, none);
+    menu.appendChild(foot);
+
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
+  function pickWfIconFile(o) {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/png,image/jpeg,image/webp,image/*';
+    inp.className = 'wf-ico-file';
+    // 挂进文档再点：游离的 input 在部分浏览器里不弹选择框（Safari 老版本踩过）。
+    // 用完就 remove，不留在 DOM 里当垃圾。
+    document.body.appendChild(inp);
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      inp.remove();
+      if (!f) return;
+      let url = '';
+      try {
+        url = await squareIconDataURL(f, 96);
+      } catch (err) {
+        flash(`这张图读不出来：${err.message}`);
+        return;
+      }
+      await saveWfIcon(o, url);
+    };
+    inp.click();
+  }
+
+  // 先在浏览器里居中裁成正方形、缩到 96px 再传。
+  // 用户随手一张截图就 2000px，原样传上去只会在 data/icons/ 里躺一堆几百 KB 的图，
+  // 而它最后只被画成 20px。服务端那道 256KB 上限是兜底，不该指望它兜。
+  function squareIconDataURL(file, size) {
+    return new Promise((res, rej) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const s = Math.min(img.naturalWidth, img.naturalHeight);
+          const cv = document.createElement('canvas');
+          cv.width = size; cv.height = size;
+          const c = cv.getContext('2d');
+          c.imageSmoothingQuality = 'high';
+          c.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, size, size);
+          res(cv.toDataURL('image/png'));
+        } catch (err) {
+          rej(err);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('不是能识别的图片')); };
+      img.src = url;
+    });
+  }
+
+  async function saveWfIcon(o, icon) {
+    if (!(await saveWfMeta(o.id, { icon }))) return;
+    refreshSetWf();
+    // 生成面板上那颗芯片读的是同一份 state.workflows（saveWfMeta 里已经重拉过），
+    // 但它是建面板那一刻画的，得手动重画一次——否则要切一下节点才看到新图标。
+    state.nodes.forEach((nd) => {
+      if (nd.gen && nd.gen.wf === o.id) paintWfChip(nd);
+    });
+    flash(icon ? '图标已更新' : '已恢复默认图标');
+  }
+
+  // 设 / 取消某个工作流在它**能力分类**里的默认。
+  // 键用 o.category 而不是 o.group：高清按钮、编辑节点挑工作流看的是「它干什么用的」，
+  // 用户把两份文生图归到不同组织分类里，也不该因此多出两个默认。
+  async function setWfDefault(o, on) {
+    const next = { ...(state.wfDefaults || {}) };
+    if (on) next[o.category] = o.id; else delete next[o.category];
+    const r = await api('/api/wf/defaults', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaults: next }),
+    });
+    if (!r.ok) { flash(r.error || '保存失败'); return; }
+    state.wfDefaults = r.defaults || next;
+    refreshSetWf();
+    flash(on
+      ? `「${CAT_LABEL[o.category] || '其他'}」默认 → ${o.label}`
+      : `已取消默认：${o.label}`);
+  }
+
   async function deleteWfItem(o) {
-    const extra = o.source === 'preset' ? '\n（这是内置预设，删掉要重新导入）' : '';
-    if (!confirm(`删除工作流「${o.label}」？${extra}`)) return;
-    const url = o.source === 'preset'
-      ? '/api/presets/' + encodeURIComponent(o.file)
-      : '/api/library/' + encodeURIComponent(o.file);
-    const res = await api(url, { method: 'DELETE' });
+    // 工作流只剩库这一个来源：删除就是真删那份文件。
+    // 以前内置预设只能「隐藏」，还得留一行「恢复出厂」——两套来源带来的两套语义，现在没有了。
+    if (!confirm(`删除工作流「${o.label}」？\n（会删掉 data/library/ 里这份文件）`)) return;
+    const res = await api('/api/library/' + encodeURIComponent(o.file), { method: 'DELETE' });
     if (!res.ok) { flash(res.error || '删除失败'); return; }
-    try {
-      if (localStorage.getItem('infisheet-default-wf') === o.id) localStorage.removeItem('infisheet-default-wf');
-    } catch { /* noop */ }
-    // 正在用它的节点回落到一个还能用的工作流（别留个删掉的 id 在节点上，生成时才报错）
+    // 正在用它的节点把选择**清空**（别留个删掉的 id 在节点上，生成时才报错）。
+    // 以前这里会换成「另一个同类工作流」——删一个却悄悄换成另一个，用户根本不知道
+    // 自己手上这版参数变成了什么。现在留空，面板上立刻显示「未选择工作流」。
+    let touched = 0;
     state.nodes.forEach((nd) => {
       if (nd.gen && nd.gen.wf === o.id) {
-        nd.gen.wf = pickWorkflow('txt2img');
+        nd.gen.wf = '';
+        touched++;
         rerenderNode(nd.id, true);
       }
     });
     await refreshWorkflows();
+    // 删掉的正好是某个分类的默认：把那条默认一起撤掉。
+    // 留着的话设置里会显示「未设」但文件里还写着死 id，下次换机器又冒出来。
+    const stale = Object.keys(state.wfDefaults || {}).filter((k) => state.wfDefaults[k] === o.id);
+    if (stale.length) {
+      const next = { ...state.wfDefaults };
+      stale.forEach((k) => delete next[k]);
+      const r = await api('/api/wf/defaults', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaults: next }),
+      });
+      if (r.ok) state.wfDefaults = r.defaults || next;
+    }
     refreshSetWf();
-    flash('已删除：' + o.label);
+    flash(touched
+      ? `已删除：${o.label}（${touched} 个节点要重新选工作流）`
+      : `已删除：${o.label}`);
+  }
+
+  // 对**已经在列表里**的工作流再查一次残留。
+  // 导入那一刻的检查只在导入时弹一次：文件早就躺在库里了，
+  // 想再确认一遍（或者怀疑某张图不是自己出的）时，原来一个入口都没有。
+  //
+  // 查到之后直接写回那份库文件——它就是用户自己的东西。
+  async function checkWfItem(o) {
+    let graph = null;
+    try {
+      graph = await loadGraphById(o.id);
+    } catch (err) {
+      flash(`读不到「${o.label}」：${err.message}`);
+      return;
+    }
+    if (!graph || !Object.keys(graph).length) { flash(`读不到「${o.label}」：文件可能已经不在了`); return; }
+    let res = null;
+    try { res = await postJson('/api/residue', { graph }); } catch (err) { flash(`检查失败：${err.message}`); return; }
+    if (!res || !res.ok) { flash((res && res.error) || '检查失败'); return; }
+    const list = res.residue || [];
+    if (!list.length) { flash(`「${o.label}」是干净的：没有残留的图或文字`); return; }
+    const picks = await askResidue(list, { ...res, mode: 'existing', label: o.label });
+    if (picks == null) return;
+    if (!picks.length) { flash('没改：残留还在，生成时仍会带进去'); return; }
+    const cleaned = JSON.parse(JSON.stringify(res.graph || graph));
+    picks.forEach((id) => {
+      const hit = list.find((x) => x.id === id);
+      const nd = hit && cleaned[hit.node];
+      if (nd && nd.inputs && Object.prototype.hasOwnProperty.call(nd.inputs, hit.input)) {
+        nd.inputs[hit.input] = hit.fix;
+      }
+    });
+    const r = await api('/api/library/' + encodeURIComponent(o.file), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph: cleaned, title: o.label, group: o.group }),
+    });
+    if (!r.ok) { flash(r.error || '保存失败'); return; }
+    await refreshWorkflows();
+    refreshSetWf();
+    flash(`已清理并保存：${o.label}（清了 ${picks.length} 处）`);
   }
 
   // 新建分类：返回新 id（导入 / 换分类时可以接着用），取消返回 null
@@ -4518,7 +5010,7 @@
   async function deleteCategory(c) {
     const list = wfCategories();
     if (list.length <= 1) { flash('至少得留一个分类'); return; }
-    const used = presetOptions().filter((o) => o.group === c.id);
+    const used = wfOptions().filter((o) => o.group === c.id);
     const tip = used.length ? `\n它下面的 ${used.length} 个工作流会移到「其他」。` : '';
     if (!confirm(`删除分类「${c.name}」？${tip}`)) return;
     // 先把工作流挪走再删分类：反过来的话中途失败会留下一堆指向空分类的孤儿
@@ -4530,8 +5022,8 @@
     }
   }
 
-  // 设置里那个「导入工作流…」：统一存进**工作流库**（我的工作流），
-  // 和随程序分发的内置预设分开。存完就能在默认工作流下拉 / 节点的选择器里选到。
+  // 设置里那个「导入工作流…」：存进工作流库。库里就是全部工作流，
+  // 存完立刻能在节点的选择器里选到，也能设成某个分类的默认。
   function importWorkflowToLibrary() {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.accept = '.json,application/json';
@@ -4548,13 +5040,17 @@
       const graph = extractApiGraph(data) || (data && data.graph)
         || (data && Array.isArray(data.nodes) ? data : null);
       if (!graph) { flash('没有识别到工作流（API 图或界面格式都行）'); return; }
+      // 存进工作流库之前先体检：库里的东西以后每次都被反复用，
+      // 残留一旦存进去，就成了「每次生成都带着别人的图」。
+      const clean = await guardResidue(graph);
+      if (!clean) { flash('已取消导入'); return; }
       const defTitle = String(data.title || data.name || f.name.replace(/\.json$/i, '')).slice(0, 40);
       const title = prompt('工作流名称', defTitle);
       if (title == null) return;
       const name = title.trim().slice(0, 40) || defTitle;
       const res = await api(`/api/library/${encodeURIComponent(name)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph, title: name }),
+        body: JSON.stringify({ graph: clean, title: name }),
       });
       if (!res.ok) { flash(res.error || '导入失败'); return; }
       await refreshWorkflows();
@@ -4667,7 +5163,7 @@
               <div class="wf-list" id="setWfList"></div>
               <div class="set-group">分类</div>
               <div class="wf-cats" id="setCats"></div>
-              <p class="set-tip">点分类可以改名 / 删除；点行里的胶囊给工作流换分类。分类只影响这里的归类，不影响生成时自动挑。</p>
+              <p class="set-tip">点分类可以改名 / 删除；点行里的胶囊给工作流换分类。分类只影响这里的归类；行里的 ☆ 才是「新建节点时用哪一份」——按能力分类各记一份，随时能换。</p>
             </div>
             <div class="sheet-pane hidden" id="set-pane-history"></div>
             <div class="sheet-pane hidden" id="set-pane-look">
@@ -6112,9 +6608,14 @@
 
   function addImageNode(x, y, extra = {}, raw = false) {
     const n = { id: uid('i'), type: 'image', title: '图片', x, y, dataURL: null, uploaded: null, gen: null, ...extra };
-    // 新节点的工作流是按用途自动挑的（wfAuto）。用户在下拉里手选之后会置 false，
-    // 之后生成时就不再被「按参考图自动换」覆盖——他明确选过，就该听他的。
-    if (!n.gen) n.gen = { wf: pickWorkflow('txt2img'), wfAuto: true };
+    // 新节点按「文生图」分类的默认预选。默认是用户在设置里显式选过的那一份
+    // （存服务端 data/wf-defaults.json），所以面板上一眼能看到用的是什么；
+    // 没设过就留空，明写「未选择工作流」，点生成会把菜单打开让他选。
+    // 设过但那份已经删了 → 也留空，别把一个死 id 写进存档。
+    if (!n.gen) {
+      const wf = wfDefaultId('txt2img');
+      n.gen = { wf: wf && wfOptions().some((o) => o.id === wf) ? wf : '' };
+    }
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
 
@@ -6134,6 +6635,99 @@
         out.linked = true;
         rerenderNode(out.id);
       });
+  }
+
+  /* ---------------- 导入前的残留检查 ---------------- */
+  // API 图记的是导出者那一刻的状态：他选的图、他写的那句话。换台机器那张图根本不存在，
+  // 但文件名和文案照样会提交给 ComfyUI，而用户在界面上既看不见也改不了。
+  // 生成时那两处兜底（摘残留图、提示词落点从 KSampler 往回找）都是「猜」，
+  // 导入这一步是唯一能在源头掐掉它的地方——所以把决定权交回给用户。
+  //
+  // 返回清理后的 API 图；用户取消返回 null（调用方必须当成「放弃导入」）。
+  async function guardResidue(graph) {
+    let res = null;
+    try { res = await postJson('/api/residue', { graph }); } catch { /* 检查挂了不拦路 */ }
+    if (!res || !res.ok) return graph;
+    const out = res.graph || graph;          // 界面格式已经在这里转成 API 图了
+    const list = res.residue || [];
+    if (!list.length) return out;
+    const picks = await askResidue(list, res);
+    if (picks == null) return null;
+    picks.forEach((id) => {
+      const hit = list.find((x) => x.id === id);
+      const nd = hit && out[hit.node];
+      if (nd && nd.inputs && Object.prototype.hasOwnProperty.call(nd.inputs, hit.input)) {
+        nd.inputs[hit.input] = hit.fix;
+      }
+    });
+    return out;
+  }
+
+  // 列出扫到的残留，勾选要清的。返回要清的 id 数组；[] = 原样导入；null = 取消导入。
+  // 「取消」和「原样导入」必须分开：误点遮罩不该悄悄把残留带进来。
+  //
+  // meta.mode === 'existing' 时是「对已有工作流再查一次」（设置 → 工作流 → 放大镜）：
+  // 同一个卡片、同一份勾选，只是底部三颗键要改成「不改 / 清理并保存」——
+  // 这时候没有「导入」这个动作，还写着「取消导入」会让人以为刚才那一下导入被撤了。
+  function askResidue(list, meta) {
+    return new Promise((resolve) => {
+      const old = document.getElementById('residueCard');
+      if (old) old.remove();
+      const editing = !!(meta && meta.mode === 'existing');
+      const who = (meta && meta.label) ? `「${meta.label}」` : '这份工作流';
+      const cut = (s) => (s.length > 56 ? s.slice(0, 56) + '…' : s);
+      const rows = list.map((x) => `
+        <label class="rs-row" data-id="${esc(x.id)}">
+          <input type="checkbox"${x.auto ? ' checked' : ''} />
+          <span class="rs-tag ${x.kind}">${x.kind === 'image' ? '图片' : '文本'}</span>
+          <span class="rs-where">${esc(x.where)}</span>
+          <span class="rs-val" title="${esc(x.value)}">${esc(cut(x.value))}</span>
+        </label>`).join('');
+      const srcNote = meta && meta.source === 'ui'
+        ? '<p class="rs-note">文件是 ComfyUI 界面格式，已经转成 API 图再检查。</p>' : '';
+      const partNote = meta && meta.partial
+        ? '<p class="rs-note">ComfyUI 没连上，这次只查了图片；文本类残留要连上才能判断。</p>' : '';
+      const saveNote = editing
+        ? '<p class="rs-note">清理结果会直接写回工作流库里的这一份。</p>'
+        : '';
+      const wrap = document.createElement('div');
+      wrap.id = 'residueCard';
+      wrap.innerHTML = `
+        <div class="sheet rs-sheet" role="dialog" aria-label="导入前的残留检查">
+          <header><strong>${editing ? `${esc(who)}带着导出者的痕迹` : '这份工作流带着导出者的痕迹'}</strong></header>
+          <div class="rs-body">
+            <p class="rs-lead">下面这些值不属于模板，是上一次跑的时候留下的。它们不显示在界面上，但会跟着提交给 ComfyUI。</p>
+            <div class="rs-list">${rows}</div>
+            ${srcNote}${partNote}${saveNote}
+            <p class="rs-note">图片可以放心清空；文本可能是模板自带的系统提示，确认后再勾。</p>
+          </div>
+          <footer class="rs-foot">
+            <button type="button" class="rs-cancel">${editing ? '取消' : '取消导入'}</button>
+            <button type="button" class="rs-skip">${editing ? '不改' : '原样导入'}</button>
+            <button type="button" class="prime rs-clean">${editing ? '清理选中项并保存' : '清理选中项并导入'}</button>
+          </footer>
+        </div>`;
+      document.body.appendChild(wrap);
+      const boxes = [...wrap.querySelectorAll('.rs-row input')];
+      const cleanBtn = wrap.querySelector('.rs-clean');
+      const sync = () => { cleanBtn.disabled = !boxes.some((b) => b.checked); };
+      boxes.forEach((b) => { b.onchange = sync; });
+      sync();
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); done(null); }
+      };
+      const done = (v) => {
+        wrap.remove();
+        document.removeEventListener('keydown', onKey, true);
+        resolve(v);
+      };
+      document.addEventListener('keydown', onKey, true);
+      wrap.querySelector('.rs-cancel').onclick = () => done(null);
+      wrap.querySelector('.rs-skip').onclick = () => done([]);
+      cleanBtn.onclick = () => done(boxes.filter((b) => b.checked)
+        .map((b) => b.closest('.rs-row').dataset.id));
+      wrap.onclick = (ev) => { if (ev.target === wrap) done(null); };
+    });
   }
 
   async function addWorkflowNode(graph, title, raw = false) {
@@ -6182,8 +6776,11 @@
       return null;
     }
     const name = (file.name || '工作流').replace(/\.json$/i, '');
-    // 界面格式交给服务端复刻 graphToPrompt 转换（analyze 内部处理）
-    const n = await addWorkflowAt(graph || data, name, x, y);
+    // 先体检再落地：这一步顺带把界面格式转成 API 图，取消就整个放弃。
+    // 放在 analyze 之前，节点的 values 才会是清干净之后的那份（否则面板上还显示着旧图名）。
+    const g = await guardResidue(graph || data);
+    if (!g) { flash('已取消导入'); return null; }
+    const n = await addWorkflowAt(g, name, x, y);
     if (n) flash('已导入工作流：' + name);
     return n;
   }
@@ -6710,8 +7307,7 @@
     // 每个节点一份独立对象：共享同一个 gen 会变成「改 A 的提示词，B 跟着变」
     const genOf = () => ({
       prompt: p.prompt || '',
-      wf: p.wf || pickWorkflow('txt2img'),
-      wfAuto: !!p.wfAuto,
+      wf: p.wf || '',
       aspect: p.aspect || '1:1',
       aspectAuto: !!p.aspectAuto,
       autoW: p.autoW || null,
@@ -6741,7 +7337,9 @@
     let x0 = Math.round(src.x + nodeWidth(src) + 60);
     for (let guard = 0; guard < 60 && busy(x0); guard++) x0 += stepX;
     const born = items.map((it, i) => addImageNode(x0 + i * stepX, y0, {
-      dataURL: it.url, filename: it.filename || '', uploaded: null,
+      // uploaded 由调用方给：裁切重绘贴回去的整图已经传进 ComfyUI 的 input/ 了，
+      // 记上名字，下次拿它当参考图时不必再传一遍（普通产物没有这一项，仍为 null）
+      dataURL: it.url, filename: it.filename || '', uploaded: it.uploaded || null,
       title: '图片（生成）', plain: true, gen: genOf(),
     }, true));
     // 方向：原节点 → 新节点。反过来（新 → 原）画出来是「产物指回上游」，
@@ -6911,7 +7509,7 @@
       dataURL: gal.length ? gal[0].url : null,
       gen: {
         prompt: run.prompt || '',
-        wf: run.wf || defaultWorkflowId(),
+        wf: run.wf || '',
         aspect: (n.gen && n.gen.aspect) || '1:1',
         aspectAuto: !!(n.gen && n.gen.aspectAuto),
         autoW: (n.gen && n.gen.autoW) || null,
@@ -7222,6 +7820,9 @@
         // 否则刷新后图片节点只剩一张图，参数和多图切换全丢（运行态 busy/status 不存）
         gen: n.gen ? {
           prompt: n.gen.prompt, wf: n.gen.wf,
+          // 遮罩换走之前是哪一份：不存的话刷新后清掉遮罩就卡在「局部重绘」上，
+          // 出图和原图逐位相同（这类坏最难自查），而用户也没法还原刚才的选择
+          wfMaskBack: n.gen.wfMaskBack || undefined,
           aspect: ob ? ob.aspect : n.gen.aspect, size: ob ? ob.size : n.gen.size,
           // 智能画幅：不存的话刷新后变 undefined，手选过的比例会被当成「智能」重算一遍
           aspectAuto: !!(ob ? ob.aspectAuto : n.gen.aspectAuto),
@@ -7230,9 +7831,6 @@
           autoH: ob ? ob.autoH : n.gen.autoH,
           // 倍数不存的话，刷新后 2× 出的图会退回 1× 的尺寸，重跑一次就小一半
           autoScale: (ob ? ob.autoScale : n.gen.autoScale) || 1,
-          // 工作流是不是「按参考图自动挑的」：不存的话刷新后一律变 undefined，
-          // 用户手选过的选择就丢了，下次生成会被自动改回去（遮罩也是靠它钉住的）
-          wfAuto: n.gen.wfAuto !== false,
           custom: (ob ? ob.custom : n.gen.custom) || null,   // 自定义宽高：size==='custom' 时用它，切回档位也留着
           batch: n.gen.batch, gallery: n.gen.gallery, idx: n.gen.idx || 0,
           // 生成历史：每次一条（时间/提示词/种子/尺寸/产物）。上限见 RUN_CAP，别让存档无限长
@@ -7500,7 +8098,13 @@
   // 没有产物的记录也要在：它们照样能导入工作流，所以给个占位块，点了直接导入。
   function openHistory(e, imgs) {
     const meta = historyMeta(e);
-    const importIt = () => useGraph(e.graph, `历史 ${e.prompt_id.slice(0, 8)}`);
+    // 历史记录里那份 API 图是「上一次真跑」的现场：图名、提示词、种子全在。
+    // 这正是 App 推荐的导入方式，所以这里最该体检——不清一遍，下次生成还带着上一张图。
+    const importIt = async () => {
+      const g = await guardResidue(e.graph);
+      if (!g) { flash('已取消导入'); return; }
+      useGraph(g, `历史 ${e.prompt_id.slice(0, 8)}`);
+    };
     if (!imgs.length) { importIt(); return; }        // 没图可看，直接导入
     openLightbox(artifactURL(imgs[0]), imgs.map((a) => ({ url: artifactURL(a) })), 0, {
       prompt: meta.prompt,
@@ -8452,11 +9056,11 @@
     // 记一下 ComfyUI 在不在：有些"顺手校验"只在线时才做得成，
     // 离线去问只会白挨一个 502，还在控制台里留一条红字。
     state.comfyOnline = !!res.comfy;
-    // 旧服务端没有新接口：提示重启，否则资产库里的内置预设会静默空着
-    if (!Array.isArray(res.features) || !res.features.includes('presets')) {
+    // 旧服务端没有新接口：提示重启，否则工作流列表会静默空着
+    if (!Array.isArray(res.features) || !res.features.includes('wf_library')) {
       if (!health._warned) {
         health._warned = true;
-        flash('服务端是旧版本：重启 python server.py 后内置预设才会出现在资产库里');
+        flash('服务端是旧版本：重启 python server.py 后工作流库才会正常显示');
       }
     }
     const dot = $('#healthDot'), text = $('#healthText');
@@ -8682,7 +9286,7 @@
     if (!src) return;
     const items = [];
     if (src.type === 'text' || src.type === 'image') {
-      items.push(['工作流（自动接上）', () => createLinkedNode(fromId, 'wf', clientX, clientY)]);
+      items.push(['工作流（先选一份）', () => createLinkedNode(fromId, 'wf', clientX, clientY)]);
     }
     if (src.type === 'wf') {
       items.push(['图片输出', () => createLinkedNode(fromId, 'out', clientX, clientY)]);
@@ -8715,21 +9319,32 @@
       return;
     }
     if (kind === 'wf') {
-      const wfId = defaultWorkflowId();
-      if (!wfId) { flash('工作流库是空的，先导入一个工作流'); return; }
-      const graph = await loadGraphById(wfId);
-      const node = await addWorkflowNode(graph, '工作流', true);
-      if (!node) return;
-      node.x = Math.round(p.x - 90);
-      node.y = Math.round(p.y - 80);
-      // 先重排一次：addLink 要读端口上记的类型（text / image）来挑插槽，
-      // 端口是 buildNode 时才生成的，位置也得靠这次重建落到松手点。
-      renderAll();
-      if (!connectSources(node.id, 'in', fromId)) {
-        flash('工作流节点已建，但没有能接上的空闲插槽');
-      } else {
-        flash('已新建工作流并接上');
-      }
+      const list = wfOptions();
+      if (!list.length) { flash('工作流库是空的，先导入一个工作流'); return; }
+      // 不再「拿默认工作流接上」：从端口拖出来接的是**哪一份**，得由用户点一下。
+      // 以前这里是「默认工作流」——他拖一根线，画布上凭空多出一个他从没见过的模板。
+      openPopMenu({ x: clientX, y: clientY }, list.map((o) => [
+        `${o.catLabel} · ${o.label}`,
+        () => placeLinkedWfNode(o.id, p, fromId),
+      ]), '用哪个工作流');
+    }
+  }
+
+  // 选完工作流再建节点：整份图要问服务端拿，是异步的，所以单独一支。
+  async function placeLinkedWfNode(wfId, p, fromId) {
+    const graph = await loadGraphById(wfId);
+    if (!graph) { flash('这份工作流是空的，接不上'); return; }
+    const node = await addWorkflowNode(graph, '工作流', true);
+    if (!node) return;
+    node.x = Math.round(p.x - 90);
+    node.y = Math.round(p.y - 80);
+    // 先重排一次：addLink 要读端口上记的类型（text / image）来挑插槽，
+    // 端口是 buildNode 时才生成的，位置也得靠这次重建落到松手点。
+    renderAll();
+    if (!connectSources(node.id, 'in', fromId)) {
+      flash('工作流节点已建，但没有能接上的空闲插槽');
+    } else {
+      flash('已新建工作流并接上');
     }
   }
 
@@ -8818,10 +9433,20 @@
       h.textContent = title;
       menu.appendChild(h);
     }
-    items.forEach(([label, fn, cls]) => {
+    items.forEach(([label, fn, cls, ico]) => {
       const b = document.createElement('button');
-      b.textContent = label;
-      if (cls) b.className = cls;
+      if (ico) {
+        // 带图标的那几项（工作流菜单）：图标是现成的 HTML（彩色模型标 / 传的图），
+        // 文字另起一个 span，别用 innerHTML 拼——工作流名字是用户自己起的，会带尖括号。
+        b.innerHTML = ico;
+        const s = document.createElement('span');
+        s.textContent = label;
+        b.appendChild(s);
+        b.classList.add('has-ico');
+      } else {
+        b.textContent = label;
+      }
+      if (cls) b.className = (b.className ? b.className + ' ' : '') + cls;
       b.onclick = () => { closePopMenu(); fn(); };
       menu.appendChild(b);
     });
@@ -8938,13 +9563,10 @@
     clip: icon('clip'),
   };
 
+  // 按「这个工作流能产出什么」找一份（视频 / 音频入口用）。来源只有库。
   function pickWorkflowByKind(kind) {
-    const w = state.workflows || { presets: [], items: [] };
-    const all = [
-      ...w.presets.map((p) => ({ id: `preset:${p.file}`, title: p.title || p.name, kinds: p.kinds || [] })),
-      ...w.items.map((p) => ({ id: `lib:${p.name}`, title: p.name, kinds: p.kinds || [] })),
-    ];
-    return all.find((x) => (x.kinds || []).includes(kind)) || null;
+    const hit = wfOptions().find((o) => (o.kinds || []).includes(kind));
+    return hit ? { id: hit.id, title: hit.label, kinds: hit.kinds } : null;
   }
 
   // 五个能力入口：按「工作流实际能产出什么」决定可用与否
@@ -9562,12 +10184,12 @@
     const show = !!n && !cropSession && !bigEditor && !imgPanel;
     bar.classList.toggle('hidden', !show);
     if (show) {
-      // 只有「这台机器上压根没有吃遮罩的工作流」才禁用；工作流不对会在点的时候自动切。
+      // 只有「这台机器上压根没有能吃图的工作流」才禁用；工作流不对会在点的时候自动对齐。
       // 遮罩 / 擦除 / 去字 三个都靠遮罩驱动，一起禁用——不然点进去涂完发现不生效。
       const ok = maskCapable();
       const why = ok
         ? ''
-        : '没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」）';
+        : '这台机器上没有能吃图的工作流（图生图 / 图像编辑），涂了也没法重绘';
       bar.querySelectorAll('[data-tool="mask"],[data-tool="erase"],[data-tool="detext"]').forEach((btn) => {
         btn.disabled = !ok;
         btn.title = ok ? IMG_TOOLS.find((t) => t[0] === btn.dataset.tool)[3] : why;
@@ -10105,13 +10727,17 @@
   function createEditNode(src, kind, maskDoc) {
     const prompt = EDIT_TPL[kind] || '';
     // 挑工作流看用途：高清要「放大」那一类；抠图有专门抠像工作流就用它，没有就退回图像编辑；
-    // 擦除 / 去字必须吃遮罩，挑成普通图生图等于把涂的区域当空气。
+    // 擦除 / 去字要**能吃图**的：吃遮罩的走原生（只重绘涂过的地方，最准），
+    // 只吃图的走裁切局部重绘（裁出涂的范围单独跑，出图贴回原位）——两条都算对。
+    // 只在**真同类**里挑；这台机器上没有同类就留空——以前 pickWorkflow 会退到
+    // 「第一个能用的」，于是点「高清放大」可能拿到纯文生图，出来是一张全新的画，
+    // 用户以为高清坏了。
     const want = EDIT_WF[kind] || 'img2img';
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
     const wf = hint || (want === 'mask'
-      ? ((presetOptions().find((o) => o.alphaMask) || {}).id || '')
+      ? (((wfOptions().find((o) => o.alphaMask) || wfOptions().find((o) => o.image)) || {}).id || '')
       : pickWorkflow(want));
-    const gen = { wf, wfAuto: !hint, prompt };   // 名字命中的专用工作流钉住，别被自动纠正换掉
+    const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
       uploaded: src.uploaded || null,
@@ -10135,13 +10761,15 @@
       sel.removeAllRanges();
       sel.addRange(r);
     }
-    flash(`${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`);
+    flash(wf
+      ? `${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`
+      : `${EDIT_LABEL[kind]}：这台机器上没有同类工作流，先在面板里选一个`);
     return n;
   }
 
   // 按名字找一个「专用」工作流（比如抠像）。找不到就返回空串，由调用方退回通用选择。
   function pickWorkflowByHint(hints) {
-    const hit = presetOptions().find((o) => {
+    const hit = wfOptions().find((o) => {
       const s = `${o.id} ${o.label}`.toLowerCase();
       return hints.some((h) => s.includes(h));
     });
@@ -10702,7 +11330,7 @@
     //   会把它算成黑边，模型整张重画一遍。两条路都能扩，只是精度不同。
     // 早先这里无条件写遮罩，于是「不吃遮罩的工作流」全被 reconcileWorkflow 换掉，
     // 用户看到的就是「我选的工作流一点生成就跳回默认那个」。
-    const wfNow = presetOptions().find((o) => o.id === (n.gen && n.gen.wf));
+    const wfNow = wfOptions().find((o) => o.id === (n.gen && n.gen.wf));
     if (!wfNow || wfNow.alphaMask) {
       outpaintBands(W, H, f.nw, f.nh, f.ox, f.oy)
         .forEach((r) => strokes.push({ tool: 'rect', rect: r }));
@@ -10852,6 +11480,9 @@
     [panel.querySelector('.gen-status'), panel.querySelector('.gen-run')].forEach((el2) => {
       if (el2) paramRow.appendChild(el2);
     });
+    // 搬完之后那一行就是空的：留着它会多出一条空白（面板里可见的孩子也不再只剩参数条）
+    const stRow = panel.querySelector('.gen-status-row');
+    if (stRow && !stRow.children.length) stRow.classList.add('hidden');
 
     const readout = bar.querySelector('.of-read');
     const btnOf = (k) => bar.querySelector(`[data-of="${k}"]`);
@@ -10878,7 +11509,7 @@
       const op = outpaintOf(n);
       if (!op) return;
       const f = outpaintFrame(op.w, op.h, op);
-      const wf = presetOptions().find((o) => o.id === n.gen.wf);
+      const wf = wfOptions().find((o) => o.id === n.gen.wf);
       btnOf('wf').innerHTML = `${icon('wf')}<span>${wf ? wf.label : '选工作流'}</span><i class="of-caret"></i>`;
       btnOf('wf').title = wf ? `${wf.catLabel} · ${wf.label}` : '还没有可用工作流';
       btnOf('size').innerHTML = `<span>${sizeTag(op)}</span><i class="of-caret"></i>`;
@@ -10894,7 +11525,7 @@
     const openWfMenu = () => {
       // 扩图只列**吃图**的工作流：纯文生图喂不进图，选了也只会重新生成一张。
       // 前缀标出它走哪条路——「遮罩」只重绘新长出来的边（最准），「整图」整张重画一遍。
-      const list = presetOptions().filter((o) => o.image);
+      const list = wfOptions().filter((o) => o.image);
       if (!list.length) {
         flash('还没有能吃图的工作流：扩图要么用局部重绘（吃遮罩），要么用图生图 / 图像编辑');
         return;
@@ -10903,7 +11534,8 @@
         `${o.alphaMask ? '遮罩' : '整图'} · ${o.label}`,
         () => {
           n.gen.wf = o.id;
-          n.gen.wfAuto = false;      // 手选过就别再被「按参考图自动换」覆盖
+          delete n.gen.wfMaskBack;   // 用户自己选了，之前那次「换走」就不用还了
+          paintWfChip(n);            // 下面那颗芯片要立刻改名，否则条上写 Qwen、芯片还挂着局部重绘
           queueSave();
           commit();
           syncBar();
@@ -11199,81 +11831,77 @@
     return k && n.masks ? n.masks[k] || null : null;
   }
 
-  // 能不能涂遮罩：只看这台机器上有没有吃遮罩的工作流。
-  // 不看当前选的是哪张——点遮罩时如果不对就当场切过去（ensureMaskWorkflow）。
-  // 之前按「当前工作流吃不吃」来禁用按钮，结果老存档（wf 是文生图、wfAuto 还丢了）
-  // 一进来按钮就是灰的，用户只会认为功能坏了。
+  // 能不能涂遮罩：只要有**能吃图**的工作流就行。
+  //   · 吃遮罩的（有节点消费 LoadImage 的 MASK 输出）→ 烘 alpha，整张送进去；
+  //   · 只吃图不吃遮罩的（Qwen 图像编辑这类）→ 裁出涂的范围单独跑，出图贴回原位。
+  // 以前这里只认第一种，于是「只有 Qwen 编辑流」的机器上遮罩按钮是灰的。
+  // 不看当前选的是哪张——点遮罩时如果不对就当场对齐（ensureMaskWorkflow）。
   function maskCapable() {
-    return presetOptions().some((o) => o.alphaMask);
+    return wfOptions().some((o) => o.alphaMask || o.image);
   }
 
-  // 工作流被自动换掉之后，把面板上那颗按钮的字同步过去。
+  // 工作流被换掉之后，把面板上那颗按钮的字同步过去。
   // 不刷的话只有 3 秒的 flash 说了一句，按钮还写着旧名字——用户会以为没生效，
   // 下次点生成又是同一轮「怎么又给我改了」。
   function paintWfChip(n) {
     const box = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .wfsel`);
     const span = box && box.querySelector('.gm-btn span');
     if (!span) return;
-    const hit = presetOptions().find((o) => o.id === n.gen.wf);
-    span.textContent = hit ? hit.label : (n.gen.wf || '（空）');
+    const hit = wfOptions().find((o) => o.id === n.gen.wf);
+    span.textContent = hit ? hit.label : '未选择工作流';
+    // 图标一起换：只换字不换标，会出现「写着 Qwen、前面挂着 Krea 的标」
+    const ico = box.querySelector('.gensel-icon');
+    if (ico) ico.innerHTML = wfIconHTML(hit ? hit.icon : '', 16);
+    if (box) box.classList.toggle('is-empty', !hit);
     const btn = box.querySelector('.gm-btn');
     if (btn) btn.title = span.textContent;
   }
 
   // 工作流必须和「有没有遮罩」对上，两个方向都要对：
-  //   有遮罩 + 工作流不吃遮罩 → mask 根本没进图，涂了白涂（上一版就是这么坏的）
-  //   没遮罩 + 工作流吃遮罩   → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，
-  //                            出来跟原图逐位相同，最容易被当成「生成坏了」
+  //   有遮罩 + 工作流既不吃遮罩也不吃图 → 图根本进不去，涂了白涂
+  //   没遮罩 + 工作流吃遮罩           → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，
+  //                                     出来跟原图逐位相同，最容易被当成「生成坏了」
+  // 这两条是**能力**上的硬要求，不是口味，所以还会自动对齐。
+  //
+  // 「只吃图不吃遮罩」不算不合：那种流走裁切局部重绘（涂到哪儿就裁哪块单独跑），
+  // 遮罩照样生效。所以**不再**因为当前这张不吃 alpha 就换成 Krea2——那是以前
+  // 「我选的 Qwen 编辑流一点生成就跳走」的根。
+  // 除此之外一律听用户的：以前这里还有一段「按有没有参考图自动切文生图/图生图」，
+  // 已经删掉——用户没选的时候宁可停下来让他选，也不能替他选一个他没见过的模板。
   // 返回 false 表示这次不该跑（要么没救了，要么得让用户自己决定），调用方直接中止。
-  function reconcileWorkflow(n, picked, needMask) {
+  function reconcileWorkflow(n, needMask) {
     const g = n.gen;
-    const opts = presetOptions();
+    const opts = wfOptions();
     const cur = opts.find((o) => o.id === g.wf);
-    const auto = g.wfAuto !== false;      // 没存过 wfAuto 的老存档按「自动」处理
-    const want = picked.length ? 'img2img' : 'txt2img';
     if (needMask) {
-      if (cur && cur.alphaMask) return true;
-      const hit = opts.find((o) => o.alphaMask);
+      if (cur && (cur.alphaMask || cur.image)) return true;
+      const hit = opts.find((o) => o.alphaMask) || opts.find((o) => o.image);
       if (!hit) {
-        flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），遮罩不会生效');
+        flash('这台机器上没有能吃图的工作流，遮罩没地方落：先导入一个图生图 / 图像编辑工作流');
         return false;
       }
+      if (g.wf && g.wf !== hit.id) g.wfMaskBack = g.wf;   // 同上：清掉遮罩时要还回去
       g.wf = hit.id;
       paintWfChip(n);
-      flash(`这张图有遮罩，只能用吃遮罩的工作流，已切到「${hit.label}」`);
+      flash(`「${cur ? cur.label : '当前工作流'}」不吃图，遮罩用不上，已换成「${hit.label}」`);
       queueSave();
       return true;
     }
     if (cur && cur.alphaMask) {
-      // 手选过就让他自己决定：静默换掉会变成「我选的又被改了」
-      if (!auto) {
-        flash(`「${cur.label}」要靠遮罩才有效：这张图没涂，跑出来会和原图一样`);
-        return false;
-      }
-      const better = pickWorkflow(want);
-      if (better && better !== g.wf) {
-        const hit = opts.find((o) => o.id === better);
-        g.wf = better;
+      // 遮罩清掉了，工作流还挂在「局部重绘」上：它的 mask 来自图片 alpha，
+      // 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，出图跟原图逐位相同。
+      // 如果记得换之前是哪一份，就还回去（撤销程序自己那次改动，不是替用户猜）。
+      const back = g.wfMaskBack && opts.find((o) => o.id === g.wfMaskBack);
+      if (back) {
+        g.wf = back.id;
+        delete g.wfMaskBack;
         paintWfChip(n);
-        flash(`这张图没涂遮罩，自动切回「${hit ? hit.label : better}」`);
+        flash(`遮罩清掉了，已换回「${back.label}」`);
         queueSave();
+        return true;
       }
-      return true;
-    }
-    // 自动挑的按「有没有参考图」纠正一次；手选过的照他的来，别再偷偷换掉。
-    // 高清 / 视频 / 音频不碰（各有专门入口，按图多图少去改只会把功能改坏）。
-    if (auto && (!cur || cur.category === 'txt2img' || cur.category === 'img2img')) {
-      const cat = cur ? cur.category : '';
-      if (cat !== want) {
-        const better = pickWorkflow(want);
-        const hit = opts.find((o) => o.id === better);
-        if (better && better !== g.wf) {
-          g.wf = better;
-          paintWfChip(n);
-          flash(`按${picked.length ? '参考图' : '纯文生图'}自动切到「${hit ? hit.label : better}」`);
-          queueSave();
-        }
-      }
+      flash(`「${cur.label}」要靠遮罩才有效：这张图没涂，跑出来会和原图一样。先涂遮罩，或换一个工作流`);
+      return false;
     }
     return true;
   }
@@ -11287,7 +11915,7 @@
   function ensureOutpaintWorkflow(n) {
     const g = n && n.gen;
     if (!g) return null;
-    const opts = presetOptions();
+    const opts = wfOptions();
     const cur = opts.find((o) => o.id === g.wf);
     if (cur && cur.image) return cur;
     const hit = opts.find((o) => o.alphaMask) || opts.find((o) => o.image);
@@ -11300,22 +11928,25 @@
     return hit;
   }
 
-  // 当前工作流吃不了遮罩就切到能吃的那张，并说清楚换成了什么（不静默换）
+  // 当前工作流连图都不吃就切一个能吃图的，并说清楚换成了什么（不静默换）。
+  // 吃遮罩（原生）和只吃图（裁切重绘）都能让遮罩生效，所以两种都算「对」，不再强行统一。
   function ensureMaskWorkflow(n) {
     const g = n && n.gen;
     if (!g) return null;
-    const opts = presetOptions();
+    const opts = wfOptions();
     const cur = opts.find((o) => o.id === g.wf);
-    if (cur && cur.alphaMask) return cur;
-    const hit = opts.find((o) => o.alphaMask);
+    if (cur && (cur.alphaMask || cur.image)) return cur;
+    const hit = opts.find((o) => o.alphaMask) || opts.find((o) => o.image);
     if (!hit) return null;
-    const from = cur ? cur.label : '当前工作流';
+    const from = cur ? `「${cur.label}」不吃图，已换成` : '涂遮罩要用能吃图的工作流，已选';
+    // 记住换之前是哪一份：遮罩清掉之后要**原样还回去**。这不是「猜一个更合适的」——
+    // 是撤销程序自己刚才那次改动。不记的话，用户清掉遮罩就卡在局部重绘上，
+    // 出图和原图逐位相同，而这正是最难自查的一类坏。
+    if (g.wf && g.wf !== hit.id) g.wfMaskBack = g.wf;
     g.wf = hit.id;
     paintWfChip(n);   // 面板上的按钮立刻改成新名字，别只靠那 3 秒的提示
-    // 不钉 wfAuto：工作流是「按有没有遮罩」推导出来的，不是用户手选。
-    // 钉住的话，清掉遮罩之后节点会永远卡在局部重绘上，跑出来跟原图一模一样。
     queueSave();
-    flash(`「${from}」不吃遮罩，已换成「${hit.label}」`);
+    flash(`${from}「${hit.label}」`);
     return hit;
   }
 
@@ -11436,6 +12067,159 @@
     return cv;
   }
 
+  /* ---------------- 裁切局部重绘（crop & stitch） ---------------- */
+  // 为什么需要它：有些工作流只吃图、不吃遮罩。Qwen-Image-Edit 把 4 个 LoadImage 全接在
+  // images.image_1..4 的参考图插槽上，**没有任何节点消费 LoadImage 的 MASK 输出**，
+  // 所以服务端把它判成 takes_alpha_mask=false。这种流拿到「烘过 alpha 的原图」也只会
+  // 当成一张带透明洞的参考图，涂过的区域根本不会被重绘。
+  //
+  // 不碰工作流的解法：把涂到的范围连同一圈余量裁出来单独跑一次，出图再缩放贴回原位。
+  // 代价是模型按自己的分辨率重算尺寸（贴回时要缩放），接缝靠遮罩羽化过渡。
+  const CROP_PAD_RATIO = 0.18;   // 余量按遮罩包围盒短边的比例给：模型得看见周围是什么，
+                                 // 否则会把裁剪框的边缘当成画面边界，接缝处凭空多出一条边
+  const CROP_MIN_SIDE = 256;     // 太小的框模型没有上下文，至少给这么大
+  const CROP_FEATHER = 0.05;     // 羽化半径按裁剪框短边的比例给
+
+  // 遮罩包围盒（doc 空间 = 原图像素空间）。
+  // 缩到 ≤512 宽再扫 alpha：2000×3000 的遮罩直接 getImageData 是 24MB，
+  // 而这里只要「大概圈到哪儿」，向外多让一格就够准了。
+  function maskBBox(doc) {
+    if (!doc || !doc.strokes || !doc.strokes.length) return null;
+    const w = Math.min(512, Math.max(1, Math.round(doc.w)));
+    const h = Math.max(1, Math.round((doc.h / doc.w) * w));
+    const cv = canvasOf(w, h);
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.scale(w / doc.w, w / doc.w);
+    paintStrokes(ctx, doc, true);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (d[(row + x) * 4 + 3] > 8) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    if (x1 < 0) return null;              // 只有橡皮、什么都没涂
+    const s = doc.w / w;                  // 缩略图上一格 = 原图几个像素
+    return {
+      x: Math.max(0, Math.floor(x0 * s) - 1),
+      y: Math.max(0, Math.floor(y0 * s) - 1),
+      w: Math.min(doc.w, Math.ceil((x1 - x0 + 1) * s) + 2),
+      h: Math.min(doc.h, Math.ceil((y1 - y0 + 1) * s) + 2),
+    };
+  }
+
+  // 裁剪框：包围盒 + 一圈余量，夹进原图范围；太小就绕着中心撑到最小边长。
+  // 边长对齐 16：扩散模型的 latent 是 8 的倍数，给 377×241 只会让 ComfyUI 自己补边，
+  // 补出来的边和贴回去的边对不上，接缝就有了。
+  function cropRectFor(doc, iw, ih) {
+    const bb = maskBBox(doc);
+    if (!bb) return null;
+    const W = Math.max(1, Math.round(iw || doc.w));
+    const H = Math.max(1, Math.round(ih || doc.h));
+    // 遮罩记录和当前图尺寸对不上（换过图 / 老存档）：按比例映射，别让框落到画面外
+    const sx = W / doc.w, sy = H / doc.h;
+    const bw = bb.w * sx, bh = bb.h * sy;
+    const pad = Math.max(8, Math.round(Math.min(bw, bh) * CROP_PAD_RATIO));
+    let w = Math.min(W, Math.max(CROP_MIN_SIDE, Math.round(bw) + pad * 2));
+    let h = Math.min(H, Math.max(CROP_MIN_SIDE, Math.round(bh) + pad * 2));
+    let x = clamp(Math.round((bb.x + bb.w / 2) * sx - w / 2), 0, W - w);
+    let y = clamp(Math.round((bb.y + bb.h / 2) * sy - h / 2), 0, H - h);
+    const q = (v) => Math.max(16, Math.floor(v / 16) * 16);   // 只往下对齐，不会越界
+    w = Math.min(q(w), W - x);
+    h = Math.min(q(h), H - y);
+    if (w < 16 || h < 16) return null;
+    return { x, y, w, h };
+  }
+
+  // 裁出来的那一块当参考图送进去。文件名固定 <节点id>-crop.png + overwrite：
+  // 同一张图换个遮罩就是另一块，所以不复用 n.uploaded（那会把上一次裁的带进去）。
+  async function uploadCropImage(img, rect, tag) {
+    const cv = canvasOf(rect.w, rect.h);
+    cv.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    if (!blob) throw new Error('裁切图编码失败');
+    const fd = new FormData();
+    fd.append('image', blob, `${tag}-crop.png`);
+    fd.append('overwrite', 'true');
+    const res = await api('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(res.error || '裁切图上传失败');
+    return res.image;
+  }
+
+  // 把生成结果贴回原位。
+  //   base  = 原图（整张）
+  //   patch = 这一轮模型出的图（尺寸由工作流决定，通常不等于裁剪框）
+  //   rect  = 裁剪框在原图里的位置
+  // 融合分三步：patch 缩放到 rect 画在一张空画布上 → 用**羽化过的遮罩** destination-in
+  // 把没涂的地方抠掉 → 叠回原图。这样模型在没涂的地方擅自改的东西会被丢掉，
+  // 涂过的边缘因为羽化而过渡，不会出现一条硬边。
+  async function stitchPatch(baseURL, patchURL, rect, doc) {
+    const [base, patch] = await Promise.all([loadImageEl(baseURL), loadImageEl(patchURL)]);
+    const W = base.naturalWidth || base.width;
+    const H = base.naturalHeight || base.height;
+    const out = canvasOf(W, H);
+    const octx = out.getContext('2d');
+    octx.drawImage(base, 0, 0);
+
+    const layer = canvasOf(W, H);
+    const lctx = layer.getContext('2d');
+    lctx.imageSmoothingQuality = 'high';
+    lctx.drawImage(patch, rect.x, rect.y, rect.w, rect.h);
+
+    // 遮罩：doc 空间 → 原图空间。裁剪框是照原图算的，两套坐标必须按原图对齐
+    const m = canvasOf(W, H);
+    const mctx = m.getContext('2d');
+    mctx.scale(W / doc.w, H / doc.h);
+    paintStrokes(mctx, doc, true);
+
+    const soft = canvasOf(W, H);
+    const sctx = soft.getContext('2d');
+    const r = Math.max(4, Math.round(Math.min(rect.w, rect.h) * CROP_FEATHER));
+    // 老 Safari 没有 ctx.filter：拿不到就退化成硬边，图还是对的，只是接缝明显一点
+    const canBlur = 'filter' in sctx;
+    if (canBlur) sctx.filter = `blur(${r}px)`;
+    sctx.drawImage(m, 0, 0);
+    if (canBlur) sctx.filter = 'none';
+
+    lctx.globalCompositeOperation = 'destination-in';
+    lctx.drawImage(soft, 0, 0);
+    lctx.globalCompositeOperation = 'source-over';
+
+    octx.drawImage(layer, 0, 0);
+    return out;
+  }
+
+  // 贴好的整图得有能长期访问的地址：传进 ComfyUI 的 input/，用 /api/view?…&type=input 显示。
+  // 直接把 dataURL 写进节点也行，但存档会瞬间涨几百 KB 到几 MB（localStorage 只有 5MB 配额）。
+  async function storeStitched(n, item, rect, doc) {
+    const cv = await stitchPatch(n.dataURL, item.url, rect, doc);
+    const dataURL = cv.toDataURL('image/png');
+    try {
+      const blob = await (await fetch(dataURL)).blob();
+      const fd = new FormData();
+      fd.append('image', blob, `${n.id}-stitch-${Date.now()}.png`);
+      fd.append('overwrite', 'true');
+      const up = await api('/api/upload', { method: 'POST', body: fd });
+      if (!up || !up.ok) throw new Error((up && up.error) || '上传失败');
+      const sub = up.subfolder || '';
+      const type = up.type || 'input';
+      return {
+        url: artifactURL({ filename: up.image, subfolder: sub, type }),
+        filename: up.image, subfolder: sub, type,
+        uploaded: up.image, stitched: true,
+      };
+    } catch {
+      // 传不上去（ComfyUI 断了）就先用 dataURL 顶着：图是对的，只是这一张存档大一点
+      return { ...item, url: dataURL, stitched: true };
+    }
+  }
+
   let maskSession = null;
 
   // 擦除 / 去字 = 「涂完直接生成一个新节点」，跟单纯涂遮罩的差别只在提示词和落地方式。
@@ -11450,10 +12234,10 @@
     const intent = opts.intent && MASK_INTENT[opts.intent] ? opts.intent : '';
     if (intent) {
       // 擦除 / 去字落在一个**新节点**上，源节点的工作流不该被动
-      if (!maskCapable()) { flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），涂了也不会生效'); return; }
+      if (!maskCapable()) { flash('这台机器上没有能吃图的工作流，涂了也没法重绘：先导入一个图生图 / 图像编辑工作流'); return; }
     } else if (!ensureMaskWorkflow(n)) {
-      // 进编辑器之前先把工作流对齐：涂了却因为工作流不吃遮罩而不生效，是最难查的一类问题
-      flash('没有能吃遮罩的工作流（缺「Krea2 · 局部重绘」），涂了也不会生效');
+      // 进编辑器之前先把工作流对齐：涂了却因为工作流不吃图而不生效，是最难查的一类问题
+      flash('这台机器上没有能吃图的工作流，涂了也没法重绘：先导入一个图生图 / 图像编辑工作流');
       return;
     }
     if (maskSession) closeMaskEditor();

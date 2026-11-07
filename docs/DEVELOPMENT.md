@@ -16,7 +16,7 @@
 ```bash
 python server.py                # 打开浏览器到 http://127.0.0.1:8788
 python server.py --no-browser   # 不自动开浏览器（开发时常用）
-python server.py --port 9000 --data ./tmp-data --presets ./tmp-presets   # 换端口 / 隔离数据
+python server.py --port 9000 --data ./tmp-data   # 换端口 / 隔离数据目录（工作流库就在 data/library/）
 ```
 
 Windows 上双击 `启动.bat` 等价。
@@ -60,7 +60,7 @@ python server.py --host 0.0.0.0 --yes-i-know             # 明知会暴露、仍
 ## 常用脚本
 
 ```bash
-npm install          # 只装开发依赖（@icon-park/svg、prettier），产品不需要
+npm install          # 只装开发依赖（prettier），产品不需要
 npm run dev          # 8788 + 不自动开浏览器
 npm run check        # 所有 js 语法检查 + py_compile（不装 linter 也能跑）
 npm test             # 冒烟：静态/接口/项目 CRUD/防穿越 + 启动守卫/访问令牌/数据目录（不需要 ComfyUI）
@@ -68,7 +68,6 @@ npm run test:api     # 完整接口回归：会真的往 ComfyUI 丢一个 64×6
 npm run test:mcp     # MCP 协议与工具（不用浏览器）
 npm run test:e2e     # 浏览器 e2e：headed 用 HEADED=1；容器/沙箱里 Chrome 起不来时加 CHROME_NO_SANDBOX=1
 npm run shots        # 截一套图到 tests/.tmp/shots/（改完 UI 看效果用）
-npm run icons        # 重新生成 static/icons.js
 npm run pack         # 打 zip 到 dist/（加 -- --with-data 连 data/ 一起）
 ```
 
@@ -79,8 +78,8 @@ npm run pack         # 打 zip 到 dist/（加 -- --with-data 连 data/ 一起�
 ```
 server.py              # 全部后端（静态 + ComfyUI 代理 + 持久化）
 selftest.py            # 需要 ComfyUI 的接口回归
-static/                # 前端三件套 + icons.js（生成物）
-presets/               # 内置 API 工作流
+static/                # 前端三件套 + icons.js（生成物）+ logos/（模型商标，128px 白色透明底 PNG）
+tests/fixtures/workflows/  # 工作流样本（真机导出的 API 图），四套测试共用
 tests/smoke.py         # 无依赖冒烟
 tests/mcp.py           # MCP 协议 / 工具 / rev 锁 / stdio 桥
 tests/e2e/             # CDP 驱动的浏览器测试与截图脚本
@@ -89,11 +88,11 @@ tests/e2e/             # CDP 驱动的浏览器测试与截图脚本
   walkthrough.mjs      #   截图走查（npm run shots）
   probe.mjs            #   任意探针：对已运行实例跑一个 body 模块
   fixtures/            #   测试用的小画布
-tools/icons/gen.cjs    # IconPark → static/icons.js
 tools/check.mjs        # 语法自检
 tools/pack.py          # 打 zip
+tools/logos_white.py   # 把 static/logos/ 的商标统一成白色透明底（换图后跑一次）
 docs/                  # 这份文档 + 架构说明
-data/                  # 运行时生成，不进版本库
+data/                  # 运行时生成，不进版本库（projects/ 画布、library/ 工作流、icons/ 工作流图标、assets/ 资产库）
 ```
 
 ## 改 UI 的节奏
@@ -108,13 +107,15 @@ data/                  # 运行时生成，不进版本库
 
 ## 加图标
 
-图标全部来自 [IconPark](https://iconpark.oceanengine.com/official)，做法是**离线生成**：
+图标是手绘的一套，没有生成步骤：
 
-1. 在 `tools/icons/gen.cjs` 的 `MAP` 里加一行 `短名: 'IconPark 组件名'`（要更粗的线宽写 `['Name', 6]`）；
-2. 先 `npm install`（只有生成时需要 `@icon-park/svg`），再 `npm run icons`；
-3. 页面里用 `<span data-icon="短名">`（静态 HTML）或 `icon('短名')`（JS 拼字符串）。
+1. 在 `static/icons.js` 的 `P` 表里加一条 `短名: "<path d=\"...\"/>"`；
+2. 页面里用 `<span data-icon="短名">`（静态 HTML）或 `icon('短名')`（JS 拼字符串）。
 
-生成物是 `static/icons.js`（48×48 viewBox、`currentColor`），运行时不联网、不装包。图标颜色由 CSS `color` 决定。
+规矩：`viewBox="0 0 24 24"`、光学核心区 3.6–20.4、圆头圆角、`fill="none"`。
+**不要在 path 上写 `stroke-width`** —— 属性优先级低于任何 CSS 规则，会把 `style.css` 里
+`.oi { stroke-width: var(--oi-stroke) }` 的分尺寸光学补偿压死（旧版就是这么失效的）。
+实心元素写 `fill="currentColor" stroke="none"`。运行时不联网、不装包，颜色由 CSS `color` 决定。
 
 ## 加接口
 

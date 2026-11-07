@@ -38,7 +38,7 @@
     "3": {
       "class_type": "LoadImage",
       "inputs": {
-        "image": "视频_00001.png"
+        "image": ""
       },
       "_meta": {
         "title": "LoadImage"

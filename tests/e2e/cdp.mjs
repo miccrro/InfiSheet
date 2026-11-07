@@ -217,6 +217,16 @@ export async function newPage(port) {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
       await new Promise((r) => setTimeout(r, 120));
     },
+    // 给 <input type=file> 塞真文件：浏览器的文件选择框没法用脚本点，
+    // 只有 CDP 这一条路。上传图标那条链路要测，就得能真的递一个文件进去。
+    async setFiles(selector, files) {
+      await send('DOM.enable');
+      const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+      const { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector });
+      if (!nodeId) throw new Error(`找不到元素：${selector}`);
+      await send('DOM.setFileInputFiles', { nodeId, files: files.map((f) => path.resolve(f)) });
+      return true;
+    },
     async screenshot(file, { selector = null, scale = 1 } = {}) {
       let clip;
       if (selector) {

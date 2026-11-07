@@ -392,13 +392,15 @@ try {
       && classifyGenError('node_errors').retry === false
       && classifyGenError('随便什么错').kind === 'unknown');
 
-  // 拿真实预设再过一遍：内置的大多数宽高是连线，这条就是防「面板选了尺寸、提交图上没写」的回归。
+  // 拿 fixtures/workflows 里的真实图再过一遍（原来读的是 presets/，内置预设已整档删掉）：
+  // 大多数宽高是连线，这条就是防「面板选了尺寸、提交图上没写」的回归。
   //
   // 分族看的是**图里有没有尺寸来源**（EmptyLatentImage / ResolutionSelector 这类）。
   // 没有尺寸来源的那一族（超分放大）尺寸必须跟着输入图走：它是「把这张图放大」，
   // 钉死 1280×720 反而是错的。
-  const presetRows = fs.readdirSync(path.join(ROOT, 'presets')).filter((f) => f.endsWith('.json')).map((f) => {
-    const g = JSON.parse(fs.readFileSync(path.join(ROOT, 'presets', f), 'utf8')).graph;
+  const wfFixtureDir = path.join(ROOT, 'tests', 'fixtures', 'workflows');
+  const presetRows = fs.readdirSync(wfFixtureDir).filter((f) => f.endsWith('.json')).map((f) => {
+    const g = JSON.parse(fs.readFileSync(path.join(wfFixtureDir, f), 'utf8')).graph;
     const t = dimsTarget(g);
     const r = buildGenGraph(g, [], { width: 1280, height: 720 }, 1, 'p', null);
     const takesImage = Object.values(g).some((x) => {
@@ -408,16 +410,16 @@ try {
     return { f: f.replace(/\.(api\.)?json$/, ''), t, sized: r.sized, noSizeSrc: !t, takesImage,
       w: t ? r.graph[t].inputs.width : 0, h: t ? r.graph[t].inputs.height : 0 };
   });
-  // 不写死数量：presets/ 是用户目录，随时会多一个（这轮就多了 Krea2 · 局部重绘、Vosr+2 图像高清化）
+  // 不写死数量：夹具目录随时会多一个
   const pinned = presetRows.filter((p) => !p.noSizeSrc);
   const followers = presetRows.filter((p) => p.noSizeSrc);
-  check('内置预设全部钉得住尺寸（含从 ResolutionSelector 连线的）',
+  check('样本工作流全部钉得住尺寸（含从 ResolutionSelector 连线的）',
     presetRows.length >= 4 && pinned.length >= 3
       && pinned.every((p) => p.sized && p.w === 1280 && p.h === 720),
     presetRows.map((p) => `${p.f}→${p.t || '无'}:${p.w}×${p.h}`).join(' | '));
-  check('没有尺寸来源的预设不钉尺寸，但必须真吃得下输入图（局部重绘 / 超分都是「尺寸跟着原图走」）',
+  check('没有尺寸来源的样本不钉尺寸，但必须真吃得下输入图（局部重绘 / 超分都是「尺寸跟着原图走」）',
     followers.length >= 1 && followers.every((p) => !p.sized && p.takesImage),
-    followers.map((p) => `${p.f}→${p.t || '无'}·吃图=${p.takesImage}`).join(' | ') || '没有这类预设');
+    followers.map((p) => `${p.f}→${p.t || '无'}·吃图=${p.takesImage}`).join(' | ') || '没有这类样本');
 
   // ---- 提示词落点：不能取「排序第一个 text 插槽」----
   // Qwen 文生图的真实结构：481 是个 1hew_MultiStringJoin，它的 input / separator 也是 STRING，
@@ -1007,6 +1009,7 @@ try {
       visible: getComputedStyle(p).display !== 'none',
       rows: p.querySelectorAll('.gen-bar').length,
       barChildren: [...bar.children].map((c) => c.className.split(' ')[0]),
+      statusRow: !!p.querySelector('.gen-status-row .gen-status'),
       prompt: { minH: ts.minHeight, maxH: ts.maxHeight, border: ts.borderTopWidth, bg: ts.backgroundColor, scrollable: ta.scrollHeight > ta.clientHeight, masked: ta.classList.contains('has-more') },
       run: { h: Math.round(run.getBoundingClientRect().height), bg: rs.backgroundColor, radius: rs.borderRadius },
       pill: { h: Math.round(pill.getBoundingClientRect().height) },
@@ -1146,9 +1149,14 @@ try {
   await page.evaluate(`document.querySelectorAll('.gen-panel .gen-chips .chip')[2].click()`);
   await new Promise((r) => setTimeout(r, 200));
   check('底栏只有一行', panel && panel.rows === 1, panel ? panel.barChildren.join(' / ') : '');
-  check('底栏顺序：工作流 → 竖线 → 参数 → 状态 → 生成',
-    panel && panel.barChildren.join(',') === 'gensel,gen-sep,gensel,gen-status,gen-run',
+  // 状态文字从底栏里**搬出来**单占一行了（见 .gen-status-row）：底栏要放工作流名 /
+  // 画幅 / 张数 / 生成键，谁长了都得截，而报错恰恰不能截。所以这里只剩四样东西。
+  check('底栏顺序：工作流 → 竖线 → 参数 → 生成',
+    panel && panel.barChildren.join(',') === 'gensel,gen-sep,gensel,gen-run',
     panel ? panel.barChildren.join(',') : '');
+  check('状态文字不在底栏里，单独一行',
+    panel && !panel.barChildren.includes('gen-status') && panel.statusRow === true,
+    panel ? JSON.stringify({ bar: panel.barChildren, row: panel.statusRow }) : '');
   check('生成按钮与左侧下拉同高、纯白、8px 圆角矩形', panel && Math.abs(panel.run.h - panel.pill.h) <= 1 && panel.run.bg === 'rgb(255, 255, 255)' && panel.run.radius === '8px',
     panel ? JSON.stringify(panel.run) + ' pill=' + panel.pill.h : '');
 
@@ -1167,22 +1175,27 @@ try {
     return {
       // 生成按钮的右边缘离底栏右边缘还差多少：应该是 0（状态文字 flex:1 把空位吃满）
       runGap: Math.round(bar.getBoundingClientRect().right - run.getBoundingClientRect().right),
-      // 工作流那颗是手绘的「三个圆环串成一圈」：三个 <circle> + 一条三段弧的 <path>，
-      // 线宽 3.4（比 IconPark 的 4 细一档，参考图本身就是细线）。
+      // 工作流那颗现在直接用图标表里的 wf：两个方框 + 一条肘形连线，和「新建节点」
+      // 菜单里那颗是同一张图。以前这里是一张 48 栅格、自带 stroke-width 的「三个圆环
+      // 串一圈」手绘图——子元素一旦写死描边，style.css 的 --oi-stroke 光学补偿就全废了，
+      // 它也是整个界面里唯一不在 24 栅格体系里的图标。
       wf: (() => {
         const svg = root.querySelector('.gen-bar .gensel.wfsel .gensel-icon svg');
         if (!svg) return null;
-        const path = svg.querySelector('path');
-        const d = path ? path.getAttribute('d') : '';
-        // 顺手确认它不是以前那颗链环：换了图标但忘了改断言的话，这里会红
-        const tmp = document.createElement('div');
-        tmp.innerHTML = window.icon('link');
-        const link = tmp.firstChild ? svg.innerHTML.trim() === tmp.firstChild.innerHTML.trim() : false;
+        const same = (name) => {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = window.icon(name);
+          return tmp.firstChild ? svg.innerHTML.trim() === tmp.firstChild.innerHTML.trim() : false;
+        };
         return {
-          circles: svg.querySelectorAll('circle').length,
-          arcs: (d.match(/A/g) || []).length,
-          sw: path ? path.getAttribute('stroke-width') : '',
-          link,
+          rects: svg.querySelectorAll('rect').length,
+          paths: svg.querySelectorAll('path').length,
+          viewBox: svg.getAttribute('viewBox'),
+          // 子元素自带 stroke-width 的个数：必须是 0，否则描边粗细不受 CSS 控制
+          inlineSw: [...svg.children].filter((c) => c.getAttribute('stroke-width')).length,
+          isWf: same('wf'),
+          // 顺手确认它不是以前那颗链环：换了图标但忘了改断言的话，这里会红
+          isLink: same('link'),
         };
       })(),
       // 上排 chips：圆角矩形（8px），不是胶囊
@@ -1227,9 +1240,10 @@ try {
   // 生成按钮就停在离右边 140px 的地方——看着像没对齐。
   check('生成按钮贴到最右边（状态文字把中间的空位吃满）',
     barLook.runGap === 0, `还差 ${barLook.runGap}px`);
-  check('工作流那颗图标：三个圆环 + 三段弧，不再是链环',
-    !!barLook.wf && barLook.wf.circles === 3 && barLook.wf.arcs === 3
-      && barLook.wf.sw === '3.4' && barLook.wf.link === false,
+  check('工作流那颗图标：和图标表里的 wf 是同一张图（两个方框 + 肘形连线）',
+    !!barLook.wf && barLook.wf.isWf === true && barLook.wf.isLink === false
+      && barLook.wf.rects === 2 && barLook.wf.paths === 1
+      && barLook.wf.viewBox === '0 0 24 24' && barLook.wf.inlineSw === 0,
     JSON.stringify(barLook.wf));
   // 圆角统一：chips / 两个下拉 / 展开键 / 发送键一律 8px 圆角矩形。
   // 以前 chips 是胶囊、发送键是正圆、展开键是 8px 方角，三种圆角并排看着像拼起来的。
@@ -2457,8 +2471,9 @@ try {
   })()`);
   const sSet = await setBox();
 
-  // 工作流格：搜索 + 导入 + 默认读数 + 一份列表 + 一排分类。
+  // 工作流格：搜索 + 导入 + 一行说明 + 一份列表 + 一排分类。
   // 这四样以前散在三个地方（设置里的下拉 / 设置里的列表 / 资产库弹窗的卡片）。
+  // 现在**没有「默认工作流」这一档**了：谁被默认选中，就意味着用户没选过也照样出图。
   const wfPane = await page.evaluate(`(() => {
     const pane = document.getElementById('set-pane-wf');
     const rows = [...pane.querySelectorAll('.wf-item')];
@@ -2471,19 +2486,68 @@ try {
       uses: rows.filter((r) => r.querySelector('.wf-use')).length,
       dels: rows.filter((r) => r.querySelector('.wf-del')).length,
       cats: rows.filter((r) => r.querySelector('.wf-cat')).length,
+      checks: rows.filter((r) => r.querySelector('.wf-check')).length,
       chips: pane.querySelectorAll('.wf-chip').length,
       def: (document.getElementById('setWfDefault') || {}).textContent || '',
     };
   })()`);
-  check('工作流库就是设置的第一格：搜索 / 导入 / 默认读数 / 列表 / 分类都在',
+  check('工作流库就是设置的第一格：搜索 / 导入 / 说明 / 列表 / 分类都在',
     wfPane.missing.length === 0 && wfPane.rows > 0 && wfPane.chips > 0,
     JSON.stringify(wfPane));
-  check('每行五件套：名字 / 分类 / 默认 / 加到画布 / 删除',
-    wfPane.shape === 5 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
-      && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows,
+  // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「能力分类的默认」，第 5 颗是放大镜「查残留」——
+  // 导入时弹过一次之后，文件就躺在列表里了，想再确认一遍（或怀疑某张图不是自己出的）
+  // 原来没有任何入口。
+  check('每行七件套：图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除',
+    wfPane.shape === 7 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
+      && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows
+      && wfPane.checks === wfPane.rows,
     JSON.stringify(wfPane));
-  check('默认工作流是一行读数，不再是和列表重复一遍的下拉',
-    /^默认：/.test(wfPane.def), wfPane.def);
+  check('那一行读数报「每个能力分类当前用哪一份」，夹具没设过就写「未设」',
+    /^按分类默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
+
+  // ☆ 设默认：按**能力分类**各一份，存服务端 data/wf-defaults.json（换设备 / MCP 读同一份）
+  // 吃遮罩的那份（局部重绘）不给设——它只能由遮罩编辑器选中，设了也永远不会被自动挑中。
+  const maskStar = await page.evaluate(`(() => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:krea2-局部重绘.api"]');
+    const s = row && row.querySelector('.wf-star');
+    return { off: !!s && s.classList.contains('off'), aria: s ? s.getAttribute('aria-disabled') : '' };
+  })()`);
+  check('吃遮罩的工作流不能设默认：星压暗 + aria-disabled（不是点了没反应）',
+    maskStar.off && maskStar.aria === 'true', JSON.stringify(maskStar));
+
+  const starCell = await page.center('#appSettings #setWfList .wf-item[data-id="lib:krea2-文生图.api"] .wf-star');
+  await page.clickAt(starCell.x, starCell.y, { settle: 700 });
+  const starOn = await page.evaluate(`(async () => {
+    const box = document.getElementById('appSettings');
+    const row = box.querySelector('#setWfList .wf-item[data-id="lib:krea2-文生图.api"]');
+    const saved = await (await fetch('/api/wf/defaults')).json();
+    return {
+      on: !!row.querySelector('.wf-star.on'),
+      name: row.querySelector('b').textContent,
+      def: (document.getElementById('setWfDefault') || {}).textContent || '',
+      saved: saved.defaults || {},
+    };
+  })()`);
+  const savedVals = Object.values(starOn.saved);
+  check('点 ☆ 设成该分类的默认：星变实心、说明行写出名字、服务端存下来',
+    starOn.on && starOn.def.includes(starOn.name)
+      && savedVals.length === 1 && /^(preset|lib):/.test(savedVals[0]),
+    JSON.stringify(starOn));
+  // 再点一次取消：分类回到「未设」，服务端那条也删掉（别留死 id）
+  const starCell2 = await page.center('#appSettings #setWfList .wf-item[data-id="lib:krea2-文生图.api"] .wf-star.on');
+  await page.clickAt(starCell2.x, starCell2.y, { settle: 700 });
+  const starOff = await page.evaluate(`(async () => {
+    const box = document.getElementById('appSettings');
+    const saved = await (await fetch('/api/wf/defaults')).json();
+    return {
+      on: !!box.querySelector('#setWfList .wf-star.on'),
+      def: (document.getElementById('setWfDefault') || {}).textContent || '',
+      saved: saved.defaults || {},
+    };
+  })()`);
+  check('再点一次取消默认：星回空心、说明行回「未设」、服务端清掉这条',
+    !starOff.on && /未设/.test(starOff.def) && Object.keys(starOff.saved).length === 0,
+    JSON.stringify(starOff));
 
   // 尺寸不随内容变：把搜索框填成匹配不到的词，内容从一屏行塌成一句「没有匹配」
   await page.evaluate(`(() => {
@@ -2798,7 +2862,7 @@ try {
   // 管理预设 == 打开库的预设页），而且「默认工作流」下拉里只有内置预设——自己存进库的
   // 永远选不到，用户的原话就是「工作流被固定死了」。
   // 现在合成一处：一个下拉 + 一份列表（改名 / 换分类 / 设默认 / 删除）+ 一排可自定义的分类。
-  // 只操作**库**里的条目：presets/ 是真实目录，e2e 改了会污染用户的预设。
+  // 只操作**库**里的条目：data/library/ 是用户的真实目录，e2e 改了会污染它们。
   await page.evaluate(`(async () => {
     await fetch('/api/library/' + encodeURIComponent('e2e 我的流程'), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -2818,9 +2882,11 @@ try {
         .filter((id) => !!box.querySelector('#' + id)).length,
       rows: rows.length,
       shape: rows.length
-        ? [...rows[0].children].map((c) => c.tagName.toLowerCase() + (c.className ? '.' + c.className : ''))
+        // 只取第一个 class：★ 已设 / 吃遮罩压暗时会是「wf-star on」「wf-star off」
+        ? [...rows[0].children].map((c) => c.tagName.toLowerCase()
+            + (c.className ? '.' + String(c.className).split(' ')[0] : ''))
         : [],
-      stars: rows.filter((r) => r.querySelector('.wf-star').textContent === '★').length,
+      stars: rows.filter((r) => r.querySelector('.wf-star')).length,
       listH: Math.round(box.querySelector('#setWfList').getBoundingClientRect().height),
       libRow: rows.some((r) => r.dataset.id.indexOf('lib:') === 0),
     };
@@ -2828,9 +2894,9 @@ try {
   check('设置里的工作流区不再重复：一组按钮 + 一份列表，旧的「新增 / 管理预设、管理库工作流」全删了',
     wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
     JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
-  check('工作流列表每行是「名字 / 分类 / 默认 / 加到画布 / 删除」五件套，且只有一行是默认',
-    wfSet.shape.join('|') === 'b|button.wf-cat|button.wf-star|button.wf-use|button.wf-del'
-      && wfSet.stars === 1,
+  check('工作流列表每行是「图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除」七件套',
+    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-del'
+      && wfSet.stars === wfSet.rows,
     JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
   check('列表按内容撑开（不被压成一条线），预设和自己存进库的工作流在同一份列表里',
     wfSet.listH >= 96 && wfSet.libRow && wfSet.rows >= 7,
@@ -2875,12 +2941,19 @@ try {
   })()`);
   check('分类表存到了服务端（关掉设置再开还在）', catKept.includes('我的常用'), catKept.join(' / '));
   await page.evaluate(`delete window.prompt`);
-  // 删除也走设置里那个 ×（预设和库工作流都认）。这条曾经是坏的：presetOptions() 没带 file，
+  // 删除也走设置里那个 ×。这条曾经是坏的：列表项没带 file，
   // deleteWfItem 拿到的是 undefined → 请求 /api/library/undefined → 404，界面只会说「删除失败」。
   // 顺带把夹具工作流清掉，别留给后面的用例。
   await page.evaluate(`window.confirm = () => true`);
-  const delCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-del');
-  await page.clickAt(delCell.x, delCell.y, { settle: 900 });
+  // 这里**不能**用 center() + clickAt()：坐标是先量后点，中间只要列表重排一次
+  // （分类异步回填、行高变化）就会点到隔壁那行的 ×——而隔壁是另一份工作流，
+  // 真文件，删掉就没了（跑测试把用户的预设删了两次，就是这么来的）。
+  // × 绑的是普通 onclick，直接点元素，坐标竞态就没有了。
+  // 点名删「e2e 我的流程」这一条：以前这里点的是「第一个 lib: 行」，
+  // 而列表里现在全是 lib: 行（内置预设删掉后只剩库这一个来源），第一个就是夹具里的真工作流，
+  // 删掉它后面所有生成用例都会红。点名删自己造的一次性条目，绝不碰夹具。
+  await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-del').click()`);
+  await new Promise((r) => setTimeout(r, 900));
   const delGone = await page.evaluate(`(async () => {
     const box = document.getElementById('appSettings');
     const rows = [...box.querySelectorAll('#setWfList .wf-item')].map((r) => r.dataset.id);
@@ -2889,11 +2962,226 @@ try {
     return { rows, names: (r.items || []).map((it) => it.name) };
   })()`);
   check('设置里的 × 真能删掉库工作流（曾经请求成 /api/library/undefined）',
-    delGone.rows.every((id) => id.indexOf('lib:') !== 0) && !delGone.names.includes('e2e 我的流程'),
+    !delGone.rows.includes('lib:e2e 我的流程') && !delGone.names.includes('e2e 我的流程'),
     JSON.stringify(delGone));
+
+  // ---- 工作流图标：内置模型标 + 自己传的图 ----
+  // 名字左边那一格。没设过时是虚线框（不是「图裂了」），点开是 12 个预设模型标。
+  // 这里用**夹具里第一行**当样本，测完恢复默认——不动它的名字和分类，后面还要跑生成。
+  const icoSlot = await page.evaluate(`(() => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item');
+    const b = row && row.querySelector('.wf-ico-btn');
+    return { id: row ? row.dataset.id : '', hasBtn: !!b,
+             none: !!(b && b.querySelector('.wf-ico.is-none')) };
+  })()`);
+  check('工作流每行名字前有图标位，没设过时画成虚线框（不是空白也不是图裂）',
+    icoSlot.hasBtn && icoSlot.none, JSON.stringify(icoSlot));
+
+  await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item .wf-ico-btn').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const icoPicker = await page.evaluate(`(() => {
+    const p = document.querySelector('.icon-pop');
+    if (!p) return null;
+    const btns = [...p.querySelectorAll('.icon-pick')];
+    return { n: btns.length, names: btns.map((b) => b.title).slice(0, 4),
+             foot: [...p.querySelectorAll('.icon-pop-row button')].map((b) => b.textContent) };
+  })()`);
+  check('点图标弹出一排预设模型标（Qwen / FLUX / SD…），另有「上传图片 / 恢复默认」',
+    !!icoPicker && icoPicker.n >= 10 && /Qwen/.test(icoPicker.names[0]) && icoPicker.foot.length === 2,
+    JSON.stringify(icoPicker));
+
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.icon-pop .icon-pick')].find((x) => /Qwen/.test(x.title));
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const icoSet = await page.evaluate(`(async () => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item');
+    const ico = row.querySelector('.wf-ico-btn .wf-ico');
+    const img = ico && ico.querySelector('img');
+    const lib = await (await fetch('/api/library')).json();
+    const it = (lib.items || []).find((x) => 'lib:' + x.name === row.dataset.id);
+    return { id: row.dataset.id,
+             src: img ? img.getAttribute('src') : '',
+             // 只看 src 不够：路径写错（比如 /static/logos/）时 src 一样对，
+             // 但图是 404，界面上就是一块空白。必须看真的解码出来了没有。
+             loaded: !!(img && img.complete && img.naturalWidth > 0),
+             // 商标是白色透明底 PNG，容器带 is-logo 且不垫浅色板（垫了白图标就没了）
+             plate: !!(ico && ico.classList.contains('is-logo')),
+             bg: ico ? getComputedStyle(ico).backgroundColor : '',
+             server: it ? it.icon : '(缺)' };
+  })()`);
+  check('选「Qwen」→ 这一行当场换成 Qwen 的商标，服务端也记下了（preset:qwen）',
+    /^\/logos\/qwen\.png(\?v=\d+)?$/.test(icoSet.src) && icoSet.loaded && icoSet.plate
+      && icoSet.server === 'preset:qwen',
+    JSON.stringify(icoSet));
+  // 白色图标 + 浅色垫板 = 什么都看不见。这条专门盯住那个退化。
+  check('商标容器不垫浅色板（白图标垫白底就消失了）',
+    /rgba\(0, 0, 0, 0\)|transparent/.test(icoSet.bg), icoSet.bg);
+
+  // 自己传一张：前端先缩到 96px 再传，服务端按内容哈希落盘（data/icons/）。
+  // 不把 base64 写进工作流文件——那个文件是每次列库都要整份读的。
+  await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item .wf-ico-btn').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.icon-pop .icon-pop-row button')].find((x) => /上传图片/.test(x.textContent));
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.setFiles('input.wf-ico-file', [path.join(ROOT, 'tests', 'fixtures', 'icon-sample.png')]);
+  await new Promise((r) => setTimeout(r, 1300));
+  const icoUp = await page.evaluate(`(async () => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item');
+    const img = row.querySelector('.wf-ico-btn .wf-ico img');
+    const lib = await (await fetch('/api/library')).json();
+    const it = (lib.items || []).find((x) => 'lib:' + x.name === row.dataset.id);
+    return { src: img ? img.getAttribute('src') : '', server: it ? it.icon : '' };
+  })()`);
+  check('上传自己的图 → 变成 <img>，服务端存成 file:哈希.png（不把 base64 塞进工作流文件）',
+    /^\/api\/icon\/[0-9a-f]{8,40}\.png$/.test(icoUp.src)
+      && /^file:[0-9a-f]{8,40}\.png$/.test(icoUp.server),
+    JSON.stringify(icoUp));
+
+  await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item .wf-ico-btn').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.icon-pop .icon-pop-row button')].find((x) => /恢复默认/.test(x.textContent));
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const icoReset = await page.evaluate(`(async () => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item');
+    const lib = await (await fetch('/api/library')).json();
+    const it = (lib.items || []).find((x) => 'lib:' + x.name === row.dataset.id);
+    return { none: !!row.querySelector('.wf-ico.is-none'), server: it ? it.icon : '(缺)' };
+  })()`);
+  check('「恢复默认」→ 回到虚线框，工作流文件里那个 icon 字段被删掉（不是留个空串）',
+    icoReset.none && icoReset.server === '', JSON.stringify(icoReset));
+
+  // ---- 库工作流：改名直接写回文件，删除就是真删 ----
+  // 以前列表里还并着一份随程序分发的 presets/：改名只能记覆盖层、删除只能「隐藏」，
+  // 于是多出一整套「恢复出厂」。内置预设整档删掉之后，库里的条目就是普通文件，
+  // 这里验的就是这两件事本身。用一次性条目当样本，别动夹具里的工作流（后面还要跑生成）。
+  await page.evaluate(`(async () => {
+    await fetch('/api/library/' + encodeURIComponent('e2e 改名样本'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph: { '1': { class_type: 'KSampler', inputs: {} } }, title: 'e2e 改名样本' }),
+    });
+  })()`);
+  await page.key('Escape', { code: 'Escape', keyCode: 27 });
+  await new Promise((r) => setTimeout(r, 300));
+  await page.click('#projectBar [data-act="settings"]', { settle: 900 });
+  const libRow = await page.evaluate(`(() => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:e2e 改名样本"]');
+    if (!row) return null;
+    return { id: row.dataset.id, label: row.querySelector('b').textContent };
+  })()`);
+  check('新建的库工作流立刻出现在设置列表里（不再有第二份来源）', !!libRow, JSON.stringify(libRow));
+  if (libRow) {
+    await page.evaluate(`window.prompt = () => 'e2e 改过的名字'`);
+    await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item[data-id="${libRow.id}"] b').click()`);
+    await new Promise((r) => setTimeout(r, 900));
+    const libRenamed = await page.evaluate(`(async () => {
+      const lib = await (await fetch('/api/library')).json();
+      const it = (lib.items || []).find((x) => x.name === 'e2e 改名样本') || {};
+      const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:e2e 改名样本"]');
+      return { label: row ? row.querySelector('b').textContent : '', title: it.title || '' };
+    })()`);
+    check('改名写回库文件本身（列表和 /api/library 一起变，没有覆盖层这一说）',
+      libRenamed.label === 'e2e 改过的名字' && libRenamed.title === 'e2e 改过的名字',
+      JSON.stringify(libRenamed));
+
+    await page.evaluate(`window.confirm = () => true`);
+    await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:e2e 改名样本"] .wf-del').click()`);
+    await new Promise((r) => setTimeout(r, 900));
+    const libGone = await page.evaluate(`(async () => {
+      const lib = await (await fetch('/api/library')).json();
+      return {
+        rows: [...document.querySelectorAll('#appSettings #setWfList .wf-item')].map((r) => r.dataset.id),
+        names: (lib.items || []).map((x) => x.name),
+      };
+    })()`);
+    check('删除是真删：列表里没了，/api/library 里也没了',
+      !libGone.rows.includes('lib:e2e 改名样本') && !libGone.names.includes('e2e 改名样本'),
+      JSON.stringify(libGone));
+    await page.evaluate(`delete window.prompt`);
+    await page.evaluate(`delete window.confirm`);
+  }
+  // ---- 已导入的工作流也能再查一次残留 ----
+  // 导入那一刻的检查只弹一次；文件早就躺在列表里了，想再确认一遍（或者怀疑某张图不是
+  // 自己出的）原来一个入口都没有。现在每行末尾有一颗放大镜。
+  const chkClean = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:Qwen-image-2.1图像编辑.api"]');
+    if (!row) return { missing: true };
+    const btn = row.querySelector('.wf-check');
+    if (!btn) return { noBtn: true };
+    btn.click();
+    for (let k = 0; k < 60; k++) {
+      const badge = document.getElementById('queueBadge');
+      if (badge && !badge.classList.contains('hidden') && /干净|残留/.test(badge.textContent)) break;
+      await sleep(100);
+    }
+    const badge = document.getElementById('queueBadge');
+    return { flash: badge ? badge.textContent : '', card: !!document.getElementById('residueCard') };
+  })()`);
+  check('已导入的工作流能再查一次残留：干净的直接说「是干净的」，不弹卡片',
+    chkClean.flash && /是干净的/.test(chkClean.flash) && chkClean.card === false,
+    JSON.stringify(chkClean));
+
+  const chkDirty = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:krea2-文生图.api"]');
+    if (!row) return { missing: true };
+    row.querySelector('.wf-check').click();
+    for (let k = 0; k < 60 && !document.getElementById('residueCard'); k++) await sleep(100);
+    const card = document.getElementById('residueCard');
+    const out = {
+      card: !!card,
+      title: card ? card.querySelector('.sheet header strong').textContent : '',
+      rows: card ? card.querySelectorAll('.rs-row').length : 0,
+      clean: card ? (card.querySelector('.rs-clean') || {}).textContent : '',
+      skip: card ? (card.querySelector('.rs-skip') || {}).textContent : '',
+      note: card ? card.textContent.replace(/\\s+/g, ' ') : '',
+    };
+    // 只验证「能不能查到」，不改任何文件：直接取消
+    if (card) card.querySelector('.rs-cancel').click();
+    await sleep(120);
+    out.gone = !document.getElementById('residueCard');
+    return out;
+  })()`);
+  check('查到残留就列出条目，底部改成「不改 / 清理选中项并保存」（不是「导入」）',
+    chkDirty.card && chkDirty.rows > 0 && /清理选中项并保存/.test(chkDirty.clean)
+      && chkDirty.skip === '不改' && /写回工作流库/.test(chkDirty.note) && chkDirty.gone,
+    JSON.stringify({ ...chkDirty, note: (chkDirty.note || '').slice(0, 160) }));
+
   await page.evaluate(`delete window.confirm`);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
   await new Promise((r) => setTimeout(r, 300));
+  // ---- 导入前的残留体检 ----
+  // API 图里 LoadImage.image 记的是导出者机器上的文件名，换台机器就不存在，
+  // 但会跟着提交给 ComfyUI，而界面上看不见也改不了。这里的口径是：
+  // 非空的要报、空的不报；图片类默认勾选（清空永远安全）、文本类默认不勾（可能是模板自带的系统提示）。
+  const residueProbe = await page.evaluate(`(async () => {
+    const probe = async (graph) => (await (await fetch('/api/residue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph }),
+    })).json());
+    const dirty = await probe({
+      '1': { class_type: 'LoadImage', inputs: { image: '023.jpg' }, _meta: { title: '加载图像' } },
+      '2': { class_type: 'LoadImage', inputs: { image: '' }, _meta: { title: '加载图像' } },
+    });
+    const clean = await probe({
+      '1': { class_type: 'LoadImage', inputs: { image: '' }, _meta: { title: '加载图像' } },
+    });
+    return { dirty, clean };
+  })()`);
+  const rd = residueProbe.dirty || {};
+  const rl = rd.residue || [];
+  check('导入前能查出 LoadImage 里的残留图（空值不误报）',
+    rd.ok === true && rl.length === 1 && rl[0].node === '1' && rl[0].value === '023.jpg'
+      && rl[0].auto === true && (residueProbe.clean || {}).residue.length === 0,
+    JSON.stringify({ dirty: rl, clean: (residueProbe.clean || {}).residue }));
 
   // ---- ComfyUI 地址：换一台电脑之后不用改启动脚本 ----
   // 顶栏那一段状态本身就是入口（连不上时点它直接落到输入框），设置里能改、能存。
@@ -2953,18 +3241,18 @@ try {
       version: 2, name: 'e2e 多图', seq: 2, bootAt: Date.now(), view: { x: 120, y: 80, k: 0.9 }, groups: [], links: [],
       nodes: [{
         id: 'g9', type: 'image', title: '多图', x: 40, y: 40, dataURL: null, uploaded: null,
-        gen: { prompt: '多图', wf: 'preset:krea2-txt2img.api.json', aspect: '1:1', size: '1k', batch: 4,
+        gen: { prompt: '多图', wf: 'lib:krea2-txt2img.api', aspect: '1:1', size: '1k', batch: 4,
           seedMode: 'fixed', seed: 7, gallery: [0, 1, 2, 3].map(mk), idx: 0, extras: [],
           // 生成历史：两条，第一条的 items 与 gallery 相同（所以它会被标成「当前」）
           runs: [
             { at: Date.now() - 1000, prompt: '第二版：雨夜霓虹', seed: 222, w: 1024, h: 1024, batch: 4,
-              wf: 'preset:krea2-txt2img.api.json', items: [0, 1, 2, 3].map(mk) },
+              wf: 'lib:krea2-txt2img.api', items: [0, 1, 2, 3].map(mk) },
             { at: Date.now() - 60000, prompt: '第一版：晴天街角', seed: 111, w: 768, h: 768, batch: 2,
-              wf: 'preset:krea2-txt2img.api.json', items: [1, 2].map(mk) },
+              wf: 'lib:krea2-txt2img.api', items: [1, 2].map(mk) },
             { at: Date.now() - 180000, prompt: '更早：胶片质感', seed: 99, w: 512, h: 512, batch: 1,
-              wf: 'preset:krea2-txt2img.api.json', items: [3].map(mk) },
+              wf: 'lib:krea2-txt2img.api', items: [3].map(mk) },
             { at: Date.now() - 600000, prompt: '最早：白底静物', seed: 7, w: 512, h: 512, batch: 1,
-              wf: 'preset:krea2-txt2img.api.json', items: [0].map(mk) },
+              wf: 'lib:krea2-txt2img.api', items: [0].map(mk) },
           ] },
       }],
     };
@@ -4543,7 +4831,7 @@ try {
     // 挑工作流必须看能力：以前按名字里的「编辑」匹配，选中过 Moss_图像编辑 —— 纯文生图，
     // 参考图根本没进图。这里直接问服务端这个预设吃不吃图。
     const lib = await (await fetch('/api/library')).json();
-    const hit = (lib.presets || []).find((x) => (x.title || x.name) === label);
+    const hit = (lib.items || []).find((x) => (x.title || x.name) === label);
     return {
       n: nodes.length,
       title: (last.querySelector('.n-name') || {}).textContent || '',
@@ -5187,6 +5475,10 @@ try {
       ? Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }))
       : window.__realFetch(u, o));
   })()`);
+  // 前面几条用例可能留着一个假任务在轮询：busy 期间点生成会被直接吞掉，
+  // 于是「烘焙没做、尺寸没变」被误报成「工作流被换掉了」。等按钮能点再点。
+  await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
+    return !!b && !b.disabled; })()`, 15000).catch(() => null);
   await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
   await page.waitFor(`!document.querySelector('.node.selected .op-sel')`, 8000).catch(() => null);
   await new Promise((r) => setTimeout(r, 800));
@@ -5280,6 +5572,73 @@ try {
   })()`);
   await new Promise((r) => setTimeout(r, 600));
 
+  // ---- 工作流芯片的图标：选了哪份就画哪份的标 ----
+  // 只换字不换标，会出现「写着 FLUX、前面还挂着 Krea 的标」——设置里刚设完时最刺眼。
+  // 走真界面：设置里挑标 → 回画布选这份工作流 → 看芯片。
+  // 上一节收尾把那批新节点删了，先重新选中那张原始图片节点把面板叫回来。
+  await selectImg();
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(`(() => {
+    const b = document.querySelector('.node.selected .n-gen, .node.selected [data-act="gen"]');
+    const panel = document.querySelector('.node.selected .gen-panel');
+    const hidden = !panel || getComputedStyle(panel).display === 'none';
+    if (b && hidden) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 600));
+  await page.evaluate(`document.querySelector('#projectBar [data-act="settings"]').click()`);
+  await new Promise((r) => setTimeout(r, 700));
+  await page.evaluate(`(() => {
+    const t = [...document.querySelectorAll('#setTabs .tab')].find((x) => /工作流/.test(x.textContent));
+    if (t) t.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 600));
+  await page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('#appSettings #setWfList .wf-item')]
+      .find((r) => r.dataset.id === 'lib:krea2-文生图.api');
+    if (row) row.querySelector('.wf-ico-btn').click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.icon-pop .icon-pick')].find((x) => /FLUX/.test(x.title));
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 900));
+  await page.key('Escape', { code: 'Escape', keyCode: 27 });
+  await new Promise((r) => setTimeout(r, 500));
+  await page.evaluate(`(() => { const c = document.querySelector('.gen-panel .wfsel .gm-btn'); if (c) c.click(); })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  // 下拉菜单里也要画标：选工作流时第一眼看的就是这份菜单。
+  // 没设图标的项必须留一格透明占位，否则有标的缩进 32px、没标的只缩进 12px，一列文字参差。
+  const menuIco = await page.evaluate(`(() => {
+    const btns = [...document.querySelectorAll('.popmenu button')];
+    return { total: btns.length,
+             withIco: btns.filter((b) => b.querySelector('.wf-ico:not(.is-empty)')).length,
+             allPadded: btns.every((b) => b.classList.contains('has-ico')) };
+  })()`);
+  check('工作流下拉菜单里每项都带标（没设图标的留透明占位，文字左边缘对齐）',
+    menuIco.total > 1 && menuIco.withIco >= 1 && menuIco.allPadded, JSON.stringify(menuIco));
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.popmenu button')].find((x) => /krea2-文生图/.test(x.textContent));
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const chipIco = await page.evaluate(`(() => {
+    const c = document.querySelector('.gen-panel .wfsel');
+    const img = c && c.querySelector('.gensel-icon .wf-ico img');
+    return { src: img ? img.getAttribute('src') : '',
+             cls: c && c.querySelector('.gensel-icon .wf-ico')
+               ? c.querySelector('.gensel-icon .wf-ico').className : '' };
+  })()`);
+  check('生成面板的工作流芯片跟着换标（选 FLUX 就是 FLUX 的商标，不再是一颗通用图标）',
+    /^\/logos\/flux\.png(\?v=\d+)?$/.test(chipIco.src) && /is-logo/.test(chipIco.cls),
+    JSON.stringify(chipIco));
+  // 清掉，别让后面「按分类默认 / 扩图选流」这些用例读到一份带标的库
+  await page.evaluate(`(async () => {
+    await fetch('/api/wf/meta', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'lib:krea2-文生图.api', icon: '' }) });
+  })()`);
+
+
   // ---- 遮罩编辑器：涂 → 存 → 重开精确还原 ----
   // 重点不是视觉细节，是三条口径：
   //   1) canvas 内部尺寸 = 原图像素（不是显示尺寸，否则笔尖细一半、导出的遮罩整体错位）
@@ -5292,6 +5651,24 @@ try {
     return true;
   })()`);
   await new Promise((r) => setTimeout(r, 350));
+  // 先把工作流钉成「纯文生图」：这条用例测的是**连图都不吃**的工作流在打开编辑器时会被换掉。
+  // 「只吃图不吃遮罩」的流不再换（它走裁切局部重绘），那条在下面单独测。
+  const maskWfPinned = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-panel-for="${pick.img}"] .gensel.wfsel .gm-btn');
+    if (!btn) return { missing: true };
+    btn.click();
+    await sleep(320);
+    const hit = [...document.querySelectorAll('.popmenu button')]
+      .find((b) => /文生图/.test(b.textContent) && !/局部重绘/.test(b.textContent));
+    if (!hit) return { missing: true };
+    hit.click();
+    await sleep(320);
+    const now = document.querySelector('[data-panel-for="${pick.img}"] .gensel.wfsel .gm-btn');
+    return { now: now ? now.textContent.trim() : '' };
+  })()`);
+  check('把这张图的工作流钉成纯文生图（不吃图的那一类）',
+    !maskWfPinned.missing && /文生图/.test(maskWfPinned.now), JSON.stringify(maskWfPinned));
   await page.click('#imgTools .it-btn[data-tool="mask"]', { settle: 450 });
   const maskOpen = await page.waitFor(`(() => {
     const cv = document.querySelector('#maskEditor .me-cv');
@@ -5310,15 +5687,15 @@ try {
     !!maskOpen && maskOpen.tools.join('/') === '画笔/橡皮' && /遮罩 0%/.test(maskOpen.cover),
     maskOpen ? `${maskOpen.tools.join('/')} ${maskOpen.cover}` : 'none');
 
-  // 老存档的节点 wf 是纯文生图（不吃遮罩），wfAuto 还是 true。以前这种情况按钮直接
-  // disabled，用户只看到「点了没反应」。现在一律允许打开，并在打开时把工作流换成吃遮罩的那个。
+  // 纯文生图的工作流连图都不吃：遮罩根本没地方落。以前这种情况按钮直接 disabled，
+  // 用户只看到「点了没反应」。现在一律允许打开，并在打开时把工作流换成能吃图的那个。
   const wfSwitched = await page.evaluate(`(() => {
     const box = document.querySelector('[data-panel-for="${pick.img}"] .wfsel');
     const badge = document.getElementById('queueBadge');
     return { wf: box ? box.textContent.trim() : 'no-box',
              flash: badge && !badge.classList.contains('hidden') ? badge.textContent.trim() : '' };
   })()`);
-  check('不吃遮罩的工作流：打开编辑器时自动换成「局部重绘」并说明',
+  check('不吃图的工作流（纯文生图）：打开编辑器时自动换成「局部重绘」并说明',
     /局部重绘/.test(wfSwitched.wf) && /已换成/.test(wfSwitched.flash),
     JSON.stringify(wfSwitched));
 
@@ -5437,12 +5814,12 @@ try {
   check('存档只存笔画，不存位图',
     !!maskDoc && Array.isArray(maskDoc.strokes) && !maskDoc.png && !maskDoc.url,
     maskDoc ? Object.keys(maskDoc).join(',') : 'none');
-  // wfAuto 以前从不落盘：刷新后变 undefined，用户手选过的选择就丢了。
-  // 现在它必须真的在存档里（工作流是不是「手选的」全靠它区分）。
+  // 遮罩编辑器把工作流换成了「局部重绘」，这个选择必须真的落盘——
+  // 只在内存里换的话，刷新一次节点又变回「未选择工作流」，用户涂的遮罩白费。
   const maskGen = (maskNode || {}).gen || {};
-  check('自动换过的遮罩工作流落盘，且 wfAuto 字段不再丢',
-    /局部重绘/.test(String(maskGen.wf || '')) && typeof maskGen.wfAuto === 'boolean',
-    JSON.stringify({ wf: maskGen.wf, wfAuto: maskGen.wfAuto }));
+  check('遮罩编辑器换上的「局部重绘」落盘了',
+    /局部重绘/.test(String(maskGen.wf || '')),
+    JSON.stringify({ wf: maskGen.wf }));
 
   // 清掉，别影响后面的用例
   await page.evaluate(`(() => {
@@ -5466,9 +5843,9 @@ try {
     const hits = [];
     window.fetch = async (url, opts) => {
       const u = String(url);
-      // 取工作流现在走 /api/wf/resolve（文件名可变，不能直接拼 /presets/<文件>），
+      // 取工作流走 /api/wf/resolve（文件名可变，不能直接拼库文件名），
       // 所以两边都记：断言关心的是「挑的是哪个工作流」，不是它从哪个 URL 取。
-      if (u.startsWith('/presets/')) hits.push(decodeURIComponent(u));
+      if (u.startsWith('/api/library/')) hits.push(decodeURIComponent(u));
       if (u.startsWith('/api/wf/resolve')) {
         const id = new URL(u, location.origin).searchParams.get('id') || '';
         hits.push('resolve:' + decodeURIComponent(id));
@@ -5511,6 +5888,181 @@ try {
   check('遮罩清掉后不会再用「局部重绘」跑（否则出图跟原图逐位相同）',
     wfBack.hits.length > 0 && !wfBack.hits.some((h) => /局部重绘/.test(h)),
     JSON.stringify(wfBack));
+
+  // ---- 遮罩 + 「只吃图不吃遮罩」的工作流：裁切局部重绘 ----
+  // Qwen-Image-Edit 这类流的 4 个 LoadImage 全接在参考图插槽（images.image_1..4）上，
+  // 没有任何节点消费 LoadImage 的 MASK 输出，服务端因此判它 takes_alpha_mask=false。
+  // 以前这种流一涂遮罩就被静默换成「Krea2 · 局部重绘」——用户看到的是「我选的流一点生成就跳走」。
+  // 现在不换流：把涂到的范围裁出来单独跑一次，出图再缩放贴回原位（羽化融合）。
+  // 这里用一张 480×320 的四象限色块图，因为「裁剪框算错」只有靠取样颜色才看得出来。
+  const cropBase = await page.evaluate(`(async () => {
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    // ComfyUI 没开：上传必然失败。当场判失败，别让整条链路等它超时。
+    window.fetch = async (u, o) => (String(u).startsWith('/api/upload') ? json({ ok: false, error: 'offline' }) : real(u, o));
+    const beforeIds = [...document.querySelectorAll('#nodes .node')].map((e) => e.dataset.id);
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = 480; cv.height = 320;
+      const c = cv.getContext('2d');
+      c.fillStyle = '#101020'; c.fillRect(0, 0, 240, 160);
+      c.fillStyle = '#205020'; c.fillRect(240, 0, 240, 160);
+      c.fillStyle = '#502020'; c.fillRect(0, 160, 240, 160);
+      c.fillStyle = '#202050'; c.fillRect(240, 160, 240, 160);
+      const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+      const dt = new DataTransfer();
+      // 名字里别带 crop：等一下只放行「裁出来的那一块」（<节点id>-crop.png），
+      // 整图上传必须失败——它一旦成功，n.dataURL 就被换成 /api/view 地址，
+      // 而 ComfyUI 没开，那个地址取不到图，裁切这一步直接失败（踩过一次）。
+      dt.items.add(new File([blob], 'e2e-quad.png', { type: 'image/png' }));
+      const stage = document.getElementById('stage');
+      const r = stage.getBoundingClientRect();
+      stage.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt,
+        clientX: Math.round(r.left + r.width * 0.45), clientY: Math.round(r.top + r.height * 0.5) }));
+      for (let k = 0; k < 80; k++) {
+        const el = [...document.querySelectorAll('#nodes .node.image')].find((e) => {
+          const im = e.querySelector('.thumb img');
+          return im && im.naturalWidth === 480 && im.naturalHeight === 320;
+        });
+        if (el) return { id: el.dataset.id, beforeIds };
+        await new Promise((r2) => setTimeout(r2, 100));
+      }
+      return { id: '', beforeIds };
+    } finally { window.fetch = real; }
+  })()`);
+  check('拖一张 480×320 的图进画布（给裁切用例一张够大的底图）', !!cropBase.id, JSON.stringify(cropBase));
+  const cropTitle = await page.center(`#nodes .node[data-id="${cropBase.id}"] .node-title`);
+  // 拖进来的节点是「只放图」的纯图片节点：先点标题上那颗「生成」给它加面板
+  await page.clickAt(cropTitle.x, cropTitle.y, { settle: 300 });
+  await page.evaluate(`document.querySelector('.node[data-id="${cropBase.id}"] .n-genon').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+
+  const cropWf = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = document.querySelector('[data-panel-for="${cropBase.id}"] .gensel.wfsel .gm-btn');
+    if (!btn) return { missing: true };
+    btn.click();
+    await sleep(320);
+    const items = [...document.querySelectorAll('.popmenu button')];
+    const hit = items.find((b) => /Qwen/i.test(b.textContent));
+    if (!hit) return { missing: true, items: items.map((b) => b.textContent.trim()).slice(0, 8) };
+    const picked = hit.textContent.trim();
+    hit.click();
+    await sleep(320);
+    const now = document.querySelector('[data-panel-for="${cropBase.id}"] .gensel.wfsel .gm-btn');
+    return { picked, now: now ? now.textContent.trim() : '' };
+  })()`);
+  check('给这张图选上「Qwen 图像编辑」（只吃图、不吃遮罩）',
+    !cropWf.missing && /Qwen/.test(cropWf.now), JSON.stringify(cropWf));
+
+  await page.click('#imgTools .it-btn[data-tool="mask"]', { settle: 450 });
+  const cropEd = await page.waitFor(`(() => {
+    const cv = document.querySelector('#maskEditor .me-cv');
+    if (!cv) return null;
+    const r = cv.getBoundingClientRect();
+    return { rect: [r.left, r.top, r.width, r.height], cv: [cv.width, cv.height] };
+  })()`, 8000);
+  check('这张图也能涂遮罩：编辑器打开，canvas 内部尺寸 = 原图像素',
+    !!cropEd && cropEd.cv[0] === 480 && cropEd.cv[1] === 320, JSON.stringify(cropEd));
+  const [cl, ct, cw, ch] = cropEd.rect;
+  await page.drag({ x: cl + cw * 0.30, y: ct + ch * 0.50 }, { x: cl + cw * 0.42, y: ct + ch * 0.50 },
+    { steps: 8, settle: 150 });
+  await page.click('#maskEditor [data-act="apply"]', { settle: 450 });
+  const cropMasked = await page.evaluate(`(() => ({
+    wf: (document.querySelector('[data-panel-for="${cropBase.id}"] .gensel.wfsel .gm-btn') || {}).textContent.trim() || '',
+    pill: (document.querySelector('.node[data-id="${cropBase.id}"] .n-mask') || {}).textContent || '',
+    flash: ((document.getElementById('queueBadge') || {}).textContent || '').trim(),
+  }))()`);
+  check('涂完遮罩：工作流**没有**被换成局部重绘（只吃图的流也能吃遮罩）',
+    /Qwen/.test(cropMasked.wf) && /遮罩 \d+%/.test(cropMasked.pill) && !/已换成/.test(cropMasked.flash),
+    JSON.stringify(cropMasked));
+
+  const cropRun = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    let upName = '', upSize = null, upPix = null;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/upload')) {
+        const fd = opts && opts.body;
+        const f = fd && fd.get ? fd.get('image') : null;
+        // 只放行裁出来的那一块；整图上传（ensureUploaded）照旧失败——放行了它，
+        // n.dataURL 就会被换成 ComfyUI 的 /api/view 地址，而这里 ComfyUI 没开
+        if (!f || !new RegExp('^${cropBase.id}-crop\\\\.png$').test(f.name)) {
+          return json({ ok: false, error: 'offline' });
+        }
+        upName = f.name;
+        const bm = await createImageBitmap(f);
+        upSize = [bm.width, bm.height];
+        const cv = document.createElement('canvas');
+        cv.width = bm.width; cv.height = bm.height;
+        const c = cv.getContext('2d');
+        c.drawImage(bm, 0, 0);
+        const px = (x, y) => { const d = c.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; };
+        upPix = { tl: px(2, 2), right: px(Math.round(bm.width * 0.9), 8) };
+        return json({ ok: true, image: 'crop-e2e.png', subfolder: '', type: 'input' });
+      }
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'crop-1' });
+      if (u.startsWith('/api/job')) {
+        return u.includes('crop-1')
+          ? json({ ok: true, status: 'success', progress: 100,
+                   artifacts: [{ kind: 'image', filename: 'crop_out_0001.png', subfolder: '', type: 'output' }] })
+          : real(url, opts);
+      }
+      return real(url, opts);
+    };
+    const before = document.querySelectorAll('#nodes .node').length;
+    const ta = document.querySelector('[data-panel-for="${cropBase.id}"] .gen-prompt');
+    if (ta) { ta.focus(); document.execCommand('insertText', false, '把左边那块换成金色'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+    const run = document.querySelector('[data-panel-for="${cropBase.id}"] .gen-run');
+    if (run) run.click();
+    let status = '';
+    const trace = [];
+    for (let k = 0; k < 140; k++) {
+      const st = document.querySelector('[data-panel-for="${cropBase.id}"] .gen-status');
+      status = st ? st.textContent : '';
+      if (status && trace[trace.length - 1] !== status) trace.push(status);
+      if (/完成|失败|错误/.test(status)) break;
+      await sleep(100);
+    }
+    await sleep(300);
+    window.fetch = real;
+    return { upName, upSize, upPix, status, trace, before,
+             panels: document.querySelectorAll('[data-panel-for="${cropBase.id}"]').length,
+             after: document.querySelectorAll('#nodes .node').length,
+             wf: (document.querySelector('[data-panel-for="${cropBase.id}"] .gensel.wfsel .gm-btn') || {}).textContent.trim() || '' };
+  })()`);
+  check('裁切重绘：上传的是裁出来的那一块（*-crop.png），不是整张烘了 alpha 的图',
+    /-crop\.png$/.test(cropRun.upName), JSON.stringify(cropRun.upName));
+  check('裁剪框 = 遮罩包围盒 + 余量，最小边长 256 且对齐 16',
+    !!cropRun.upSize && cropRun.upSize[0] === 256 && cropRun.upSize[1] === 256,
+    JSON.stringify(cropRun.upSize));
+  // 涂在左半边、裁剪框以它为中心 → 框的左端仍在原图左半边（深蓝），
+  // 框的右端已经跨过 x=240 那条分界线（墨绿）。位置算错的话这两点会同色。
+  check('裁剪位置对：框左上角取到原图左上象限，右端跨过了象限分界线',
+    !!cropRun.upPix
+      && cropRun.upPix.tl[2] > cropRun.upPix.tl[1] && cropRun.upPix.tl[0] < 40
+      && cropRun.upPix.right[1] > cropRun.upPix.right[0] + 20,
+    JSON.stringify(cropRun.upPix));
+  // 排队那条写「裁切重绘（贴回原位）」——这是用户唯一能看出「宽高是裁剪框、不是出图尺寸」的地方；
+  // 完成那条写「已贴回原位」。两句都必须在，否则用户会以为出图变小了 / 图没贴回去。
+  check('状态行说明白这次是「裁切重绘（贴回原位）」，完成后又说「已贴回原位」',
+    (cropRun.trace || []).some((t) => /裁切重绘（贴回原位）/.test(t))
+      && /完成/.test(cropRun.status) && /已贴回原位/.test(cropRun.status),
+    JSON.stringify(cropRun));
+  check('生成完成、工作流仍是 Qwen（没有被换走），结果另起了一个图片节点',
+    /Qwen/.test(cropRun.wf) && cropRun.after === cropRun.before + 1,
+    JSON.stringify({ wf: cropRun.wf, before: cropRun.before, after: cropRun.after }));
+
+  // 收尾：只删这一轮新造的节点（拖进来的底图 + 那个产物），别影响后面的用例
+  await page.evaluate(`(() => {
+    const keep = new Set(${JSON.stringify(cropBase.beforeIds || [])});
+    [...document.querySelectorAll('#nodes .node')]
+      .filter((e) => !keep.has(e.dataset.id))
+      .forEach((el) => { const d = el.querySelector('.n-del'); if (d) d.click(); });
+  })()`);
+  await new Promise((r) => setTimeout(r, 600));
 
   // ---- 进度百分比不许「有几率消失」 ----
   // 真实竞态：轮询某一拍拿不到数字（服务端 /api/job 的 progress 为 null —— 排队中、
@@ -5597,6 +6149,94 @@ try {
   check('面板状态行也不会丢百分比（「生成中 12% · …」之后不许退成「生成中 · …」）',
     stFirst >= 0 && stAfter.length > 0 && stAfter.every((s) => /生成中 \d+%/.test(s)),
     JSON.stringify(stSeq));
+
+  // ---- 失败要说清「哪里报错」 ----
+  // 以前只有一句 `失败：<一坨字符串>`：分不清是上传、构建还是 ComfyUI 里某个节点，
+  // 被那一行截掉的后半句还永远看不到。现在服务端把 execution_error 拆成
+  // node_id / node_type / 节点标题（从这次提交的那份图里捞），前端写进状态行 + 详情卡片。
+  const errBox = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const hits = [];
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      hits.push(u.slice(0, 50));
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'err-test' });
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
+      if (u.startsWith('/api/job')) {
+        if (!u.includes('err-test')) return real(url, opts);
+        return json({
+          ok: false,
+          error: 'Prompt outputs failed validation: node_errors',
+          error_detail: {
+            kind: 'execution', node_id: '3', node_type: 'LoadImage', title: '加载图像',
+            message: 'Invalid image file: 视频_00001.png', exception_type: 'RuntimeError',
+            where: '加载图像 · LoadImage（节点 3）',
+          },
+        });
+      }
+      return real(url, opts);
+    };
+    const ta = document.querySelector('[data-panel-for="i2"] .gen-prompt');
+    if (ta) {
+      ta.focus();
+      ta.textContent = 'will fail';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    let clicked = false;
+    for (let k = 0; k < 40; k++) {
+      const b = document.querySelector('[data-panel-for="i2"] .gen-run');
+      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      await sleep(100);
+    }
+    for (let k = 0; k < 80; k++) {
+      const st = document.querySelector('[data-panel-for="i2"] .gen-status');
+      if (st && /失败|错误|不足|缺失|有错/.test(st.textContent)) break;
+      await sleep(100);
+    }
+    const st = document.querySelector('[data-panel-for="i2"] .gen-status');
+    const row = document.querySelector('[data-panel-for="i2"] .gen-status-row');
+    const shot = {
+      clicked,
+      status: st ? st.textContent.trim() : '',
+      inRow: !!(row && row.contains(st)),
+      isErr: !!(row && row.classList.contains('is-err')) && !!st && st.classList.contains('is-err'),
+      clickable: !!(st && st.onclick),
+    };
+    // 点这一行 → 详情卡片
+    if (st) st.click();
+    await sleep(150);
+    const card = document.getElementById('errCard');
+    const pick = (sel) => {
+      const el = card && card.querySelector(sel);
+      return el ? el.textContent.trim() : '';
+    };
+    const detail = {
+      card: !!card,
+      title: pick('.sheet header strong'),
+      where: pick('.err-row.where .err-v'),
+      node: pick('.err-row .err-v'),
+      rows: card ? card.querySelectorAll('.err-row').length : 0,
+      hasCopy: !!(card && card.querySelector('.err-copy')),
+      body: card ? card.textContent.replace(/\\s+/g, ' ').slice(0, 260) : '',
+    };
+    // 收尾：关掉卡片，别让它挡后面的点击
+    if (card && card.querySelector('.err-close')) card.querySelector('.err-close').click();
+    window.fetch = real;
+    return { ...shot, detail, cardGone: !document.getElementById('errCard'), hits };
+  })()`);
+  check('失败时状态行写着「在哪」：不是一坨字符串',
+    errBox.clicked && /加载图像/.test(errBox.status) && /节点 3|LoadImage/.test(errBox.status),
+    JSON.stringify({ status: errBox.status, clicked: errBox.clicked }));
+  check('失败的状态行在独立那一行里、标红、可点',
+    errBox.inRow && errBox.isErr && errBox.clickable,
+    JSON.stringify({ inRow: errBox.inRow, isErr: errBox.isErr, clickable: errBox.clickable }));
+  check('点开是详情卡片：标题 / 在哪 / 节点 / 复制错误都在，Esc 或「关闭」能收掉',
+    errBox.detail.card && errBox.detail.title && /加载图像/.test(errBox.detail.where)
+      && /LoadImage/.test(errBox.detail.body) && errBox.detail.hasCopy && errBox.cardGone,
+    JSON.stringify(errBox.detail));
 
   // ---- 生成完自动入库：前端必须真的把这次出的图交给资产库 ----
   // 命名规则和去重归 tests/smoke.py 管，这里只验**前端有没有接上**：MCP 那边就曾经
@@ -5991,7 +6631,7 @@ try {
       nodes: [{
         id: 'f1', type: 'image', title: '亚像素', x: 200, y: 200,
         dataURL: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), uploaded: null,
-        gen: { prompt: '亚像素', wf: 'preset:krea2-txt2img.api.json', aspect: '16:9', size: '1k',
+        gen: { prompt: '亚像素', wf: 'lib:krea2-txt2img.api', aspect: '16:9', size: '1k',
           batch: 1, seedMode: 'fixed', seed: 1, gallery: [], idx: 0, extras: [], runs: [] },
       }],
     };
@@ -6156,9 +6796,56 @@ try {
     JSON.stringify(capClick));
   check('点「图片生成」只放一个节点（不摆「提示词 → 工作流 → 输出」三件套）',
     capClick.nodes === 1, String(capClick.nodes));
-  check('图片节点的生成面板里已经选好工作流（不是空壳面板）',
-    /文生图/.test(capClick.wf), capClick.wf);
+  // 以前这里预选了一个「文生图」，用户从没选过、界面上也没写，图却已经按它跑了。
+  // 现在新节点是空的：面板上明写「未选择工作流」。
+  check('图片节点的生成面板**不预选**工作流：写着「未选择工作流」',
+    capClick.wf === '未选择工作流', capClick.wf);
   check('按钮点完不会卡在忙碌态', capClick.busyLeft === 0, String(capClick.busyLeft));
+
+  // 选了才算选了：点开那颗菜单 → 点一项 → 面板上立刻换成它的名字
+  await page.evaluate(`document.querySelector('.node.selected .gensel.wfsel .gm-btn').click()`);
+  await new Promise((r) => setTimeout(r, 350));
+  const wfPickRes = await page.evaluate(`(() => {
+    const items = [...document.querySelectorAll('.popmenu button')];
+    const hit = items.find((b) => /文生图/.test(b.textContent));
+    const label = hit ? hit.textContent.trim() : '';
+    if (hit) hit.click();
+    return { count: items.length, label };
+  })()`);
+  await new Promise((r) => setTimeout(r, 350));
+  const wfAfterPick = await page.evaluate(
+    `(document.querySelector('.node.selected .gensel.wfsel .gm-btn') || {}).textContent.trim()`);
+  check('在工作流菜单里点一项，面板上立刻换成它（占位语消失）',
+    wfPickRes.count > 0 && !!wfAfterPick && wfAfterPick !== '未选择工作流',
+    JSON.stringify({ ...wfPickRes, wfAfterPick }));
+
+  // 名字要看得全：以前底栏那颗压着 max-width: 48%（状态文字还挤在同一行时的折中），
+  // 「Qwen-image-2.1 图像编辑」这种长度直接截成「Qwen-image-2.1 图像…」——
+  // 而「我选的是哪个工作流」恰恰是这一行里最不能猜的信息。
+  const wfName = await page.evaluate(`(() => {
+    const box = document.querySelector('.node.selected .gen-bar .gensel.wfsel');
+    if (!box) return { missing: true };
+    const sp = box.querySelector('.gm-btn > span');
+    const cs = getComputedStyle(box);
+    const bar = box.closest('.gen-bar');
+    return {
+      text: sp ? sp.textContent.trim() : '',
+      truncated: sp ? sp.scrollWidth > sp.clientWidth + 1 : null,
+      maxW: cs.maxWidth,
+      wraps: getComputedStyle(bar).flexWrap,
+      // 名字这颗不许把生成键挤出底栏
+      runInside: (() => {
+        const run = bar.querySelector('.gen-run');
+        if (!run) return null;
+        const b = bar.getBoundingClientRect(), r = run.getBoundingClientRect();
+        return r.right <= b.right + 1 && r.left >= b.left - 1;
+      })(),
+    };
+  })()`);
+  check('工作流名显示完整（不截断），名字长了也只是换行、不把生成键挤出去',
+    !wfName.missing && wfName.truncated === false && wfName.maxW !== '48%'
+      && wfName.wraps === 'wrap' && wfName.runInside === true,
+    JSON.stringify(wfName));
 
   // 空节点（节点上还没有图）生成：结果直接填进这个节点，不再多出一个。
   // 以前是「不管有没有初始图都新建一个」，于是空节点永远是空的，旁边多出一个产物节点，

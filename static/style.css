@@ -46,7 +46,7 @@ body {
 #bar .icon:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; border-color: transparent; }
 #bar .icon svg {
   width: 17px; height: 17px; fill: none; stroke: currentColor;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 #bar .vsep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); margin: 0 2px; }
 
@@ -68,7 +68,7 @@ body {
 }
 #projectBar .icon.tiny svg {
   width: 16px; height: 16px;
-  fill: none; stroke: currentColor; stroke-width: 1.65;
+  fill: none; stroke: currentColor;
   stroke-linecap: round; stroke-linejoin: round;
 }
 #projectName {
@@ -211,7 +211,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   min-height: 40px;
   font-size: 14px; color: #d4d4d4; letter-spacing: 0.1px;
 }
-.cap-hint svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; opacity: 0.85; }
+.cap-hint svg { width: 17px; height: 17px; fill: none; stroke: currentColor; opacity: 0.85; }
 .cap-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .cap-btn {
   display: flex; align-items: center; justify-content: flex-start; gap: 16px;
@@ -227,7 +227,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .cap-btn svg {
   width: 18px; height: 18px; fill: none; stroke: currentColor;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 .cap-btn:hover { border-color: rgba(255, 255, 255, 0.18); background: #262626; }
 .cap-btn:disabled { opacity: 0.38; cursor: not-allowed; }
@@ -536,7 +536,7 @@ select option { background: #1f1f1f; color: var(--text); }
   background: transparent; border: none; border-radius: 8px;
   color: #a3a3a3; padding: 0; font-size: 12px;
 }
-#viewTools .vt svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#viewTools .vt svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
 #viewTools .vt.zoom { width: auto; min-width: 42px; padding: 0 6px; color: #d4d4d4; font-size: 12px; }
 
 #zoomMenu {
@@ -564,10 +564,41 @@ select option { background: #1f1f1f; color: var(--text); }
   border: none; background: transparent; text-align: left;
   padding: 6px 12px; border-radius: 6px; font-size: 12px; color: var(--text);
 }
+/* 带图标的那几项（工作流菜单）：图标和文字一行，别让彩色方块把行高顶开 */
+.popmenu button.has-ico { display: flex; align-items: center; gap: 7px; padding-left: 9px; }
+.popmenu button.has-ico .wf-ico { border-radius: 4px; }
+.popmenu button.has-ico span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .popmenu-title {
   padding: 4px 12px 6px; font-size: 10.5px; color: var(--faint);
   border-bottom: 1px solid var(--line); margin-bottom: 3px;
 }
+/* 工作流图标选择器：一格一格的模型标 + 一行「上传 / 恢复默认」。
+   它是 .popmenu 的变体（复用定位 / 点外关闭），所以只补里面多出来的零件。 */
+.popmenu.icon-pop { width: 240px; padding: 8px 8px 7px; gap: 0; }
+.icon-pop .icon-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 3px 0 8px;
+}
+.icon-pop .icon-pick {
+  width: 100%; height: auto; aspect-ratio: 1; padding: 0; margin: 0;
+  border: 1px solid transparent; border-radius: 7px; background: transparent;
+  display: block; overflow: hidden; cursor: pointer; line-height: 0;
+}
+/* 商标图铺满整格：wfIconHTML 给的是固定 px，这里按格子拉伸更整齐 */
+.icon-pop .icon-pick .wf-ico {
+  width: 100% !important; height: 100% !important; border-radius: 6px;
+}
+.icon-pop .icon-pick:hover { border-color: var(--line); }
+.icon-pop .icon-pick.on { border-color: var(--accent); }
+.icon-pop .icon-pop-row {
+  display: flex; gap: 6px; padding-top: 7px; border-top: 1px solid var(--line);
+}
+.icon-pop .icon-pop-row button {
+  flex: 1; padding: 5px 0; text-align: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: #232323; color: var(--text); font-size: 11px;
+}
+.icon-pop .icon-pop-row button:hover:not(:disabled) { border-color: #5a5a5a; background: #2c2c2c; }
+.icon-pop .icon-pop-row button:disabled { opacity: 0.45; cursor: default; }
 /* 首页页脚那颗「ComfyUI 地址」点开的小弹层：输入框 + 状态 + 两个按钮。
    它是 .popmenu 的变体（复用定位 / 点外关闭），所以只补里面多出来的零件。
    按钮不写圆角：全局那条 button:not(…) 胶囊规则特异度更高，写也盖不住，索性跟着它走。 */
@@ -637,7 +668,7 @@ select option { background: #1f1f1f; color: var(--text); }
 }
 #alignBar .ab-btn:hover { background: #ffffff1f; color: #fff; }
 #alignBar .ab-btn:active { background: #ffffff33; }
-#alignBar .ab-btn .oi { width: 17px; height: 17px; }
+#alignBar .ab-btn .oi { width: 18px; height: 18px; }
 #alignBar .ab-sep { width: 1px; height: 18px; background: #3d3d3d; margin: 0 4px; }
 
 /* 运行记录宫格（弹窗里的「资产库」页）：列数自适应，缩略图沿用 .rc-img 的正方形撑法 */
@@ -648,7 +679,7 @@ select option { background: #1f1f1f; color: var(--text); }
   align-items: center; justify-content: center;
   color: var(--faint); font-size: 10.5px; text-align: center;
 }
-.rc-empty .oi { width: 20px; height: 20px; opacity: 0.4; margin-bottom: 3px; }
+.rc-empty .oi { width: 22px; height: 22px; opacity: 0.4; margin-bottom: 3px; }
 
 #helpSheet {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -749,6 +780,53 @@ select option { background: #1f1f1f; color: var(--text); }
 }
 .setup-foot button { padding: 7px 13px; border-radius: 8px; font-size: 12px; cursor: pointer; }
 .setup-foot button:disabled { opacity: 0.45; cursor: default; }
+
+/* 导入前的残留检查：和「首次使用」同一套卡片骨架，但要能逐条列出来让用户勾。
+   层级比 setupCard 高：它是在导入动作里弹的，可能叠在设置面板之上。 */
+#residueCard {
+  position: fixed; inset: 0; z-index: 66; display: flex;
+  align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.5);
+}
+#residueCard .rs-sheet { width: 560px; max-width: 92vw; }
+.rs-body { padding: 14px 16px 6px; overflow-y: auto; }
+.rs-lead { margin: 0 0 10px; color: var(--text); font-size: 12.5px; line-height: 1.6; }
+.rs-list { display: flex; flex-direction: column; gap: 6px; margin: 0 0 4px; }
+/* 两行网格：第一行是「勾选框 + 类型 + 位置」，值单独占第二行——
+   提示词可能很长，挤在第一行会把位置挤没，而位置（哪个节点）才是用户判断的依据。 */
+.rs-row {
+  display: grid; grid-template-columns: 16px 38px minmax(0, 1fr); align-items: center;
+  gap: 5px 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); font-size: 11.5px; cursor: pointer;
+}
+.rs-row:hover { border-color: var(--accent); }
+.rs-row input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.rs-tag {
+  justify-self: start; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; border: 1px solid var(--line); color: var(--dim);
+}
+.rs-tag.image { color: #ffb27a; border-color: rgba(255, 178, 122, 0.45); }
+.rs-tag.text { color: #8ec6ff; border-color: rgba(142, 198, 255, 0.45); }
+.rs-where {
+  color: var(--dim); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rs-val {
+  grid-column: 2 / -1; color: var(--text); font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all;
+}
+.rs-note { margin: 6px 0 0; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.rs-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 16px 14px; border-top: 1px solid var(--line); margin-top: 12px;
+}
+.rs-foot button { padding: 7px 13px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+.rs-foot button:disabled { opacity: 0.45; cursor: default; }
+/* .prime 在别处都是按容器分别定义的（#appSettings .prime / .set-actions button.prime），
+   这里不补一条的话三个按钮长得一模一样，「清理并导入」就没了主次。 */
+.rs-foot .prime {
+  background: var(--accent); border: 1px solid var(--accent); color: #0d0d0d; font-weight: 600;
+}
+.rs-foot .prime:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
 
 /* 面板通用：尺寸写死 + 内容自己滚。
    以前「顶部横向 tab + 高度自适应」——切一格内容变少窗口就缩一下，同一个面板跳两次。 */
@@ -862,8 +940,8 @@ select option { background: #1f1f1f; color: var(--text); }
 }
 .node-title .n-icon { display: inline-flex; flex: 0 0 auto; opacity: 0.8; }
 .node-title .n-icon svg {
-  width: 13px; height: 13px; fill: none; stroke: currentColor;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+  width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 .node-title .n-name {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -997,8 +1075,8 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .node.image:hover .img-hist, .node.image.selected .img-hist { opacity: 1; }
 .img-hist:hover { background: rgba(48, 48, 48, 0.92); color: #fff; }
 .img-zoom svg {
-  width: 14px; height: 14px; fill: none; stroke: currentColor;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+  width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 /* 图片撑满框：框已经是图片比例，width/height 都 100% 也不会变形、更不会出现补边 */
 .node.image .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; background: #101010; -webkit-user-drag: none; user-select: none; }
@@ -1011,7 +1089,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 .thumb-empty .ph-big svg {
   width: 74px; height: 74px; fill: none; stroke: currentColor;
-  stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 /* 空节点的提示只在悬停时浮出来：平时是一块干净的占位（不常驻推荐内容），
    鼠标一进来才告诉你怎么填。绝对定位，别把图标从正中间挤走。 */
@@ -1090,7 +1168,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border: 1px solid rgba(255, 255, 255, 0.07);
   color: var(--dim);
 }
-.chip svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.chip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
 
 /* 生成器面板里的提示词：别被 `.node textarea` 的通用样式接管（min-height:32 / 边框 / 深井底），
    否则会被压成两行、文字裁掉、外面多一圈边框。加 .gen-panel 前缀提高权重。 */
@@ -1162,7 +1240,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   padding: 10px 12px 10px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 .be-head .be-ico { display: grid; place-items: center; color: var(--dim); }
-.be-head .be-ico svg { width: 15px; height: 15px; }
+.be-head .be-ico svg { width: 16px; height: 16px; }
 .be-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .be-dim {
   font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums;
@@ -1219,7 +1297,12 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .gensel-icon { display: inline-flex; color: var(--faint); }
-.gensel-icon svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.gensel-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; }
+/* 工作流芯片前面那颗可能是彩色的模型标：让它铺满自己那一格，
+   别被上面那条「14px 细线」规则压成一个小疙瘩。is-none 除外——那颗还是要细线。 */
+.gensel-icon .wf-ico:not(.is-none) > svg {
+  width: 100%; height: 100%; stroke: none; fill: none;
+}
 .gensel select {
   background: transparent; border: none; color: var(--text);
   font-size: 11px; padding: 0 1px; max-width: 100%; outline: none;
@@ -1323,7 +1406,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   background: #f2f2f2; color: #141414;
   display: grid; place-items: center;
 }
-.gen-run svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.gen-run svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
 /* 生成中：箭头换成旋转加载环 */
 .gen-run.busy {
   background: transparent; border: 2px solid rgba(255, 255, 255, 0.28);
@@ -1444,7 +1527,7 @@ body.resizing .node-resize { opacity: 1; }
   transition: background 0.15s, color 0.15s;
 }
 /* 导航项：图标 + 名称。图标默认压一点亮度，选中才和文字一起提亮 */
-#setTabs .tab .oi { width: 16px; height: 16px; opacity: 0.75; }
+#setTabs .tab .oi { width: 17px; height: 17px; opacity: 0.75; }
 #setTabs .tab:hover { background: var(--panel-2); color: var(--text); }
 #setTabs .tab:hover .oi { opacity: 1; }
 #setTabs .tab.active { background: var(--panel-2); color: #fff; box-shadow: inset 2px 0 0 #e6e6e6; }
@@ -1525,7 +1608,7 @@ body.resizing .node-resize { opacity: 1; }
   display: grid; place-items: center; gap: 3px;
   text-align: center; line-height: 1; color: var(--dim);
 }
-.pc-thumb .pc-ph svg { width: 17px; height: 17px; opacity: 0.75; }
+.pc-thumb .pc-ph svg { width: 18px; height: 18px; opacity: 0.75; }
 .pc-thumb .pc-ph em { font-style: normal; font-size: 9.5px; letter-spacing: 0.02em; opacity: 0.85; }
 .pc-text { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .pc-name {
@@ -1610,11 +1693,35 @@ body.resizing .node-resize { opacity: 1; }
 }
 #appSettings .wf-list .tip { margin: 6px 4px; }
 #appSettings .wf-item {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto 24px auto 22px;
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 22px 22px 22px;
   align-items: center; gap: 6px; padding: 3px 5px; border-radius: 7px;
 }
 #appSettings .wf-item:hover { background: rgba(255, 255, 255, 0.05); }
-#appSettings .wf-item.is-default { background: rgba(255, 255, 255, 0.06); }
+/* 工作流图标：预设模型标 / 自己传的图，统一画成圆角小方块。
+   svg / img 铺满 100% 而不是固定像素——给多大就画多大，20px 和 16px 都清楚。 */
+.wf-ico {
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  border-radius: 6px; overflow: hidden; background: #1b1b1b;
+}
+.wf-ico > svg, .wf-ico > img {
+  display: block; width: 100%; height: 100%; object-fit: contain;
+}
+/* 官方商标统一是「白色 + 透明底」（static/logos/ 里那 10 张），落在深色面板上就是最终效果。
+   这里绝不能再垫浅色板——垫了白色图标就整个消失。 */
+.wf-ico.is-logo { background: transparent; }
+/* 没设图标：虚线框 + 灰线工作流标，一眼能看出「这儿能点」而不是「图没加载出来」 */
+.wf-ico.is-none { background: transparent; border: 1px dashed var(--line); color: var(--faint); }
+.wf-ico.is-none .oi { width: 58%; height: 58%; }
+/* 菜单里给「没设图标」的项留一个透明占位：只为了和上面几项左对齐，不画任何东西 */
+.wf-ico.is-empty { background: transparent; border: none; }
+#appSettings .wf-ico-btn {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  display: grid; place-items: center; background: transparent; cursor: pointer;
+}
+#appSettings .wf-ico-btn:hover { background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-ico-btn .wf-ico { border-radius: 5px; }
+/* 传图标用的文件选择框：只需要它存在（点得动），不需要它占位 */
+.wf-ico-file { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
 #appSettings .wf-item b {
   min-width: 0; padding: 2px; font-weight: 500; font-size: 12px; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text;
@@ -1628,15 +1735,21 @@ body.resizing .node-resize { opacity: 1; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
 }
 #appSettings .wf-cat:hover { border-color: var(--accent); color: var(--accent); }
-#appSettings .wf-star,
 #appSettings .wf-del {
   width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
   background: transparent; color: var(--faint);
   font-size: 12px; line-height: 1; cursor: pointer;
 }
-#appSettings .wf-star:hover { color: #f5c451; background: rgba(245, 196, 81, 0.12); }
-#appSettings .wf-item.is-default .wf-star { color: #f5c451; }
 #appSettings .wf-del:hover { color: var(--err); background: rgba(248, 113, 113, 0.12); }
+/* 「查残留」：和 × 同尺寸的图标键。放大镜放得下 22px 的框里，别做成带文字的按钮——
+   这一行已经有名字、分类、「加到画布」三样，再加一颗字多的键会把名字挤没。 */
+#appSettings .wf-check {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  display: grid; place-items: center;
+  background: transparent; color: var(--dim); cursor: pointer;
+}
+#appSettings .wf-check svg { width: 14px; height: 14px; }
+#appSettings .wf-check:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
 /* 「加到画布」：以前这一步只在资产库弹窗的卡片上，现在回到这一行——
    挑和管是同一个对象的两个动作，没必要分成两个面板 */
 #appSettings .wf-use {
@@ -1646,6 +1759,18 @@ body.resizing .node-resize { opacity: 1; }
   font: inherit; font-size: 10.5px; line-height: 18px; white-space: nowrap; cursor: pointer;
 }
 #appSettings .wf-use:hover { border-color: #fff; color: #fff; background: rgba(255, 255, 255, 0.08); }
+/* 「默认」：按能力分类各一份。未设是空心 ☆，已设是实心 ★ + 强调色——
+   这一行已经够密，不再加文字；分类名在 title 里。 */
+#appSettings .wf-star {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--faint);
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+}
+#appSettings .wf-star:hover { color: var(--accent); background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-star.on { color: var(--accent); }
+/* 吃遮罩的那份不能设默认：星压暗，点了给一句解释（不用原生 disabled——点不动等于没解释） */
+#appSettings .wf-star.off { opacity: 0.35; cursor: default; }
+#appSettings .wf-star.off:hover { color: var(--faint); background: transparent; }
 
 #appSettings .wf-cats { display: flex; flex-wrap: wrap; gap: 5px; }
 #appSettings .wf-chip {
@@ -1903,7 +2028,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   width: 34px; height: 34px; border-radius: 9px; padding: 0;
   display: grid; place-items: center; line-height: 1;
 }
-#bar .icon.prime svg { width: 19px; height: 19px; stroke-width: 1.9; }
+#bar .icon.prime svg { width: 19px; height: 19px; }
 #bar .vsep { height: 22px; margin: 0 4px; }
 
 /* 左下角那颗「返回首页」：以前是一颗彩色玻璃球（和品牌无关的装饰），现在就是 app 图标本身。
@@ -1932,7 +2057,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-color: transparent; background: transparent;
 }
 #projectBar .icon.tiny[data-act="home"]:hover { background: rgba(255, 255, 255, 0.06); }
-#bar .icon svg { width: 16px; height: 16px; stroke-width: 1.65; }
+#bar .icon svg { width: 16px; height: 16px; }
 
 /* 画布菜单的 ▾ 换成小三角，跟参考图一致 */
 #canvasMenuBtn .caret {
@@ -1978,12 +2103,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* ---------- 主体图标放大（反馈：icon 太小） ---------- */
 #bar { height: 56px; }
 .node-title { font-size: 13.5px; }
-.node-title .n-icon svg { width: 16px; height: 16px; }
+.node-title .n-icon svg { width: 17px; height: 17px; }
 #statusChip { height: 34px; }
 
 /* 节点上的小按钮也随主体放大 */
 .img-zoom { width: 28px; height: 28px; border-radius: 8px; }
-.img-zoom svg { width: 15px; height: 15px; }
+.img-zoom svg { width: 16px; height: 16px; }
 .node-title .n-del { font-size: 16px; }
 .port { width: 20px; height: 20px; }
 .port::after { font-size: 12px; }
@@ -2118,7 +2243,29 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    + 按钮一律「正圆 / 胶囊」圆角
    ========================================================= */
 .ico { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
-.oi { display: block; width: 18px; height: 18px; flex: 0 0 auto; }
+.oi {
+  display: block; width: 20px; height: 20px; flex: 0 0 auto;
+  /* 描边粗细只认这里：icons.js 的 path 不写 stroke-width，所以 --oi-stroke 说了算。
+     以前每条 path 上钉着 stroke-width="4"，CSS 写什么都覆盖不掉（属性优先级最低），
+     #bar / #linkDel 那几处 stroke-width 全是死代码。 */
+  --oi-stroke: 1.82;
+  stroke-width: var(--oi-stroke);
+}
+/* 光学补偿：图标越小，描边相对要越粗，否则 14px 发虚、22px 显笨。
+   下面按「实测渲染尺寸」分档（不是按组件），改尺寸时顺手把档位一起改。 */
+#linkDel .oi { --oi-stroke: 2.45; }                                                   /* 13px 连线上的小叉 */
+.chip .oi, .chip.icon-only .oi, .gen-chips .chip .oi, #statusChip .chip-btn .oi,
+.gensel-icon .oi, #refMenu .rm-search .oi, .of-btn .oi { --oi-stroke: 2.3; }          /* 14–15px */
+.node-title .n-icon .oi, .gen-run .oi, #setTabs .tab .oi, .img-zoom .oi,
+.be-head .be-ico .oi, #imgTools .it-btn .oi, #textTools .it-btn .oi,
+.tf-bar .it-btn .oi { --oi-stroke: 2.1; }                                             /* 16–17px */
+#projectBar .icon.tiny .oi, #viewTools .vt .oi, #alignBar .ab-btn .oi,
+#addMenu .am-ico .oi, .pc-thumb .pc-ph .oi { --oi-stroke: 1.95; }                      /* 18px */
+.cap-hint .oi { --oi-stroke: 2.1; }                                                   /* 17px，空态提示 */
+.cap-btn .oi { --oi-stroke: 1.82; }                                                   /* 21px */
+#bar .icon.prime .oi { --oi-stroke: 1.72; }                                           /* 22px 主按钮 */
+.rc-empty .oi { --oi-stroke: 1.7; }                                                   /* 22px */
+.thumb-empty .ph-big .oi { --oi-stroke: 1.55; }                                        /* 74px 空态大图 */
 
 /* 方形图标按钮 → 正圆 */
 #projectBar .icon.tiny,
@@ -2128,24 +2275,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chip.icon-only,
 .img-zoom { border-radius: 50%; }
 
-#bar .icon .oi, #projectBar .icon.tiny .oi { width: 18px; height: 18px; }
-#bar .icon.prime .oi { width: 20px; height: 20px; }
-#projectBar .icon.tiny .oi { width: 16px; height: 16px; }
-#viewTools .vt .oi { width: 17px; height: 17px; }
-.node-title .oi { width: 15px; height: 15px; color: inherit; }
-.cap-btn .oi { width: 19px; height: 19px; }
+#bar .icon .oi { width: 20px; height: 20px; }
+#bar .icon.prime .oi { width: 22px; height: 22px; }
+#projectBar .icon.tiny .oi { width: 18px; height: 18px; }
+#viewTools .vt .oi { width: 18px; height: 18px; }
+.node-title .oi { width: 16px; height: 16px; color: inherit; }
+.cap-btn .oi { width: 21px; height: 21px; }
 .img-zoom { display: grid; place-items: center; }
-.img-zoom .oi { width: 15px; height: 15px; }
+.img-zoom .oi { width: 16px; height: 16px; }
 
 /* 带文字的紧凑控件 → 胶囊（圆角拉满） */
 .chip, .gensel, .gen-run,
 button.primary { border-radius: 999px; }
 .chip.icon-only { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; }
-.chip.icon-only .oi { width: 14px; height: 14px; }
-.chip .oi { width: 13px; height: 13px; }
+.chip.icon-only .oi { width: 15px; height: 15px; }
+.chip .oi { width: 14px; height: 14px; }
 
 /* 生成器底栏：工作流 + 画幅 + 尺寸 + 张数 收进同一行 */
-.gen-bar { flex-wrap: nowrap; gap: 5px; }
+.gen-bar { flex-wrap: wrap; gap: 5px; row-gap: 6px; }
 .gen-bar .gen-status { flex: 0 1 auto; min-width: 0; max-width: 30%; }
 .gensel.wfsel { flex: 1 1 auto; min-width: 76px; }
 .gensel.wfsel .gm-btn { width: auto; flex: 1 1 auto; }
@@ -2160,7 +2307,7 @@ button.primary { border-radius: 999px; }
    于是 `border-radius: 50%` / `8px` 全被这条压掉，实测计算值是 999px。
    图片 / 提示词工具条上的按钮、底色色板、全屏编辑的「完成」同理：
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-star):not(.wf-del):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2182,7 +2329,7 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
   box-shadow: none; min-width: 0;
 }
 .gen-bar .gen-run:hover { background: #f2f2f2; }
-.gen-bar .gen-run .oi { width: 15px; height: 15px; }
+.gen-bar .gen-run .oi { width: 17px; height: 17px; }
 .gen-bar .gen-run.busy { background: transparent; border: 2px solid rgba(255, 255, 255, 0.24); box-shadow: none; }
 
 /* 白色主按钮统一：纯白实心、深色字、去掉白色光晕（半透明白 + 光晕会让边缘发灰发糊）
@@ -2210,7 +2357,7 @@ button.primary:hover,
 .gen-panel { width: min(660px, calc(100vw - 32px)); padding: 12px; }
 .gen-chips { gap: 6px; margin-bottom: 8px; align-items: center; }
 .gen-chips .chip { height: 26px; padding: 0 10px; font-size: 12px; gap: 6px; }
-.gen-chips .chip .oi { width: 14px; height: 14px; }
+.gen-chips .chip .oi { width: 15px; height: 15px; }
 /* 展开那颗是纯图标按钮：必须把上面那条 `padding: 0 10px` 撤掉。
    26px 的方框减掉左右各 10px 只剩 6px 内容宽，14px 的图标会向两边各溢出 4px，
    看着就是「图标没在框里居中」。顺便对齐到 8px 圆角，和面板其它方块一致。 */
@@ -2235,7 +2382,7 @@ button.primary:hover,
   transition: background 0.14s ease;
 }
 .gen-bar .gensel .gm-btn { font-size: 12.5px; }
-.gen-bar .gensel .gensel-icon svg { width: 13px; height: 13px; }
+.gen-bar .gensel .gensel-icon svg { width: 14px; height: 14px; }
 .gen-bar .gensel .gm-caret { opacity: 0.5; }
 .gen-bar .gensel:hover { background: rgba(255, 255, 255, 0.07); border: 0; }
 .gen-bar .gensel.pop-open,
@@ -2243,13 +2390,21 @@ button.primary:hover,
   background: rgba(255, 255, 255, 0.1);
   border: 0; box-shadow: none;          /* 键盘聚焦也只用底色，不再套一圈蓝框 */
 }
-/* 工作流那颗不再拉满整行：名字有多宽就占多宽，右边留给状态文字。
-   拉满时 ▾ 会孤零零挂在最右边，和名字隔着一大片空白。 */
-.gen-bar .gensel.wfsel { flex: 0 1 auto; min-width: 0; max-width: 48%; }
-/* 状态文字吃掉中间所有空位：它是 flex:1 之后，生成按钮才会被顶到最右边。
-   只写 flex 不解除 max-width 的话，空状态仍被卡在 30%（190px），
-   右边空出一大截，按钮停在离右边 140px 的地方——看着像没对齐。 */
-.gen-bar .gen-status { flex: 1 1 auto; min-width: 0; max-width: none; }
+/* 工作流那颗不再拉满整行：名字有多宽就占多宽。
+   以前这里压着 `max-width: 48%`——那是状态文字还挤在同一行时的折中；名字稍长就被截成
+   「Qwen-image-2.1 图像…」，而**这一行里最不能猜的就是「我选的是哪个工作流」**。
+   状态行搬走之后这一行宽了，这里改成「不截断」：`min-width: fit-content` 让这颗
+   永远不小于自己名字的宽度，真长到一行放不下时由底栏的 wrap 把参数和生成键挪到下一行，
+   也不把名字切开。 */
+.gen-bar .gensel.wfsel { flex: 0 1 auto; min-width: fit-content; max-width: 100%; }
+/* 还没选工作流：这一格是「空着的」，不是「选中了某个」。
+   以前 setLabel 会退到列表第一项，界面上写着「Krea2 · 文生图」，用户从没选过却以为在用它。
+   现在这里明写「未选择工作流」，并且压成占位语的灰——一眼能看出这一步还没做。 */
+.gen-bar .gensel.wfsel.is-empty .gm-btn > span { color: var(--dim); }
+.gen-bar .gensel.wfsel.is-empty .gensel-icon { color: var(--faint); }
+/* 状态文字从底栏搬走后，中间不再有 flex:1 的东西把生成键顶到右边，
+   改成自己吃掉左侧所有空位（换行时它也会靠到下一行的最右）。 */
+.gen-bar .gen-run { margin-left: auto; }
 /* 「图标 + 名字 | 图标 + 名字」中间那根竖线 */
 .gen-sep {
   flex: 0 0 1px; width: 1px; height: 12px; align-self: center;
@@ -2259,9 +2414,53 @@ button.primary:hover,
    圆角从正圆（50%）改成 8px 圆角矩形，和这一排其它控件统一——
    一颗白圆点挤在三个方角控件中间，看着像从别的设计稿里剪过来的。 */
 .gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px; }
-.gen-bar .gen-run .oi { width: 16px; height: 16px; }
+.gen-bar .gen-run .oi { width: 17px; height: 17px; }
 /* 放大编辑区里那颗发送键是同一个按钮，圆角也得跟着走，不然两处长得不一样 */
 .of-params .gen-run { border-radius: 8px; }
+
+/* 状态行：从底栏**搬出来**单占一行。
+   底栏那一行要放工作流名 / 画幅 / 张数 / 生成键，四样东西谁长了都得截；
+   而状态行恰恰是「出错要说清楚」的地方——「加载图像 · LoadImage（节点 3）」
+   被截成「加载图像 · Lo…」就白说了。所以这里整宽、允许换行，长了就折。 */
+.gen-status-row { display: flex; align-items: flex-start; padding: 5px 2px 0; min-width: 0; }
+.gen-status-row .gen-status {
+  flex: 1 1 auto; min-width: 0; max-width: none;
+  font-size: 11px; line-height: 1.5;
+  white-space: normal; word-break: break-word; overflow: visible; text-overflow: clip;
+}
+/* 出错时：这行变红、可点（点开是详情卡片），前面加一枚小圆点当标记 */
+.gen-status-row.is-err .gen-status,
+.gen-status.is-err { color: var(--danger, #ff7b72); cursor: pointer; }
+.gen-status-row.is-err .gen-status::before {
+  content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
+  border-radius: 50%; background: currentColor; vertical-align: 1.5px;
+}
+
+/* =========================================================
+   生成失败详情卡片（#errCard）
+   骨架沿用残留检查卡片（.rs-sheet / .rs-body / .rs-foot），
+   这里只补「一行一个字段」的排布：左边标签固定宽，右边值可以换行。
+   ========================================================= */
+#errCard {
+  position: fixed; inset: 0; z-index: 3200;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+#errCard .rs-sheet { width: 460px; max-width: 92vw; }
+#errCard .err-row {
+  display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 8px;
+  padding: 5px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+#errCard .err-row:last-of-type { border-bottom: 0; }
+#errCard .err-k { color: var(--faint); font-size: 11px; line-height: 1.6; }
+#errCard .err-v {
+  color: var(--text); font-size: 11.5px; line-height: 1.6;
+  word-break: break-word; white-space: pre-wrap;
+  max-height: 132px; overflow-y: auto;
+}
+/* 「在哪」是这一屏最该被看见的一行：给个强调色，别和下面的元信息混成一片 */
+#errCard .err-row.where .err-v { color: var(--danger, #ff7b72); font-weight: 600; }
+#errCard .err-row.msg .err-v { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 
 /* =========================================================
    生成器 · 参考图缩略图（连线 / @ 引用）与 @ 选择菜单
@@ -2319,7 +2518,7 @@ button.primary:hover,
   padding: 5px 7px; border-radius: 8px;
   background: #1a1a1a; border: 1px solid #363636;
 }
-#refMenu .rm-search svg { width: 13px; height: 13px; flex: 0 0 auto; color: #919191; }
+#refMenu .rm-search svg { width: 14px; height: 14px; flex: 0 0 auto; color: #919191; }
 #refMenu .rm-search input {
   flex: 1; min-width: 0; padding: 0; border: none; outline: none;
   background: transparent; color: #fff; font: inherit; font-size: 12px; line-height: 1.4;
@@ -2398,6 +2597,9 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   border-radius: 7px; font-size: 12px; line-height: 1; cursor: pointer;
 }
 #assetPane header .asset-reload:hover { color: var(--text); border-color: var(--accent); }
+/* 刷新原来是个 ⟳ 字符：字重跟着字体走，和旁边那排 SVG 图标粗细对不上（15px 时描边约 1.1px，
+   比同尺寸的图标细一圈）。换成图标表里的 rotate 之后按 15px 档补偿到 1.44px。 */
+#assetPane header .asset-reload .oi { width: 15px; height: 15px; --oi-stroke: 2.3; }
 /* 上面这几块都不许被压扁：宫格是 flex:1 + min-height:0 自己收，
    其余几行一旦被 flex 压缩就会把字切掉（底部提示曾经被裁掉半行）。 */
 #assetPane .asset-bar { display: grid; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
@@ -2600,7 +2802,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   color: #d8d8d8; font-size: 11.5px; line-height: 1;
 }
 #statusChip .chip-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
-#statusChip .chip-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+#statusChip .chip-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; }
 /* 连不上 ComfyUI 时状态文字会拖得很长（后面挂着 http://127.0.0.1:8188 那一串）。
    chip 本身 max-width:40vw + overflow:hidden，文字不让步的话会把右边的「任务」
    顶到 chip 外面——量出来按钮右边缘比视口还宽 10px，等于这个入口被裁掉、点不到。
@@ -2828,7 +3030,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 #linkDel:hover { background: #d64545; border-color: #ff9a9a; color: #fff; }
 #linkDel:active { transform: translate(-50%, -50%) scale(0.92); }
-#linkDel .oi { width: 12px; height: 12px; stroke-width: 6; }
+#linkDel .oi { width: 13px; height: 13px; }
 #linkDel.hidden { display: none; }
 
 /* ---------- 图片工具条（选中一张有图的节点时浮在它上方） ---------- */
@@ -2858,7 +3060,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 #imgTools .it-btn:active, #textTools .it-btn:active, .tf-bar .it-btn:active { background: rgba(255, 255, 255, 0.2); }
 /* 「扩图」是开关：开着的时候按钮亮着，提示「再点一次收起」 */
 #imgTools .it-btn.on, #textTools .it-btn.on, .tf-bar .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
-#imgTools .it-btn .oi, #textTools .it-btn .oi, .tf-bar .it-btn .oi { width: 15px; height: 15px; }
+#imgTools .it-btn .oi, #textTools .it-btn .oi, .tf-bar .it-btn .oi { width: 16px; height: 16px; }
 /* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，十个图标里有五个是「涂抹 / 编辑」类，
    猜不出来。整条因此宽到 ~560px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
    整条往上抬、再不行改成和节点边缘对齐，不靠缩窄来回避。 */
@@ -3291,7 +3493,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 .of-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 .of-btn:active { background: rgba(255, 255, 255, 0.2); }
 .of-btn:focus-visible { outline: 2px solid #6ea8fe; outline-offset: 1px; }
-.of-btn .oi { width: 14px; height: 14px; flex: 0 0 auto; }
+.of-btn .oi { width: 15px; height: 15px; flex: 0 0 auto; }
 /* 下拉指示：和按钮文字一个色阶，比文字再淡一点，免得抢读 */
 .of-caret {
   width: 0; height: 0; margin-left: 1px;

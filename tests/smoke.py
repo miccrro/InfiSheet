@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 import time
@@ -24,6 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TMP = ROOT / "tests" / ".tmp"
+# 工作流样本（真机导出的 API 图）：e2e / mcp / smoke / selftest 共用这一份
+FIXTURE_WF = ROOT / "tests" / "fixtures" / "workflows"
 
 PASS = 0
 FAIL = 0
@@ -182,6 +185,12 @@ def main() -> int:
     TMP.mkdir(parents=True, exist_ok=True)
     data_dir = TMP / f"smoke-{int(time.time())}-{id(object()) % 1000}"
     (data_dir / "projects").mkdir(parents=True, exist_ok=True)
+    # 工作流样本灌进临时 data 的 library：内置预设已整档删掉，工作流只剩「库」一个来源。
+    # 灌的是临时目录，跑测试不会碰用户自己的 data/library/。
+    lib_dir = data_dir / "library"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    for f in FIXTURE_WF.glob("*.json"):
+        shutil.copy2(f, lib_dir / f.name)
 
     import random
     import socket
@@ -209,7 +218,8 @@ def main() -> int:
         health = json.loads(raw or b"{}")
         check(
             "health 字段完整",
-            status == 200 and health.get("ok") is True and "presets" in (health.get("features") or []),
+            status == 200 and health.get("ok") is True
+            and "wf_library" in (health.get("features") or []),
             f"comfy={health.get('comfy')}",
         )
 
@@ -223,28 +233,55 @@ def main() -> int:
             text = raw.decode("utf-8", "replace")
             check(f"静态资源 {path}", status == 200 and must in text, f"{status} {len(raw)}B")
 
-        # 预设的「吃不吃图」由服务端扫图给出，前端靠它挑工作流：
+        # 报错定位：execution_error 要拆成「谁、在哪、什么错」。
+        # 这一条只能直接调函数——造一个真会抛 execution_error 的图代价太大，
+        # 而这里要验的正是「从报文到一句话」的那段拼装。
+        sys.path.insert(0, str(ROOT))
+        import server as _srv  # noqa: PLC0415  只有这一段需要 import 服务端模块
+
+        _entry = {"prompt": [0, "pid", {"3": {"class_type": "LoadImage", "_meta": {"title": "加载图像"}}}]}
+        _d = _srv.execution_error_detail(
+            {"node_id": "3", "node_type": "LoadImage",
+             "exception_message": "Invalid image file", "exception_type": "RuntimeError"}, _entry)
+        check("execution_error 拆得出节点标题 + 节点号（不是只有 LoadImage）",
+              _d.get("where") == "加载图像 · LoadImage（节点 3）"
+              and _d.get("title") == "加载图像" and _d.get("message") == "Invalid image file",
+              json.dumps(_d, ensure_ascii=False))
+        _d2 = _srv.execution_error_detail({"node_id": "9", "node_type": "KSampler",
+                                           "exception_message": "CUDA out of memory"}, {})
+        check("拿不到节点标题时退回类型 + 节点号，不空着",
+              _d2.get("where") == "KSampler（节点 9）" and _d2.get("summary").startswith("KSampler"),
+              json.dumps(_d2, ensure_ascii=False))
+        _d3 = _srv.execution_error_detail({}, {})
+        check("报文什么都没有也说得出「某个节点 报错」，不是空串",
+              _d3.get("where") == "某个节点" and "报错" in _d3.get("summary", ""),
+              json.dumps(_d3, ensure_ascii=False))
+
+        # 工作流的「吃不吃图」由服务端扫图给出，前端靠它挑工作流：
         # 按名字猜的时候选中过 Moss_图像编辑 —— 那是纯文生图，参考图根本没进图。
         status, raw = request(base, "/api/library")
         lib = json.loads(raw or b"{}")
-        by_file = {p["file"]: p for p in (lib.get("presets") or [])}
+        by_file = {p["file"]: p for p in (lib.get("items") or [])}
+        check("工作流库是唯一来源：/api/library 只回 items，不再有 presets 字段",
+              status == 200 and by_file and "presets" not in lib,
+              f"{len(by_file)} 个工作流 · keys={sorted(lib)}")
 
-        # 直链文件名从库里取，不写死：预设改过一次名（krea2-txt2img → krea2-文生图），
-        # 写死的话这条断言会因为一个改名整条红掉，看起来像功能坏了。
+        # 文件名从库里取，不写死：改过名的话写死会让这条断言整条红掉，看起来像功能坏了。
         txt2img = next((p for p in by_file.values() if p.get("category") == "txt2img"), None)
         if txt2img:
-            status, raw = request(base, "/presets/" + urllib.parse.quote(txt2img["file"]))
-            preset = json.loads(raw or b"{}")
-            check("预设直链可读", status == 200 and isinstance(preset, dict) and len(preset) > 0,
-                  f"{status} {len(preset)} 节点 {txt2img['file']}")
+            status, raw = request(base, "/api/library/" + urllib.parse.quote(txt2img["name"]))
+            graph = (json.loads(raw or b"{}") or {}).get("graph") or {}
+            check("库里的工作流能按名字直接读出来",
+                  status == 200 and isinstance(graph, dict) and len(graph) > 0,
+                  f"{status} {len(graph)} 节点 {txt2img['name']}")
         else:
-            check("预设直链可读", False, "库里没有 txt2img 预设")
-        check("库接口给每个预设标了 takes_image",
+            check("库里的工作流能按名字直接读出来", False, "库里没有 txt2img 工作流")
+        check("库接口给每个工作流标了 takes_image",
               status == 200 and all("takes_image" in p for p in by_file.values()),
-              f"{len(by_file)} 个预设")
+              f"{len(by_file)} 个工作流")
         # 分类：每个入口按用途自动挑工作流，靠的就是这个字段
         cats = {p["category"] for p in by_file.values()}
-        check("库接口给每个预设标了分类（category + 中文名）",
+        check("库接口给每个工作流标了分类（category + 中文名）",
               all(p.get("category") and p.get("category_label") for p in by_file.values()),
               ",".join(sorted(cats)))
         check("三个关键类别都有人（文生图 / 图生图 / 高清放大）",
@@ -259,12 +296,12 @@ def main() -> int:
               "")
 
         moss = next((p for p in by_file.values() if "Moss" in p["file"]), None)
-        check("纯文生图预设如实报 takes_image=False（Moss 不能被当成图像编辑用）",
+        check("纯文生图工作流如实报 takes_image=False（Moss 不能被当成图像编辑用）",
               moss is not None and moss["takes_image"] is False,
               json.dumps({k: moss.get(k) for k in ("title", "takes_image")} if moss else {}, ensure_ascii=False))
 
-        status, _ = request(base, "/presets/..%2Fserver.py")
-        check("目录穿越被挡", status in (400, 403, 404), f"HTTP {status}")
+        status, _ = request(base, "/api/library/" + urllib.parse.quote("../server"))
+        check("库路径穿越被挡", status in (400, 403, 404), f"HTTP {status}")
 
         # ---- MCP 安装入口 ----
         # 顶栏那盏灯点开就是这个面板的数据源：端点 / stdio 命令 / 三个客户端的配置片段。
@@ -1068,8 +1105,6 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             proc.kill()
         if not keep:
-            import shutil
-
             shutil.rmtree(data_dir, ignore_errors=True)
         else:
             print(f"保留临时目录：{data_dir}")

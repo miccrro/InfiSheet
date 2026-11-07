@@ -37,15 +37,18 @@ export function seedProject(dataDir, fixtureName = 'canvas-basic.json', id = '20
 }
 
 export async function startServer({ port, dataDir, extraArgs = [] }) {
-  // 预设目录也复制一份到临时 data 里：e2e 会改「工作流分类」（写进预设 JSON 顶层的 group），
-  // 不隔离的话跑一次测试就把用户 presets/ 里的工作流改了类，git 里还会多出一堆 diff。
-  const presetsDir = path.join(dataDir, 'presets');
-  if (!fs.existsSync(presetsDir)) {
-    fs.cpSync(path.join(ROOT, 'presets'), presetsDir, { recursive: true });
+  // 工作流样本从 tests/fixtures/workflows 灌进临时 data 的 library：内置预设已经整档删掉，
+  // 工作流只剩「库」这一个来源，测试要挑工作流就得先有库文件。
+  // 直接灌进临时目录，跑一次测试不会碰用户自己的 data/library/。
+  const libDir = path.join(dataDir, 'library');
+  fs.mkdirSync(libDir, { recursive: true });
+  const seedDir = path.join(ROOT, 'tests', 'fixtures', 'workflows');
+  for (const f of fs.readdirSync(seedDir)) {
+    const dest = path.join(libDir, f);
+    if (!fs.existsSync(dest)) fs.copyFileSync(path.join(seedDir, f), dest);
   }
   const args = ['-X', 'utf8', 'server.py', '--port', String(port), '--data', dataDir,
     '--no-browser'];
-  if (!extraArgs.includes('--presets')) args.push('--presets', presetsDir);
   const proc = spawn(PY, [...args, ...extraArgs], {
     cwd: ROOT,
     // MCP 安装会往客户端配置里写条目：指到临时 HOME，别碰用户真的 ~/.workbuddy/mcp.json

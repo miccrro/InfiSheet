@@ -23,10 +23,11 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 层 | 说明 |
 |---|---|
 | 路由 | `do_GET/POST/PUT/DELETE` → `api_get/api_post/api_put/api_delete`，非 `/api/` 路径走 `serve_static` |
-| 静态 | `static/` 与 `presets/`（直链 JSON，路径必须 `resolve()` 后仍在目录内，防穿越） |
+| 静态 | 只有 `static/`（路径必须 `resolve()` 后仍在目录内，防穿越）。内置预设整档删掉后不再有 `/presets/` 直链 |
 | ComfyUI 代理 | `/api/analyze`（把 API 图转成节点+插槽，依赖 `/object_info`，失败不缓存）、`/api/run`、`/api/job`、`/api/cancel`、`/api/view`（透传 `Range`，视频可拖进度条） |
 | 进度 | 后台线程订阅 ComfyUI 的 `/ws`，把 `progress` 写进内存 `PROGRESS`，`/api/job` 一并返回。**浏览器直连 ComfyUI 的 ws 会被 Origin 校验挡掉**，所以必须后端订阅。ws 一个数都没有时，`/api/job` 退一步去读 ComfyUI 控制台日志（`/internal/logs/raw`）里 tqdm 的百分比兜底 |
-| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/covers/<id>.img`（项目封面，首页缩略图用）、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `assets/`（资产库的图片本体，默认在程序目录下，可换到别的盘；生成完自动存一份，按时间+序号命名） |
+| 报错定位 | `/api/job` 除了 `error` 字符串，还回一份 `error_detail`：`execution_error_detail()` 从 ComfyUI 的 `execution_error` 报文里取 `node_id` / `node_type` / `exception_message` / `exception_type`，节点标题从 **`entry["prompt"][2][node_id]["_meta"]["title"]`** 里捞——必须是这次提交的那份图，不是当前画布，否则改名 / 换图之后说的就是另一个节点。拼出来的是「加载图像 · LoadImage（节点 3）」，前端 `setGenError()` 写进 `gen.error`、状态行只留「一句话 + 在哪」，详情卡片列全字段 |
+| 持久化 | `data/canvas.json`（旧版单画布，启动时迁移成 `projects/legacy`）、`data/projects/<id>.json`、`data/covers/<id>.img`（项目封面，首页缩略图用）、`data/history/<stamp>.json`（最多 30 份）、`data/library/<name>.json`、`data/icons/<哈希>.png`（工作流图标，按内容寻址）、`data/workflow_categories.json`（工作流分类表）、`data/asset-lib.json`（资产库的分组 / 归属 / 存放目录）+ `assets/`（资产库的图片本体，默认在程序目录下，可换到别的盘；生成完自动存一份，按时间+序号命名） |
 | 并发 | 单用户假设：无锁、无鉴权，只绑 `127.0.0.1`。多标签页靠 `lastBootAt` 写保护拦旧会话 |
 
 几个不显眼但重要的点：
@@ -58,9 +59,10 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 - **`group` 指向不存在的分类**：`catName()` 回落 `CAT_LABEL[id]`，再回落 `other`；设置的下拉里
   专门留一组「其他」收孤儿。删分类时**先把该分类下的工作流挪到 `other` 再删表**——反过来的话
   中途失败会留下一堆指向空分类的孤儿。
-- **预设 + 库合成一份列表**（`presetOptions()`）：`preset:xxx.json` 与 `lib:名字` 两种 id，
-  `loadGraphById()` 分别走 `/presets/` 和 `/api/library/`。早先只有预设进这个列表，自己存进库的
-  工作流永远进不了生成器下拉和节点的选择器——用户的感受就是「工作流被固定死了」。
+- **工作流列表只有一份来源**（`wfOptions()`，读 `/api/library` 的 `items`）：id 统一是
+  `lib:名字`，`loadGraphById()` 只走 `/api/library/{名字}`。早先这里是 `presets/` 和
+  `data/library/` 两份合成，同一个工作流能出现两次，自动挑工作流命中哪一份全看排序——
+  「清完还是重复」就是这么来的。内置预设整档删掉后，下拉和节点选择器看到的就是库本身。
 - **设置里的工作流区是一处，不是六处**：早先是「打开工作流库 / 管理库工作流 / 新增预设 /
   管理预设 / 导入工作流 JSON」六个按钮挤成两组，其中三对是同一件事。现在是一个下拉 + 一份列表
   （`#setWfList`，每行 名字 / 分类 / 默认 / 删除）+ 一排分类胶囊（`#setCats`）。
@@ -96,7 +98,7 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 | 文件 | 职责 |
 |---|---|
 | `index.html` | 静态骨架（顶栏 / 首页 / 舞台 / dock / 弹窗），图标用 `<span data-icon="home">` 占位 |
-| `icons.js` | 由 `tools/icons/gen.cjs` 从 IconPark 生成的静态 SVG path；`window.icon(name)` + `hydrateIcons()` |
+| `icons.js` | 手绘 24 栅格图标集（48 个），静态 SVG path；`window.icon(name)` + `hydrateIcons()` |
 | `app.js` | 全部逻辑，一个 IIFE（约 7600 行） |
 | `style.css` | 全部样式，按「token → 基础组件 → 迭代覆盖层」叠加 |
 
@@ -238,10 +240,72 @@ AI 客户端 ──stdio──> mcp_server.py ──POST /mcp──┘
 
 早先这里是「设置一条长滚动」+「资产库一整个弹窗」（`#modal`，已删除），同一个工作流列表在两处渲染：
 弹窗里只能「挑一个加到画布」，设置里只能「改名 / 换分类 / 设默认 / 删除」。
-现在只有一份列表（`presetOptions()`），一行五件套：
-名字（点一下改名）/ 分类胶囊（点一下换类）/ ☆（设默认）/ 「加到画布」（`useWfItem` → `useGraph`）/ ×（删除）。
+现在只有一份列表（`wfOptions()`），一行七件套：
+图标（点一下换标）/ 名字（点一下改名）/ 分类胶囊（点一下换类）/ 「加到画布」（`useWfItem` → `useGraph`）/
+☆（设/取消该**能力分类**的默认）/ 查残留（`checkWfItem`）/ ×（删除）。
 
-- 默认工作流以前是个按分类分组的 `<select>`，和列表列的是同一批东西 → 改成一行读数 `#setWfDefault`；
+**工作流图标**（`WF_ICONS` / `wfIconHTML` / `openIconPicker`）：
+
+- 存的值只有两种形态：`preset:<id>`（内置模型标，前端画）和 `file:<哈希>.png`
+  （用户传的，在 `data/icons/` 下）。空串 = 默认那颗灰线工作流标 + 虚线框——
+  虚线框是刻意的：空白方块会被当成「图没加载出来」，虚线能说明「这儿可以点」；
+- **内置的是各家真实商标**（`static/logos/<id>.png`，128×128 PNG），不是拿字母画的仿标：
+  用户要的就是「一眼认出这是 Qwen 还是 FLUX」，仿标做不到这件事。目前收了 10 家——
+  Qwen（QwenLM）、FLUX（Black Forest Labs）、Stable Diffusion（Stability AI）、Krea、
+  Wan 万相（Wan-Video）、Hunyuan 混元（Tencent-Hunyuan）、Kolors 可图（Kwai-Kolors）、
+  HiDream、LTX-Video（Lightricks）、Mochi（Genmo）。都取自各家官方 GitHub 组织头像 /
+  官网 favicon（矢量优先），**没有独立商标的模型（Chroma、CogVideoX 这类）宁可空着**，
+  不编一个字母牌混在里面。商标归各自所有者，这里只用于标识对应模型（合理使用）；
+  要替换某一张，直接换 `static/logos/<id>.png`，前端只认文件名，不用改代码；
+- **统一成「白色 + 透明底」的单色标**：10 家来源的图层结构完全不一样（透明底单色图形 /
+  透明底实心方块挖反白字 / 实心白底彩图 / 黑底白字 / 渐变底），彩色版本并排放在深色界面上
+  五颜六色、轻重不一。处理分两步：先算形状蒙版（四角透明就取 alpha；四角不透明就以边缘
+  中位色为底算色距；`hidream` 那种「蓝方块里挖白字」的，主色占比落在 60%~90% 之间，改以
+  主色为底再抠一次），再用图形区域的亮度做 min-max 归一化乘到 alpha 上——不然白化后图形
+  内部的明暗全没了，`wan` 的紫面白边会糊成一个六边形、`hunyuan` 的漩涡会变成一张白饼。
+  灰度图形（`sd` 的黑 S.、`krea` 的墨线）不做亮度分层：它们的层次本来就不该有，而且边缘
+  抗锯齿混了底色会把分位拉高，整片黑字会被压成半透明灰（踩过）；
+- 最后统一裁到图形外框、等比缩进 128 画布居中（留 6% 边距），10 个图标视觉重量才一致；
+  这套处理是 `tools/logos_white.py`，换图后从仓库根跑一次就行（原地覆盖，先自己备份）；
+- **不能再垫浅色板**（`.wf-ico.is-logo` 是 `transparent`）：白图标垫 `#f2f2f2` 等于没画。
+  这是和「彩色商标时代」相反的处理——那时候深色 logo 落在深色面板上才需要垫板；
+- **静态根就是站点根**：图走 `/logos/qwen.png`，不是 `/static/logos/qwen.png`。
+  写成后者会 404，而且只在控制台留一行，界面上就是一片空白（踩过）；
+- `logos/` 单独给一天缓存（`serve_static` 里按前缀判断）：这十张图不随用户操作变化，
+  其余静态资源仍然 `no-store`——app.js 改完刷新就要看到新的。**换图后要把 `app.js` 里的
+  `WF_LOGO_VER` 加一**，否则浏览器拿着旧 URL 继续吃一天缓存，看起来像「改了没生效」；
+- **上传在浏览器里先处理**：居中裁方 → 缩到 96px → `toDataURL('image/png')`。
+  用户随手一张截图就 2000px，原样传上去只会在 `data/icons/` 里躺几百 KB 的图，
+  而它最后只被画成 20px。服务端那道 256KB 上限是兜底，不该指望它兜；
+- **按内容哈希命名**（`sha1[:16]`），不按工作流名：同一张图被几个工作流用也只存一份，
+  改名 / 挪分类都不会把图标弄丢。换图标只是换一个哈希，旧文件留在那儿几 KB，
+  比维护引用计数（改一次算一次、漏一次就删错）省心得多；
+- `GET /api/icon/<哈希>.<ext>` 走**长缓存**（`immutable`）：内容寻址，换了图就是新 URL，
+  不存在「换了还看到旧的」；文件名先过 `^[0-9a-f]{8,40}\.(png|jpg|webp)$`，
+  路径穿越在正则这一关就被挡掉；
+- 改图标走 `POST /api/wf/meta`（和改标题 / 分类同一个入口，都是「工作流元信息」），
+  `update_wf_meta` 里 `icon` 字段三种处理：空 → `pop` 掉字段、`preset:` → 原样记住、
+  `data:` → 落盘后换成 `file:`。非法值一律 400，**不静默当没设**；
+- **列表和画布芯片必须同时换**：`saveWfIcon` 成功后除了 `refreshSetWf()`，还要对
+  所有 `gen.wf === 该 id` 的节点调一次 `paintWfChip()`。只换一边会出现
+  「设置里写着 Qwen、画布上还挂着 Krea 的标」——而这正是用户第一眼会看到的矛盾。
+  芯片那颗图标由 `mkMenu` 的第 7 个参数 `iconFn` 提供，`setLabel` 里跟着选择一起刷；
+
+- **默认工作流按能力分类各一份**（`data/wf-defaults.json`，`/api/wf/defaults`）：
+  文生图 / 图生图 / 高清放大 / 视频 / 音频 各记一个 id。新建图片节点按 `txt2img` 预选，
+  编辑 / 高清入口由 `pickWorkflow()` 先查默认、再回落同类第一份。键用 `category`（能力分类）
+  而不是 `group`（用户的组织分类）——高清按钮看的是「它干什么用的」。
+  早先是「全局一个默认存 localStorage」：换浏览器就没了、MCP 也读不到，所以删过一版；
+  现在按分类 + 存服务端，用户显式选过才有默认，面板上也会显示用的是哪一份；
+- **内置预设整档删掉了，工作流只有「库」一个来源**（`data/library/`）。早先这里是
+  「`presets/`（随程序分发） + `data/library/`（用户）」两份合成一份列表，代价是：
+  同一份工作流能出现两次、改名只能记覆盖层、删除只能「隐藏」，还多出一整套
+  「恢复出厂」。现在 `presets/` 目录、`preset:` id 体系、`data/preset_meta.json`、
+  `data/preset-overrides/`、`POST /api/presets` 与 `/api/presets/{file}/restore` 全部移除：
+  列表就是库本身，改名写文件、删除 `unlink`，用户看到什么就是磁盘上有什么；
+- **老画布不炸**：存档里的 `preset:xxx.api.json` 由 `/api/wf/resolve` 按名字映射到库
+  （名字 → 去掉 `.api` 的短名 → 标题 → 唯一 canon 命中），命中后前端把节点 id 改写成
+  `lib:名字`（惰性迁移）。找不到就回候选让人重选，**绝不猜**——换错工作流比报错更难查；
 - 「加到画布」以前只在弹窗的卡片上 → 现在就在行里。`useGraph()` 会先 `closeSettingsSheet()` 再 `showCanvas()`：
   设置可以从首页打开（挑一个不用先进画布），但挑完是要往画布上落节点的；
 - 面板尺寸写死 `880×640`（`max-width: 94vw` / `max-height: 90vh`）。
@@ -349,9 +413,8 @@ CSS 四条 `[data-dock="…"]` 规则分别定位（底部/左侧/右侧/顶部�
 工具条会跑到屏幕外（这个坑只有量了 `getBoundingClientRect` 才看得出来，光看代码是"对的"）。按钮只建一次（`ensureAlignBar` 惰性构建），之后只切 `hidden`——
 每次选中都重建会把 hover 和焦点一起弄丢。
 
-图标来自 IconPark：`tools/icons/gen.cjs` 的 MAP 里加 8 个映射（`alignLeft` / `alignHCenter` /
-`alignRight` / `alignTop` / `alignVCenter` / `alignBottom` / `distH` / `distV`），跑 `npm run icons`
-重新生成 `static/icons.js`（该文件不要手改）。
+图标在 `static/icons.js` 的 `P` 表里，直接加 key → path（24 栅格，不写 `stroke-width`，
+描边由 `style.css` 的 `--oi-stroke` 按尺寸分档）。
 
 - 基准是**整体包围盒**，不是"第一个选中的节点"——后者在框选时顺序不确定，用户也看不出规律。
 - 宽度用 `nodeWidth()`（卡片宽度是确定的），**高度必须量 DOM**：`n.h` 只有手动拉过才有值，
@@ -500,20 +563,35 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，�
 - **提交口径**：`bakeMaskCanvas()` 把笔画烘进原图 alpha（涂过处 alpha=0），一个文件上传。
   ComfyUI 的 `LoadImage` 输出 `mask = 1 - alpha`，即**透明 = 重绘**——和旧实现的「白底黑图」
   正好相反，写反就是整张重绘或整张不动。实测数据见验收报告。
+  这条路要求工作流**有节点在消费 `LoadImage` 的 MASK 输出**；不吃遮罩的工作流走下面那条
+  「裁切局部重绘」，两条由 `takes_alpha_mask` 自动分流（见后面那一节）。
 - **预设靠 `takes_alpha_mask`**：`graph_takes()` 扫的是「有没有人在消费 `LoadImage` 的 MASK
   输出（索引 1）」，不看名字、也不看有没有 `LoadImageMask`。所以 `analyze_graph` 仍然跳过
   `LoadImageMask.image`——那种工作流在这套画布上跑不了遮罩，报 `takes_mask=true` 是空承诺。
 - **工作流按「有没有遮罩」推导，不按记忆**：`reconcileWorkflow()` 每次生成前对一次，两个方向
   都要对，任一对不上都是「生成成功但图没变」这种最难自查的坏：
-  - 有遮罩 + 工作流不吃遮罩 → mask 根本没进图，涂了白涂；
-  - 没遮罩 + 工作流吃遮罩 → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，出图与原图逐位相同。
-  自动挑的（`wfAuto`）两边都自己切并 `flash` 说明；用户手选过的不动，只提示并中止这一次。
-- **`pickWorkflow()` 不挑吃遮罩的工作流**：`krea2-局部重绘` 的分类是 `img2img`，按文件名排序
-  还排在最前，所以「按参考图自动挑」会一路挑到它——那等于每次都跑一次「什么都不改」。
-  自动挑选的候选一律先滤掉 `alphaMask`，它只能由遮罩编辑器（`ensureMaskWorkflow`）显式选中。
-- **工具条按钮只按机器能力禁用**：`maskCapable()` 只看这台机器上有没有吃遮罩的工作流，
-  不看当前选的是哪张。早期按「当前工作流吃不吃」判断，老存档（wf 是文生图）一进来按钮就是
-  灰的，用户只会认为功能坏了；现在打开时由 `ensureMaskWorkflow()` 当场切过去并说明换成了什么。
+  - 有遮罩 + 工作流**连图都不吃**（纯文生图）→ 涂的图根本进不去，涂了白涂
+    （这一条自动切到能吃图的：优先吃遮罩的，其次只吃图的）；
+  - 没遮罩 + 工作流吃遮罩 → 普通图 alpha 全不透明 → mask 全 0 → 什么都不改，出图与原图逐位相同
+    （这一条只提示并中止，不替用户换）。
+  **只吃图不吃遮罩不算不合**：那种流走「裁切局部重绘」（裁出涂的范围单独跑，出图贴回原位），
+  遮罩照样生效。早先这里把「不吃遮罩」也当成不合，于是 Qwen 图像编辑流一涂遮罩就被静默换成
+  Krea2 局部重绘——用户看到的是「我选的流一点生成就跳走」。
+  除此之外**一律听用户的**：早先还有一段「按有没有参考图自动切文生图 / 图生图」，已经删掉——
+  用户没选的时候宁可停下来让他选，也不能替他选一个他没见过的模板。
+- **默认工作流按能力分类各一份**：新建图片节点按 `txt2img` 的默认预选 `gen.wf`，
+  没设过才留空（面板上写「未选择工作流」，点生成会闪一句提示并打开那颗菜单）。
+  默认存在服务端 `data/wf-defaults.json`，设置里点行内的 ☆ 设 / 取消；
+  设过的那份被删掉时，`deleteWfItem()` 会把这条默认一起撤掉。
+- **`pickWorkflow()` 只在真同类里挑，挑不到返回空串**：没有「退到第一个能用的」兜底。
+  它只服务于用户**明确声明了用途**的入口（点「高清放大」要 `upscale` 类、图像编辑要 `img2img` 类），
+  顺序是「该分类设过的默认 → 同分类第一份 → 空串」。
+  候选一律先滤掉 `alphaMask`：`krea2-局部重绘` 的分类也是 `img2img`、按文件名还排最前，
+  挑到它等于每次都跑一次「什么都不改」；它只能由遮罩编辑器（`ensureMaskWorkflow`）显式选中。
+- **工具条按钮只按机器能力禁用**：`maskCapable()` 只看这台机器上有没有**能吃图**的工作流
+  （吃遮罩的算，只吃图走裁切重绘也算），不看当前选的是哪张。早期按「当前工作流吃不吃」判断，
+  老存档（wf 是文生图）一进来按钮就是灰的，用户只会认为功能坏了；现在打开时由
+  `ensureMaskWorkflow()` 当场对齐并说明换成了什么（只在连图都不吃时才换）。
 - 编辑器是**全屏浮层**，canvas 内部尺寸 = 原图像素，显示尺寸由 JS 按 contain 算一次写进
   `.me-frame`，落笔只有一处换算 `scale = doc.w / rect.width`——上一版挂在节点缩略图上，
   对位链条是 `--ar → aspect-ratio → object-fit: contain → inset:0`，任一环断就错位。
@@ -582,7 +660,7 @@ history.prompt[*].inputs.image(LoadImage) → source=input   （上传素材，�
 - **扩图的新边留透明**，不是填黑：`LoadImage` 的 `mask = 1 - alpha` 会把透明算成该重绘，
   所以就算矩形笔画丢了，模型也只会画边、不动中间——两层保险。
 - **抠图按名字找专用工作流**（`pickWorkflowByHint(CUTOUT_HINTS)`：rembg / birefnet / matting…），
-  找不到才退回通用图像编辑；名字命中的会 `wfAuto: false` 钉住，别被「按参考图自动挑」换掉。
+  找不到才退回通用图像编辑；退回那一步也只在真同类（`img2img`）里挑，挑不到就留空让用户选。
 - **`runImgTool()` 没有选中节点时要说话**：早期静默 `return`，用户只看到「点了没反应」。
 
 ### 裁剪 / 扩图共用一套控件
@@ -739,9 +817,46 @@ k = tw / W                                  ← **恒定**，原图铺满缩略�
   只有纯文生图才换；
 - 参数条的工作流下拉 `filter(o => o.image)`，前缀标「遮罩 · / 整图 ·」，选谁就是谁。
 
-**扩图 + 用户自己涂了遮罩**：`needMask` 仍是 true（旧笔画还在），这时 `reconcileWorkflow`
-会把不吃遮罩的工作流换掉并提示「这张图有遮罩，只能用吃遮罩的工作流」——遮罩必须被消费，
-这是唯一允许「换掉用户选择」的情况。
+**扩图 + 用户自己涂了遮罩**：`needMask` 仍是 true（旧笔画还在）。这时按工作流能力分流：
+吃遮罩的走原生（只重绘涂过的地方 + 新边），只吃图不吃遮罩的走裁切局部重绘（裁剪框会罩住
+整张画布，因为四条带子的包围盒就是整张），连图都不吃的才会被换掉并提示。
+
+## 裁切局部重绘（crop & stitch）
+
+**问题**：`takes_alpha_mask` 的口径是「有没有节点消费 `LoadImage` 的 MASK 输出」。Qwen-Image-Edit
+这类图像编辑流把 4 个 `LoadImage` 全接在 `TextEncodeQwenImage21` 的参考图插槽
+（`images.image_1..4`）上，**一个 MASK 都没人读**，于是判成不吃遮罩。把烘过 alpha 的原图喂给
+它，只是一张「带透明洞的参考图」——洞不会重绘，用户涂了半天等于没涂。
+
+**解法**（不改工作流，任何吃图的工作流都能用）：涂到哪儿就把那一块裁出来单独跑一次，
+出图再缩放贴回原位。
+
+```
+原图 ──遮罩包围盒 + 余量──▶ 裁剪框(对齐16) ──裁图上传──▶ 工作流（只看到这一块）
+                                                        │
+原图 ◀──羽化遮罩 destination-in──▶ 结果缩放到裁剪框 ──────┘
+```
+
+四个函数，都在 `static/app.js` 的「裁切局部重绘」一节：
+
+| 函数 | 干什么 | 为什么 |
+|---|---|---|
+| `maskBBox(doc)` | 扫笔画包围盒 | 缩到 ≤512 宽再扫 alpha：2000×3000 直接 `getImageData` 是 24MB，而这里只要「大概圈到哪儿」 |
+| `cropRectFor(doc, iw, ih)` | 包围盒 + 余量 → 裁剪框 | 余量 `CROP_PAD_RATIO=0.18`：模型得看见周围是什么，否则把裁剪框边缘当画面边界，接缝处凭空多一条边；最小边长 256；边长**往下对齐 16**（latent 是 8 的倍数，给 377×241 只会让 ComfyUI 自己补边） |
+| `uploadCropImage(img, rect, tag)` | 裁图上传 `<节点id>-crop.png` | 不复用 `n.uploaded`：同一张图换个遮罩就是另一块 |
+| `stitchPatch(baseURL, patchURL, rect, doc)` | 贴回原位 | patch 缩放到 `rect` → 用**羽化过的遮罩** `destination-in` 抠掉没涂的地方 → 叠回原图。模型在没涂处擅自改的东西就此丢掉，涂过的边缘因为羽化而过渡 |
+
+`storeStitched()` 再把贴好的整图传进 ComfyUI 的 `input/`（用 `/api/view?…&type=input` 显示），
+**不把 dataURL 写进节点**——那会让存档一下涨几 MB，而 localStorage 只有 5MB 配额。
+传不上去（ComfyUI 断了）才退回 dataURL，图是对的，只是这一张存档大一点。
+
+三处细节容易踩：
+
+- **尺寸必须跟着裁剪框走**：`generateImage` 里 `dims = cropRect ? {w: rect.w, h: rect.h} : dimsOf(g)`。
+  给模型整图尺寸等于让它按原图比例重算一张小图，贴回去要缩两次、细节全糊。
+- **裁剪框和遮罩两套坐标要按原图对齐**：遮罩 doc 空间 = 原图像素空间，但换过图 / 老存档时
+  两者尺寸可能不一致，`cropRectFor` 里先算 `sx/sy` 再映射。
+- **贴不回去不能让整次生成白跑**：`storeStitched` 失败就退回原始产物，宁可给一张没贴的局部图。
 
 ### 面板也贴着画布外框（`--op-pb` / `--op-dx`）
 
@@ -832,7 +947,9 @@ k = tw / W                                  ← **恒定**，原图铺满缩略�
 | stdio | `stdio_main()` | 只做转发：每行 JSON → `POST /mcp`。服务没起来时 `_spawn_server()` 拉一次（`DETACHED_PROCESS`，桥退出后服务还在） |
 
 环境用 `configure(SimpleNamespace(...))` 注入（数据目录 + `comfy_request` / `analyze_graph` /
-`list_presets` / `job_status`），**不 import server**——避免循环依赖，也让协议与工具能脱离服务单测。
+`list_library` / `graph_category` / `job_status`），**不 import server**——避免循环依赖，也让协议与工具
+能脱离服务单测。注入 `graph_category` 而不是在 `mcp_server` 里再写一份分类规则：两份规则迟早走岔，
+而 MCP 报的分类和界面上看到的必须是同一个。
 
 三个必须守住的口径：
 

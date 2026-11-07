@@ -15,19 +15,19 @@
   <!-- 顶部：项目栏（左）+ 运行状态（右） -->
   <div id="topBar">
     <div id="projectBar">
-      <button class="icon tiny" data-act="home" title="返回首页">
+      <button class="icon tiny" data-act="home" title="返回首页" aria-label="返回首页">
         <span class="ico" data-icon="home" aria-hidden="true"></span>
       </button>
       <input id="projectName" aria-label="项目名称" value="未命名画布" spellcheck="false" />
       <button id="canvasMenuBtn" class="ghost" title="画布菜单">画布 1<span class="caret">▾</span></button>
       <span class="vsep"></span>
-      <button class="icon tiny" data-act="assets" title="资产库：所有生成结果与上传素材，可分组 / 多选 / 移除">
+      <button class="icon tiny" data-act="assets" title="资产库：所有生成结果与上传素材，可分组 / 多选 / 移除" aria-label="资产库">
         <span class="ico" data-icon="material" aria-hidden="true"></span>
       </button>
-      <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点">
+      <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点" aria-label="故事板">
         <span class="ico" data-icon="film" aria-hidden="true"></span>
       </button>
-      <button class="icon tiny" data-act="settings" title="设置：工作流 / 分类 / 背景 / 连接">
+      <button class="icon tiny" data-act="settings" title="设置：工作流 / 分类 / 背景 / 连接" aria-label="设置">
         <span class="ico" data-icon="setting" aria-hidden="true"></span>
       </button>
     </div>
@@ -105,34 +105,34 @@
   <!-- 底部悬浮工具条 -->
   <div id="dockWrap">
   <header id="bar" class="floating">
-    <button class="icon prime" data-act="add-menu" title="添加节点（也可双击空白处）">
+    <button class="icon prime" data-act="add-menu" title="添加节点（也可双击空白处）" aria-label="添加节点">
       <span class="ico" data-icon="plus" aria-hidden="true"></span>
     </button>
-    <button class="icon active" data-act="select-mode" title="框选（默认）：拖画布空白处框选节点，Shift 加选">
+    <button class="icon active" data-act="select-mode" title="框选（默认）：拖画布空白处框选节点，Shift 加选" aria-label="框选">
       <span class="ico" data-icon="select" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="pan-mode" title="移动（抓手模式：拖任意位置平移画布）">
+    <button class="icon" data-act="pan-mode" title="移动（抓手模式：拖任意位置平移画布）" aria-label="移动画布">
       <span class="ico" data-icon="hand" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="add-wf" title="工作流库：挑一个加到画布">
+    <button class="icon" data-act="add-wf" title="工作流库：挑一个加到画布" aria-label="工作流库">
       <span class="ico" data-icon="grid4" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="all-tools" title="全部功能">
+    <button class="icon" data-act="all-tools" title="全部功能" aria-label="全部功能">
       <span class="ico" data-icon="more" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="history" title="生成历史（ComfyUI 运行记录）">
+    <button class="icon" data-act="history" title="生成历史（ComfyUI 运行记录）" aria-label="生成历史">
       <span class="ico" data-icon="time" aria-hidden="true"></span>
     </button>
     <span class="vsep"></span>
-    <button class="icon" data-act="help" title="快捷键">
+    <button class="icon" data-act="help" title="快捷键" aria-label="快捷键">
       <span class="ico" data-icon="help" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="tutorial" title="教程与说明">
+    <button class="icon" data-act="tutorial" title="教程与说明" aria-label="教程与说明">
       <span class="ico" data-icon="book" aria-hidden="true"></span>
     </button>
   </header>
 
-  <button class="icon orb dock-orb" data-act="home" title="返回首页"><img src="/icon.svg" alt="" /></button>
+  <button class="icon orb dock-orb" data-act="home" title="返回首页" aria-label="返回首页"><img src="/icon.svg" alt="" /></button>
   </div>
 
   <main id="stage">
@@ -159,16 +159,16 @@
     </div>
     <div id="addMenu" class="hidden"></div>
     <div id="viewTools">
-      <button class="vt" data-vt="fit" title="整理画布（适配视图，Alt+Shift+F）">
+      <button class="vt" data-vt="fit" title="整理画布（适配视图，Alt+Shift+F）" aria-label="整理画布">
         <span class="ico" data-icon="fit" aria-hidden="true"></span>
       </button>
-      <button class="vt" data-vt="minimap" title="切换小地图">
+      <button class="vt" data-vt="minimap" title="切换小地图" aria-label="切换小地图">
         <span class="ico" data-icon="map" aria-hidden="true"></span>
       </button>
-      <button class="vt" data-vt="links" title="隐藏 / 显示节点连线">
+      <button class="vt" data-vt="links" title="隐藏 / 显示节点连线" aria-label="显示或隐藏连线">
         <span class="ico" data-icon="link" aria-hidden="true"></span>
       </button>
-      <button class="vt" data-vt="snap" title="网格吸附">
+      <button class="vt" data-vt="snap" title="网格吸附" aria-label="网格吸附">
         <span class="ico" data-icon="snap" aria-hidden="true"></span>
       </button>
       <button class="vt zoom" id="zoomBtn" title="缩放选项">100%</button>
@@ -184,7 +184,7 @@
     </div>
     <canvas id="minimap" class="hidden" width="220" height="150"></canvas>
     <div id="helpSheet" class="hidden">
-      <header><strong>教程与快捷键</strong><button id="helpClose">✕</button></header>
+      <header><strong>教程与快捷键</strong><button id="helpClose" aria-label="关闭">✕</button></header>
       <div class="help-body">
         <p><b>建节点</b>　双击画布空白，或底部 <b>＋</b>；也可把图片文件拖进来。</p>
         <p><b>连线</b>　从节点右侧圆点拖到另一节点左侧圆点（文本→文本插槽、图片→图片插槽、工作流→输出）。</p>

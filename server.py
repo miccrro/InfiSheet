@@ -47,7 +47,6 @@ import mcp_server
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
-PRESETS = ROOT / "presets"
 
 
 def default_data_dir() -> Path:
@@ -78,6 +77,12 @@ DATA = default_data_dir()
 # 这时候资产库还跑去程序目录就会分家（测试会写脏真目录，容器里的图挂不出来）。
 DATA_EXPLICIT = bool(os.environ.get("INFISHEET_DATA"))
 LIBRARY = DATA / "library"
+# 工作流图标：用户上传的那几张图落在这里，工作流 JSON 里只留 `file:名字.png`。
+# 不把 base64 直接塞进工作流文件：一份工作流的图本来就几百 KB，再挂一张图标进去，
+# 每次列库都要把所有图标的字节搬一遍（/api/library 是启动和进设置页都会拉的接口）。
+ICONS = DATA / "icons"
+ICON_MAX_BYTES = 256 * 1024
+ICON_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 
@@ -845,6 +850,64 @@ def slot_sort_key(s: dict) -> tuple:
     return (KIND_ORDER.get(s["kind"], 9), node_key, neg, s["input"])
 
 
+def scan_residue(graph: dict, slots: list[dict] | None = None) -> list[dict]:
+    """扫出 API 图里「不属于模板」的残留值。
+
+    为什么需要它：API 图记的是**导出者那一刻的状态**——他选的图、他写的那句话。
+    换台机器那张图根本不存在，但文件名和文案照样会提交给 ComfyUI，而用户在界面上
+    既看不见也改不了。App 里已有两处兜底（生成时摘残留图、提示词落点从 KSampler
+    往回找），但兜底都是「猜」；导入时把话说清楚才是根治。
+
+    只报两类**能确定**是残留的，不做推测——误报一次，整份报告就没人信了：
+      · LoadImage.image 非空：一定是别人的文件名，清空永远安全（auto=True）；
+      · 文本槽位非空：可能是模板自带的系统提示，清掉会毁掉工作流，所以默认不勾（auto=False）。
+
+    slots 传 None 时只扫图片（不需要 ComfyUI 的 object_info，离线也能用）。
+    """
+    found: list[dict] = []
+    for node_id, node in (graph or {}).items():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type") or ""
+        if ct not in ("LoadImage", "LoadImageMask"):
+            continue
+        name = (node.get("inputs") or {}).get("image")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        title = (node.get("_meta") or {}).get("title") or ct
+        found.append({
+            "id": f"{node_id}.image",
+            "kind": "image",
+            "node": str(node_id),
+            "input": "image",
+            "class_type": ct,
+            "where": f"{title} · {node_id}",
+            "value": name,
+            "fix": "",
+            "auto": True,
+            "why": "导出者机器上的图片文件名，换台机器就不存在",
+        })
+    for s in slots or []:
+        if s.get("kind") != "text":
+            continue
+        val = s.get("value")
+        if not isinstance(val, str) or not val.strip():
+            continue
+        found.append({
+            "id": str(s.get("key")),
+            "kind": "text",
+            "node": str(s.get("node")),
+            "input": s.get("input"),
+            "class_type": s.get("class_type"),
+            "where": f"{s.get('node_title') or s.get('class_type')} · {s.get('key')}",
+            "value": val,
+            "fix": "",
+            "auto": False,
+            "why": "导出者上次填的文本；如果这是模板自带的系统提示，保留它",
+        })
+    return found
+
+
 def analyze_graph(graph: dict) -> dict:
     """分析 API 格式工作流，返回插槽与输出节点。"""
     slots: list[dict] = []
@@ -947,6 +1010,8 @@ def analyze_graph(graph: dict) -> dict:
         "node_count": len(graph),
         "unknown_types": sorted(set(unknown_types)),
         "unresolved_nodes": unresolved,
+        # 顺带把残留一起报出来：导入路径都会走 analyze，调用方不用再单独问一次
+        "residue": scan_residue(graph, slots),
     }
 
 
@@ -2627,13 +2692,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 静态文件 ----------
     def serve_static(self, path: str):
-        if path.startswith("/presets/"):
-            name = urllib.parse.unquote(path[len("/presets/"):])
-            target = (PRESETS / name).resolve()
-            if PRESETS not in target.parents or not target.is_file():
-                return self.fail("预设不存在", 404)
-            self._send(200, target.read_bytes(), "application/json; charset=utf-8")
-            return
+        # 以前这里还挂着一个 /presets/ 直链（内置预设）。内置预设整档删掉之后，
+        # 工作流只有「库」一个来源，统一走 /api/library 与 /api/wf/resolve。
         rel = path.lstrip("/") or "index.html"
         target = (STATIC / rel).resolve()
         if STATIC not in target.parents and target != STATIC:
@@ -2645,15 +2705,21 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
-        self._send(200, target.read_bytes(), ctype)
+        # 商标图（static/logos/）是随程序分发的固定文件，不随用户操作变化：
+        # 给一天缓存，免得每次打开设置都把十张图重新拉一遍。
+        # 其余静态资源仍然 no-store —— app.js / style.css 是每次改完刷新就要看到新的。
+        extra = {}
+        if rel.startswith("logos/"):
+            extra["Cache-Control"] = "public, max-age=86400"
+        self._send(200, target.read_bytes(), ctype, extra)
 
     # ---------- GET 接口 ----------
     def api_get(self, path: str, query: dict):
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
-                   "features": ["presets", "projects", "canvas_history", "ui_import", "mcp",
+                   "features": ["wf_library", "projects", "canvas_history", "ui_import", "mcp",
                                 "comfy_config", "wf_categories", "wf_meta", "progress_log",
-                                "setup", "wf_resolve"]}
+                                "setup", "wf_resolve", "wf_defaults"]}
             # 顶栏的「MCP 已连接」小灯读这个：谁接进来了、什么时候、调了几次工具。
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
@@ -2705,9 +2771,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_out({"ok": True, "entries": history_summary(limit)})
 
         if path == "/api/library":
+            # 工作流只有一个来源：data/library/。以前还并着一份随程序分发的 presets/，
+            # 于是同一份工作流能出现两次（内置一份 + 用户存一份），删除还只能「隐藏」。
+            # 现在内置预设整档删掉，列表就是库本身：增删改都是真文件操作。
             return self.json_out({"ok": True, "items": list_library(),
-                                  "presets": list_presets(),
+                                  # 默认工作流跟着这份一起回：前端每次刷新工作流都要用它，
+                                  # 单独再发一次请求只会多一次往返和一处失败点。
+                                  "defaults": load_wf_defaults(),
                                   "categories": load_categories()})
+
+        if path == "/api/wf/defaults":
+            return self.json_out({"ok": True, "defaults": load_wf_defaults()})
 
         if path == "/api/wf/categories":
             return self.json_out({"ok": True, "categories": load_categories()})
@@ -2725,6 +2799,18 @@ class Handler(BaseHTTPRequestHandler):
             if not f or not f.exists():
                 return self.fail("工作流不存在", 404)
             return self.json_out(json.loads(f.read_text(encoding="utf-8")))
+
+        # 工作流图标（用户自己传的那张）。文件名就是内容哈希，内容永不改变，
+        # 所以可以放心长缓存——换图标只会换一个新 URL，不存在「换了图还看到旧的」。
+        if path.startswith("/api/icon/"):
+            fn = urllib.parse.unquote(path.split("/api/icon/", 1)[1])
+            if not re.fullmatch(r"[0-9a-f]{8,40}\.(?:png|jpg|webp)", fn):
+                return self.fail("图标不存在", 404)
+            f = ICONS / fn
+            if not f.is_file():
+                return self.fail("图标不存在", 404)
+            return self._send(200, f.read_bytes(), ICON_MIME[fn.rsplit(".", 1)[1]],
+                              {"Cache-Control": "public, max-age=31536000, immutable"})
 
         if path == "/api/canvas":
             f = DATA / "canvas.json"
@@ -2935,32 +3021,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
-        if path == "/api/presets":
-            payload = self.read_json() or {}
-            graph = payload.get("graph")
-            if isinstance(graph, dict) and isinstance(graph.get("nodes"), list):
-                try:
-                    graph = ui_to_api(graph)
-                except ValueError as exc:
-                    return self.fail(str(exc), 400)
-            if not isinstance(graph, dict) or not graph:
-                return self.fail("缺少 API 图（graph）", 400)
-            title = str(payload.get("title") or payload.get("name") or "新预设").strip()[:40] or "新预设"
-            stem = re.sub(r"[^\w\u4e00-\u9fa5.-]+", "-", title).strip("-.") or "preset"
-            PRESETS.mkdir(parents=True, exist_ok=True)
-            f = PRESETS / f"{stem}.api.json"
-            n = 2
-            while f.exists():
-                f = PRESETS / f"{stem}-{n}.api.json"
-                n += 1
-            data = {"title": title, "note": str(payload.get("note") or ""), "graph": graph}
-            group = normalize_group(payload.get("group"))
-            if group:
-                data["group"] = group          # 导入时选好分类就别让它掉回「按能力猜」
-            f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            return self.json_out({"ok": True, "file": f.name, "title": title, "group": group})
-
-        # 工作流的「标题 / 分类」——分类是用户自己的组织方式，随时可改，不用重新导入
+        # 工作流的「标题 / 分类 / 图标」——分类是用户自己的组织方式，随时可改，不用重新导入
         if path == "/api/wf/meta":
             payload = self.read_json() or {}
             patch = {}
@@ -2968,11 +3029,14 @@ class Handler(BaseHTTPRequestHandler):
                 patch["title"] = payload.get("title")
             if "group" in payload:
                 patch["group"] = payload.get("group")
+            if "icon" in payload:
+                patch["icon"] = payload.get("icon")
             if not patch:
                 return self.fail("没有要改的字段", 400)
             meta, err = update_wf_meta(payload.get("id"), patch)
             if err:
-                return self.fail(err, 400 if "非法" in err else 404)
+                # 图标那几条错误（格式 / 太大 / 解码失败）都是输入问题，不是「找不到」
+                return self.fail(err, 400 if ("非法" in err or "图标" in err) else 404)
             return self.json_out({"ok": True, **meta})
 
         # 分类表整体替换：改名 / 新增 / 删除 / 排序都在前端做，服务端只负责清洗和落盘
@@ -2982,6 +3046,42 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(items, list):
                 return self.fail("categories 必须是数组", 400)
             return self.json_out({"ok": True, "categories": save_categories(items)})
+
+        if path == "/api/residue":
+            # 导入前先体检：这份 API 图里有多少是「导出者那一刻的状态」。
+            # 单独一个接口而不是塞进 /api/analyze，是因为设置里的导入在 ComfyUI
+            # 没开时也要能用（那条路径本来就不分析）。
+            payload = self.read_json() or {}
+            graph = payload.get("graph") or {}
+            source = "api"
+            # 界面格式也认。转换后的那份要回给前端：前端手里还是 nodes/links/widgets_values，
+            # 既不能当图提交，直接存下去又会把导出者的整份 UI 数据带进存档。
+            if isinstance(graph, dict) and isinstance(graph.get("nodes"), list):
+                source = "ui"
+                try:
+                    graph = ui_to_api(graph)
+                except ValueError as exc:
+                    return self.fail(str(exc), 400)
+            if not isinstance(graph, dict) or not graph:
+                return self.fail("缺少 API 图（graph）", 400)
+            # 文本残留要靠 object_info 判断槽位类型，但**不能因此让检查失败**：
+            # 检查是个附加动作，它挂了不该拦住导入。挂了就只报图片那一类。
+            try:
+                res = analyze_graph(graph)
+                return self.json_out({
+                    "ok": True, "source": source, "graph": graph,
+                    "residue": res.get("residue") or [],
+                    "node_count": res.get("node_count"),
+                    "partial": False,
+                })
+            except Exception as exc:      # noqa: BLE001 —— 见上：检查失败不能让导入跟着失败
+                return self.json_out({
+                    "ok": True, "source": source, "graph": graph,
+                    "residue": scan_residue(graph),
+                    "node_count": len(graph),
+                    "partial": True,
+                    "warning": str(exc)[:200],
+                })
 
         if path == "/api/analyze":
             payload = self.read_json() or {}
@@ -3198,8 +3298,20 @@ class Handler(BaseHTTPRequestHandler):
         self.drain_body()
         return self.fail("接口不存在", 404)
 
+        return self.fail("接口不存在", 404)
+
     # ---------- PUT / DELETE：工作流库 ----------
     def api_put(self, path: str):
+        """PUT 只剩两件事：存工作流库、记「按分类默认」。
+
+        以前这里还挂过 /api/presets/{file}/graph（内置预设的覆盖图）。内置预设整档删掉后
+        只剩库：用户的工作流就是 data/library/ 里的文件本身，改就是改文件。
+        """
+        if path == "/api/wf/defaults":
+            payload = self.read_json() or {}
+            return self.json_out({"ok": True,
+                                  "defaults": save_wf_defaults(payload.get("defaults") or {})})
+
         if not path.startswith("/api/library/"):
             self.drain_body()
             return self.fail("接口不存在", 404)
@@ -3236,17 +3348,6 @@ class Handler(BaseHTTPRequestHandler):
             # 客户端主动结束会话。我们无状态，删掉的只是一句「好的」。
             self.drain_body()
             return self._send(204, b"", "text/plain; charset=utf-8")
-        if path.startswith("/api/presets/"):
-            name = urllib.parse.unquote(path.split("/api/presets/", 1)[1])
-            if not re.fullmatch(r"[\w\u4e00-\u9fa5 .\-]{1,120}\.json", name):
-                return self.fail("预设名非法", 400)
-            f = (PRESETS / name).resolve()
-            if PRESETS.resolve() not in f.parents:
-                return self.fail("路径非法", 403)
-            if not f.is_file():
-                return self.fail("预设不存在", 404)
-            f.unlink()
-            return self.json_out({"ok": True, "deleted": True})
         if path.startswith("/api/projects/"):
             pid = urllib.parse.unquote(path.split("/api/projects/", 1)[1])
             if not PROJECT_ID_RE.fullmatch(pid):
@@ -3694,38 +3795,69 @@ def normalize_group(value: str) -> str:
     return v if v and CAT_ID_RE.match(v) else ""
 
 
+# --------------------------------------------------------------------------- #
+# 默认工作流：**按能力分类**各一份
+#
+# 以前是「全局一个默认」存 localStorage：谁被选中，就意味着用户没选过也照样出图，
+# 而且换个浏览器就没了、MCP 也读不到。现在改成按分类（文生图 / 图生图 / 高清…）
+# 各记一份，存在 data/ 里：新建节点按用途预选，跨设备与 MCP 共用同一份。
+# 只记 id，不记图——工作流被删 / 改名时由 /api/wf/resolve 那条链兜底。
+# --------------------------------------------------------------------------- #
+def wf_defaults_file() -> Path:
+    return DATA / "wf-defaults.json"
+
+
+def load_wf_defaults() -> dict[str, str]:
+    """读默认表。只认 CATEGORY_ORDER 里的键，值必须是字符串 id。"""
+    try:
+        raw = json.loads(wf_defaults_file().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    items = raw.get("defaults") if isinstance(raw, dict) else None
+    if not isinstance(items, dict):
+        return {}
+    out = {}
+    for k, v in items.items():
+        k, v = str(k or "").strip(), str(v or "").strip()
+        if k in CATEGORY_ORDER and v:
+            out[k] = v
+    return out
+
+
+def save_wf_defaults(items) -> dict[str, str]:
+    """清洗后落盘：键必须在分类表里，值只留工作流 id（`lib:`；老的 `preset:` 也照收，
+    由 resolve_workflow_id 按名字映射到库，别因为一次升级就把默认清空）。"""
+    out = {}
+    for k, v in (items or {}).items():
+        k, v = str(k or "").strip(), str(v or "").strip()
+        if k not in CATEGORY_ORDER or not v:
+            continue
+        if not v.startswith(("preset:", "lib:")):
+            continue
+        out[k] = v[:200]
+    DATA.mkdir(parents=True, exist_ok=True)
+    wf_defaults_file().write_text(
+        json.dumps({"defaults": out}, ensure_ascii=False, indent=1), encoding="utf-8")
+    return out
+
+
 def wf_meta_of(g: dict, cat: str) -> dict:
-    """从工作流 JSON 顶层读「用户自定义的那部分」（标题 / 分类 / 备注）。"""
+    """从工作流 JSON 顶层读「用户自定义的那部分」（标题 / 分类 / 备注 / 图标）。"""
     return {
         "title": str(g.get("title") or "").strip(),
         "group": normalize_group(g.get("group")) or cat,
         "note": str(g.get("note") or ""),
+        # 图标两种形态：`preset:qwen`（内置模型标，画在前端）和 `file:xxx.png`
+        # （用户自己传的，存在 data/icons/ 下）。空串 = 用默认的工作流图标。
+        "icon": str(g.get("icon") or ""),
     }
 
 
-def list_presets() -> list[dict]:
-    PRESETS.mkdir(parents=True, exist_ok=True)
-    out = []
-    for f in sorted(PRESETS.glob("*.json")):
-        try:
-            g = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            continue
-        cat = graph_category(g.get("graph") or {}, g)
-        meta = wf_meta_of(g, cat)
-        out.append({"name": f.stem, "title": meta["title"] or f.stem,
-                    "file": f.name, "nodes": len(g.get("graph") or {}),
-                    # 预设自己写的稳定 id：改名时它不动，画布可以拿它当引用
-                    "uid": str(g.get("uid") or ""),
-                    "kinds": graph_kinds(g.get("graph") or {}),
-                    "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
-                    "group": meta["group"],
-                    **graph_takes(g.get("graph") or {})})
-    return out
-
-
 def list_library() -> list[dict]:
-    """工作流库（用户自己存的）。和预设**同一套字段**——前端才能把它们摆进同一个列表。"""
+    """工作流库：现在这是**唯一**的工作流来源（内置预设已整档删掉）。
+
+    每个文件就是一个工作流，字段要够前端摆列表：标题 / 分类 / 能力（吃不吃图、吃不吃遮罩）/ 节点数。
+    """
     LIBRARY.mkdir(parents=True, exist_ok=True)
     out = []
     for f in sorted(LIBRARY.glob("*.json")):
@@ -3738,6 +3870,7 @@ def list_library() -> list[dict]:
         out.append({"name": f.stem, "title": meta["title"] or f.stem,
                     "file": f.name, "nodes": len(g.get("graph") or {}),
                     "saved_at": g.get("saved_at"),
+                    "icon": meta["icon"],
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],
@@ -3745,219 +3878,157 @@ def list_library() -> list[dict]:
     return out
 
 
-# 改名兼容表：`旧文件名 → 现文件名`。预设的**文件名**是最不该被当成主键的东西——
-# 它可变，却被写进了每一个画布项目（`gen.wf = "preset:xxx.api.json"`）。
-# 改一次名，所有老画布上那个节点就 404。这张表让旧名字继续指得到东西。
-#
-# 故意**不**放进 presets/：那里「每个 *.json 都是一个工作流」是不变量，
-# 塞一个说明文件进去，任何遍历目录的脚本（含用户自己写的）都会把它当预设。
 ALIASES_FILE = ROOT / "presets-aliases.json"
 
 
-def load_preset_aliases() -> dict[str, str]:
-    """读改名兼容表。键以 `_` 开头的是说明行，不当别名用；读坏了就当没有。"""
-    out: dict[str, str] = {}
+def load_wf_aliases() -> dict[str, str]:
+    """改名兼容表：旧文件名 → 现文件名（`presets-aliases.json`，键以 `_` 开头的是说明行）。
+
+    内置预设整档删掉之后，这张表只剩一个用处：**老画布**里写着 `preset:krea2-txt2img.api.json`
+    这种旧文件名，而库里现在叫 `krea2-文生图.api.json`。按名字找不到时查一次这里，
+    老项目就不会莫名其妙变成「未选择工作流」。表里没有就老老实实报找不到，不猜。
+    """
     try:
         raw = json.loads(ALIASES_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        raw = {}
-    if isinstance(raw, dict):
-        out = {str(k): str(v) for k, v in raw.items()
-               if isinstance(v, str) and not str(k).startswith("_")}
-    # 自动认出来的改名排在后面：手工表写得明确，以它为准
-    for k, v in auto_aliases().items():
-        out.setdefault(k, v)
-    return out
-
-
-# 内容指纹快照：`文件名 → 图的 hash`，外加认出来的自动别名。
-# 手工表迟早会漏——改了名忘了写一行，老画布照样 404。所以再兜一层：
-# 同一张图的文件名变了，靠内容认出来，自动把旧名指到新名。
-SNAPSHOT_FILE = DATA / "preset-snapshot.json"
-_auto_aliases: dict[str, str] | None = None
-_snapshot_lock = threading.Lock()
-
-
-def preset_fingerprint(path: Path) -> str:
-    """只按 graph 算指纹：改标题 / 改分类不算「换了工作流」。"""
-    try:
-        g = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return ""
-    core = json.dumps(g.get("graph") or {}, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha1(core.encode("utf-8")).hexdigest()
-
-
-def refresh_preset_snapshot() -> dict[str, str]:
-    """比对「上次见到的文件」和「现在有的文件」，把改名认出来记成别名。
-
-    只在第一次用到时跑一次：改名本来就是「改完重启」的动作，不值得每个请求都扫目录。
-    """
-    global _auto_aliases
-    try:
-        old = json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        old = {}
-    if not isinstance(old, dict):
-        old = {}
-    old_files = old.get("files") if isinstance(old.get("files"), dict) else {}
-    aliases = dict(old.get("aliases")) if isinstance(old.get("aliases"), dict) else {}
-
-    PRESETS.mkdir(parents=True, exist_ok=True)
-    now: dict[str, str] = {}
-    for f in sorted(PRESETS.glob("*.json")):
-        fp = preset_fingerprint(f)
-        if fp:
-            now[f.name] = fp
-
-    gone = [n for n in old_files if n not in now]
-    new = [n for n in now if n not in old_files]
-    for name in gone:
-        same = [n for n in new if now[n] == old_files.get(name)]
-        # 只认一对一：两个内容完全相同的文件，挑哪个都是猜
-        if len(same) == 1:
-            aliases[name] = same[0]
-    # 目标文件已经不在的别名没有意义（改过去又改回来会留下这种），顺手清掉，别越积越多
-    aliases = {k: v for k, v in aliases.items() if v in now}
-    _auto_aliases = aliases
-
-    try:
-        SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SNAPSHOT_FILE.write_text(
-            json.dumps({"files": now, "aliases": aliases}, ensure_ascii=False, indent=2),
-            encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        pass                      # 写不了快照不影响本次解析，只是下次认不出改名
-    return aliases
-
-
-def auto_aliases() -> dict[str, str]:
-    """惰性初始化：mcp_server 直接 import 本模块时不会走 main()，不能只靠启动钩子。"""
-    global _auto_aliases
-    if _auto_aliases is None:
-        with _snapshot_lock:
-            if _auto_aliases is None:
-                refresh_preset_snapshot()
-    return _auto_aliases or {}
-
-
-def preset_graph(file: str) -> dict:
-    """按文件名读一张预设图（调用方负责确认文件在 presets/ 里）。"""
-    try:
-        return json.loads((PRESETS / file).read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  没有这张表完全正常（新装就是没有）
         return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()
+            if not str(k).startswith("_") and isinstance(v, str) and v.strip()}
 
 
 def resolve_workflow_id(spec: str, kinds: list[str] | None = None) -> dict:
-    """把 `preset:xxx` / `lib:xxx` 解析成真实的图，**不靠文件名唯一**。
+    """把 `lib:名字`（以及老画布里的 `preset:文件名`）解析成真实的图。
 
-    按「稳定程度」从高到低找，命中就返回：
-        1. 文件名（file）  2. 去掉 .api.json 的 stem  3. 改名兼容表（alias）
-        4. 标题（title）   5. 预设里写的 uid
-    都找不到时**不猜**：把同能力的候选一起回给前端让人重选。
-    换错工作流比报错更难查——Moss_图像编辑 其实是纯文生图，猜错的代价是重画一张。
+    工作流只剩「库」一个来源，所以找法就是按库里的名字找，按「稳定程度」排：
+        1. 名字（库文件名去掉 .json）  2. 去掉 .api 的短名  3. 标题
+    老画布上写的是 `preset:xxx.api.json`——那批文件已经不随程序分发了，但只要用户
+    自己导过同名的工作流，这里照样认出来，节点不会莫名其妙变成「未选择工作流」。
+    都找不到时**不猜**：把候选回给前端让人重选。换错工作流比报错更难查。
     """
     spec = (spec or "").strip()
     if not spec:
         return {"ok": False, "error": "缺少工作流 id", "requested": spec}
     kind, sep, name = spec.partition(":")
-    if not sep:                                  # 只给了名字：按预设找，和旧行为一致
-        kind, name = "preset", spec
+    # 只给了名字 / 老格式的 preset: → 都按库里的名字找
+    if not sep or kind not in ("lib", "preset"):
+        name = spec
     name = urllib.parse.unquote(name).strip()
 
-    if kind == "lib":
-        target = safe_library_path(name)
-        if target and target.is_file():
-            g = json.loads(target.read_text(encoding="utf-8"))
-            return {"ok": True, "id": "lib:" + name, "graph": g.get("graph") or {},
-                    "label": "库 · " + name, "requested": spec, "matched": "lib"}
-        return {"ok": False, "error": f"工作流库里没有：{name}", "requested": spec,
-                "candidates": [{"id": "lib:" + x["name"], "label": x["title"], "kinds": x["kinds"]}
-                               for x in list_library()[:5]]}
+    items = list_library()
 
-    presets = list_presets()
-    aliases = load_preset_aliases()
-    hit, matched = None, ""
+    def stem(v: str) -> str:
+        """`krea2-文生图.api.json` / `krea2-文生图.api` / `krea2-文生图` 归一到同一个短名。"""
+        v = str(v or "")
+        for suf in (".api.json", ".api", ".json"):
+            if v.endswith(suf):
+                return v[:-len(suf)]
+        return v
 
-    def stem(s: str) -> str:
-        """`krea2-文生图.api.json` / `krea2-文生图.api` / `krea2-文生图` 都归一到同一个短名。"""
-        s = str(s or "")
-        return s[:-len(".api.json")] if s.endswith(".api.json") else s[:-len(".api")] if s.endswith(".api") else s
+    def canon(v: str) -> str:
+        """把分隔符和大小写抹平：`Krea2 · 文生图` / `krea2-文生图` / `krea2_文生图` 归一。"""
+        v = str(v or "").lower()
+        for ch in "·-_. ":
+            v = v.replace(ch, "")
+        return v
 
     def pick(pred):
-        return next((p for p in presets if pred(p)), None)
+        return next((it for it in items if pred(it)), None)
 
-    def canon(s: str) -> str:
-        """把分隔符和大小写抹平：`Krea2 · 文生图` / `krea2-文生图` / `krea2_文生图` 归一。
-        改名、手输最常见的差异就是这几种分隔符，不该因为一个 `·` 就找不到。"""
-        s = str(s or "").lower()
-        for ch in "·-_. ":
-            s = s.replace(ch, "")
-        return s
+    def pack(it: dict, matched: str) -> dict:
+        try:
+            data = json.loads((LIBRARY / it["file"]).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": f"读不出工作流文件：{it['file']}", "requested": spec}
+        return {"ok": True, "id": "lib:" + it["name"], "graph": data.get("graph") or {},
+                "label": it["title"], "requested": spec, "matched": matched}
 
-    hit, matched = pick(lambda p: p["file"] == name), "file"
-    if not hit:                                  # 去掉 .api.json 的短名（改名时最常写的形态）
-        hit, matched = pick(lambda p: stem(p["file"]) == stem(name)), "stem"
-    if not hit:                                  # 改过名：旧名（带不带 .api.json 都认）→ 现名
-        # 连改两次名会得到 旧 → 中 → 新 的链，所以一路跟到底（限深度，防环）
-        cur, seen = name, set()
-        for _ in range(5):
-            to = aliases.get(cur) or next((v for k, v in aliases.items() if stem(k) == stem(cur)), None)
-            if not to or to in seen:
-                break
-            seen.add(to)
-            hit = pick(lambda p: p["file"] == to or stem(p["file"]) == stem(to))
-            if hit:
-                matched = "alias"
-                break
-            cur = to
+    hit, matched = pick(lambda it: it["name"] == name or it["file"] == name), "file"
+    if not hit:
+        hit, matched = pick(lambda it: stem(it["name"]) == stem(name)), "stem"
     if not hit:                                  # 用户看到的是标题，手输多半也是它
-        hit, matched = pick(lambda p: p["title"] == name), "title"
-    if not hit:                                  # 大小写 / 分隔符不一致（Krea2 · 文生图 vs krea2-文生图）
-        # 只在**唯一**命中时才认：两个工作流 canon 后撞车时挑一个等于抛硬币
-        loose = [p for p in presets if canon(p["title"]) == canon(name) or canon(stem(p["file"])) == canon(name)]
+        hit, matched = pick(lambda it: it["title"] == name), "title"
+    if not hit:                                  # 大小写 / 分隔符不一致：只在唯一命中时才认
+        loose = [it for it in items
+                 if canon(it["title"]) == canon(name) or canon(stem(it["name"])) == canon(name)]
         if len(loose) == 1:
             hit, matched = loose[0], "title"
-    if not hit:                                  # 预设自己声明的稳定 id
-        hit, matched = pick(lambda p: p.get("uid") and p["uid"] == name), "uid"
+    if not hit:
+        # 老画布里的旧文件名（内置预设改过名）：查一次改名兼容表再试
+        aliases = load_wf_aliases()
+        alias = aliases.get(name) or aliases.get(name + ".json")
+        if alias:
+            hit, matched = pick(lambda it: it["file"] == alias
+                                or stem(it["name"]) == stem(alias)), "alias"
     if not hit and kinds:
         # 只有「同类恰好一个」才敢替你换：两个同类里挑一个等于抛硬币
-        same = [p for p in presets if set(kinds) <= set(p.get("kinds") or [])]
+        same = [it for it in items if set(kinds) <= set(it.get("kinds") or [])]
         if len(same) == 1:
             hit, matched = same[0], "kinds"
 
     if not hit:
-        pool = [p for p in presets if not kinds or set(kinds) <= set(p.get("kinds") or [])] or presets
-        return {"ok": False, "error": f"找不到工作流「{name}」", "requested": spec,
-                "candidates": [{"id": "preset:" + p["file"], "label": p["title"],
-                                "kinds": p["kinds"]} for p in pool[:6]]}
+        pool = [it for it in items if not kinds or set(kinds) <= set(it.get("kinds") or [])] or items
+        return {"ok": False, "error": f"工作流库里没有「{name}」", "requested": spec,
+                "candidates": [{"id": "lib:" + it["name"], "label": it["title"],
+                                "kinds": it["kinds"]} for it in pool[:6]]}
 
-    out = {"ok": True, "id": "preset:" + hit["file"], "graph": preset_graph(hit["file"]).get("graph") or {},
-           "label": hit["title"], "requested": spec, "matched": matched}
-    if matched == "alias":
-        # 前端拿到这个字段就可以把项目里的旧引用悄悄换成新名（惰性迁移）
+    out = pack(hit, matched)
+    if matched in ("stem", "alias") and kind == "preset":
+        # 老画布里的 preset: 引用：前端拿到这个字段就把节点上的 id 换成库 id（惰性迁移）
         out["aliasedFrom"] = name
     return out
 
 
+def save_wf_icon(raw) -> tuple[str, str]:
+    """把前端传来的图标值落成「存进工作流 JSON 的那个字符串」。
+
+    三种输入，只有第三种真的要写文件：
+        `''`              → 用默认图标（把字段删掉）
+        `preset:qwen`     → 内置模型标，前端自己画，服务端只负责原样记住
+        `data:image/...`  → 用户上传的图，存 data/icons/<sha1>.png
+
+    按**内容**命名（sha1 前 16 位）而不是按工作流名：同一张图被几个工作流用也只存一份，
+    工作流改名 / 挪分类都不会把图标弄丢。换图标只是换一个哈希，旧文件留在那儿几 KB，
+    比去维护引用计数（改一次算一次、漏一次就删错）省心得多。
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return "", ""
+    if re.fullmatch(r"preset:[a-z0-9_-]{1,32}", raw):
+        return raw, ""
+    m = re.fullmatch(r"data:image/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)", raw)
+    if not m:
+        return "", "图标格式不支持（只收 PNG / JPEG / WebP）"
+    ext = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "webp": "webp"}[m.group(1)]
+    try:
+        blob = base64.b64decode(m.group(2))
+    except Exception:  # noqa: BLE001  半截 base64 也要给句话，不能 500
+        return "", "图标解码失败"
+    if not blob:
+        return "", "图标是空的"
+    if len(blob) > ICON_MAX_BYTES:
+        return "", "图标太大了（限 256KB）"
+    ICONS.mkdir(parents=True, exist_ok=True)
+    name = f"{hashlib.sha1(blob).hexdigest()[:16]}.{ext}"
+    (ICONS / name).write_bytes(blob)
+    return f"file:{name}", ""
+
+
 def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
-    """改一个工作流的「标题 / 分类」。id 形如 preset:xxx.json 或 lib:名字。"""
+    """改一个工作流的「标题 / 分类 / 图标」。id 形如 `lib:名字`。
+
+    工作流只剩库这一个来源，改的就是用户自己的文件本身。
+    老画布上的 `preset:` id 一律按「不存在」处理：内置预设已经整档删掉了。
+    """
     wf_id = str(wf_id or "").strip()
     kind, _, name = wf_id.partition(":")
     name = urllib.parse.unquote(name)
-    if kind == "preset":
-        if not re.fullmatch(r"[\w\u4e00-\u9fa5 .\-]{1,120}\.json", name):
-            return None, "预设名非法"
-        f = (PRESETS / name).resolve()
-        if PRESETS.resolve() not in f.parents or not f.is_file():
-            return None, "预设不存在"
-    elif kind == "lib":
-        f = safe_library_path(name)
-        if not f or not f.is_file():
-            return None, "工作流不存在"
-    else:
-        return None, "id 非法"
+    if kind != "lib":
+        return None, "工作流不存在"
+    f = safe_library_path(name)
+    if not f or not f.is_file():
+        return None, "工作流不存在"
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -3974,8 +4045,48 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
             data["group"] = group
         else:
             data.pop("group", None)      # 清空 = 回到能力分类
+    if "icon" in patch:
+        icon, err = save_wf_icon(patch.get("icon"))
+        if err:
+            return None, err
+        if icon:
+            data["icon"] = icon
+        else:
+            data.pop("icon", None)       # 清空 = 回到默认的工作流图标
     f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"id": wf_id, "title": data.get("title") or f.stem, "group": data.get("group") or ""}, ""
+    return {"id": wf_id, "title": data.get("title") or f.stem,
+            "group": data.get("group") or "",
+            "icon": data.get("icon") or ""}, ""
+
+
+def execution_error_detail(d: dict, entry: dict) -> dict:
+    """把 ComfyUI 的 `execution_error` 拆成「谁、在哪、什么错」。
+
+    以前只拼成 `LoadImage：[Errno 13] ...` 一行甩出去：节点类型不是节点身份，
+    用户对着画布上十几个加载图像根本不知道是哪一个；而 `node_id` 明明就在报文里。
+    节点标题从**这次提交的那份图**里捞（history 条目的 prompt[2] 就是它），
+    这样报错能直接说「加载图像 · 3」，和画布上那个节点对得上。
+    """
+    node_id = str(d.get("node_id") or "")
+    node_type = str(d.get("node_type") or "")
+    message = str(d.get("exception_message") or "").strip()
+    etype = str(d.get("exception_type") or "").strip()
+    title = ""
+    try:
+        graph = (entry.get("prompt") or [])[2] or {}
+        title = str(((graph.get(node_id) or {}).get("_meta") or {}).get("title") or "")
+    except Exception:  # noqa: BLE001  历史条目结构不对就算了，标题只是锦上添花
+        title = ""
+    # 「在哪」优先用标题（用户给节点起过名就更好认），没有就退回类型
+    where = " · ".join(x for x in (title, node_type if node_type != title else "") if x)
+    if not where:
+        where = node_type or "某个节点"
+    if node_id:
+        where += f"（节点 {node_id}）"
+    summary = f"{where}：{message}" if message else f"{where} 报错"
+    return {"kind": "execution", "node_id": node_id, "node_type": node_type,
+            "title": title, "message": message, "exception_type": etype,
+            "where": where, "summary": summary[:400]}
 
 
 def job_status(pid: str) -> dict:
@@ -3988,25 +4099,34 @@ def job_status(pid: str) -> dict:
         artifacts = collect_artifacts(entry)
         messages = status.get("messages") or []
         error = None
+        detail = None
         for msg in messages:
             if not isinstance(msg, list) or not msg:
                 continue
             if msg[0] == "execution_error":
-                detail = msg[1] if len(msg) > 1 else {}
-                error = f"{detail.get('node_type')}：{detail.get('exception_message')}"
+                detail = execution_error_detail(msg[1] if len(msg) > 1 else {}, entry)
+                error = detail["summary"]
                 break
             if msg[0] == "execution_interrupted":
                 error = "任务已中断"
+                detail = {"kind": "interrupted", "where": "排队/执行中", "message": error,
+                          "summary": error}
                 break
         # 历史条目可能先落库、产物稍后才补齐：未经 completed 确认的一律按执行中处理。
         # 但 status_str=error 是明确的终止信号（中断/异常），继续报 running 会让前端永远转圈。
         if error is None and not completed:
             if (status.get("status_str") or "").lower() == "error":
-                return {"ok": True, "status": "error", "completed": False,
-                        "artifacts": artifacts, "error": "执行失败（ComfyUI 未给出详细原因）"}
+                return {"ok": True, "status": "error", "completed": False, "artifacts": artifacts,
+                        "error": "执行失败（ComfyUI 未给出详细原因）",
+                        "error_detail": {"kind": "unknown", "where": "执行阶段",
+                                         "message": "ComfyUI 把这次执行标成了 error，但没有给出节点和异常信息。"
+                                                    "去 ComfyUI 的 console 看那一屏输出最准。",
+                                         "summary": "执行失败（ComfyUI 未给出详细原因）"}}
             return {"ok": True, "status": "running", "artifacts": artifacts}
         return {"ok": True, "status": "success" if completed else (status.get("status_str") or "done"),
-                "completed": completed, "artifacts": artifacts, "error": error}
+                "completed": completed, "artifacts": artifacts, "error": error,
+                # 「哪里报错」：前端拿它拼一行「节点 3 · 加载图像」并给详情卡片
+                "error_detail": detail}
     queue = comfy_json("/queue", timeout=15)
     running = [item[1] for item in queue.get("queue_running") or [] if len(item) > 1]
     pending = [item[1] for item in queue.get("queue_pending") or [] if len(item) > 1]
@@ -4022,8 +4142,6 @@ def main():
     parser.add_argument("--port", type=int, default=8788)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--comfy", default=None, help="ComfyUI 地址，如 http://127.0.0.1:8188")
-    parser.add_argument("--presets", default=None,
-                        help="内置预设目录（默认 ./presets）；自测时指向临时目录，别污染真预设")
     parser.add_argument("--data", default=None,
                         help="运行时数据目录（默认 ./data）：画布快照与工作流库都放这里，便于多实例与自测")
     parser.add_argument("--no-browser", action="store_true")
@@ -4037,11 +4155,9 @@ def main():
                              "0 = 不做租约（灯永不熄灭）")
     args = parser.parse_args()
 
-    global COMFY_URL, COMFY_SOURCE, DATA, LIBRARY, PRESETS, TOKEN, DATA_EXPLICIT
+    global COMFY_URL, COMFY_SOURCE, DATA, LIBRARY, TOKEN, DATA_EXPLICIT
     if args.token is not None:
         TOKEN = args.token.strip()
-    if args.presets:
-        PRESETS = Path(args.presets).expanduser().resolve()
     if args.data:
         DATA = Path(args.data).expanduser().resolve()
         LIBRARY = DATA / "library"
@@ -4083,9 +4199,10 @@ def main():
     # MCP 工具需要的东西一次性注入：数据目录 + ComfyUI 代理 + 工作流/图分析。
     # 用注入而不是 import server，是为了让 mcp_server 能脱离服务单独跑协议测试。
     mcp_server.configure(types.SimpleNamespace(
-        root=ROOT, static=STATIC, presets=PRESETS, data=DATA, library=LIBRARY,
+        root=ROOT, static=STATIC, data=DATA, library=LIBRARY,
         comfy_json=comfy_json, comfy_request=comfy_request,
-        analyze_graph=analyze_graph, list_presets=list_presets, job_status=job_status,
+        analyze_graph=analyze_graph, list_library=list_library,
+        graph_category=graph_category, job_status=job_status,
         auto_import_assets=auto_import_assets,
         client_id=PROGRESS_CLIENT, mcp_lease=args.mcp_lease,
     ))

@@ -566,51 +566,44 @@ def auto_pos(canvas: dict) -> tuple:
 
 
 def _default_workflow() -> dict:
-    presets = E().list_presets()
-    if not presets:
-        raise ToolError("presets/ 里一个工作流都没有，先往目录里放一个 API 图")
-    return presets[0]
+    lib = list_library()
+    if not lib:
+        raise ToolError("工作流库是空的：先在「设置 → 工作流」里导入一个 API 图")
+    return lib[0]
 
 
 def load_workflow(spec: str) -> dict:
-    """按 id / 文件名 / 标题找预设；不传就用第一个。
+    """按 id / 名字 / 标题找工作流；不传就用库里第一个。
 
+    工作流只剩「库」一个来源（内置预设已整档删掉），所以这里只查 data/library/。
     挑工作流只能看能力（takes_image），不能看名字——「Moss_图像编辑」其实是纯文生图，
     拿它当图生图只会重画一张。
     """
-    presets = E().list_presets()
     lib = list_library()
     spec = (spec or "").strip()
+
+    def pack(hit: dict) -> dict:
+        data = _read_json(data_dir() / "library" / hit["file"]) or {}
+        graph = data.get("graph") or {}
+        return {"id": "lib:" + hit["name"], "label": hit["title"], "file": hit["file"],
+                "graph": graph, "takes_image": _takes(graph)["takes_image"]}
+
     if not spec:
-        p = _default_workflow()
-        return {"id": "preset:" + p["file"], "label": p["title"], "file": p["file"],
-                "graph": _preset_graph(p["file"]), **{k: p.get(k) for k in ("takes_image",)}}
-    if spec.startswith("preset:"):
-        spec_file = spec.split(":", 1)[1]
-        hit = next((p for p in presets if p["file"] == spec_file or p["name"] == spec_file), None)
-        if not hit:
-            raise ToolError(f"预设不存在：{spec_file}")
-        return {"id": "preset:" + hit["file"], "label": hit["title"], "file": hit["file"],
-                "graph": _preset_graph(hit["file"]), **{k: hit.get(k) for k in ("takes_image",)}}
-    if spec.startswith("lib:"):
+        return pack(_default_workflow())
+    if spec.startswith(("lib:", "preset:")):     # 老画布 / 老调用里的 preset: 也按名字认
         name = spec.split(":", 1)[1]
-        hit = next((x for x in lib if x["name"] == name), None)
+        hit = next((x for x in lib if x["name"] == name or x["file"] == name), None)
         if not hit:
             raise ToolError(f"工作流库里没有：{name}")
-        data = _read_json(data_dir() / "library" / f"{name}.json") or {}
-        graph = data.get("graph") or {}
-        return {"id": "lib:" + name, "label": "库 · " + name, "graph": graph,
-                "takes_image": _takes(graph)["takes_image"]}
+        return pack(hit)
     low = spec.lower()
-    hit = next((p for p in presets if low in (p["file"].lower(), p["title"].lower(), p["name"].lower())), None)
+    # 手输文件名（krea2-文生图.api.json）也得认：调用方从 list_workflows 拿到的就是 file
+    hit = next((x for x in lib
+                if low in (x["name"].lower(), x["file"].lower(), (x["title"] or "").lower())), None)
     if not hit:
-        hit = next((p for p in presets if low in p["title"].lower() or low in p["file"].lower()), None)
+        hit = next((x for x in lib if low in (x["title"] or "").lower()), None)
     if hit:
-        return {"id": "preset:" + hit["file"], "label": hit["title"], "file": hit["file"],
-                "graph": _preset_graph(hit["file"]), **{k: hit.get(k) for k in ("takes_image",)}}
-    hitlib = next((x for x in lib if low in x["name"].lower()), None)
-    if hitlib:
-        return load_workflow("lib:" + hitlib["name"])
+        return pack(hit)
     raise ToolError(f"找不到工作流「{spec}」：先 list_workflows 看可用项")
 
 
@@ -632,6 +625,12 @@ def _kinds(graph: dict) -> list:
 
 
 def list_library() -> list:
+    """工作流库：**唯一**的工作流来源（内置预设已整档删掉）。
+
+    字段要和 server.py 的 list_library 对齐：少一个 `title`，`_t_list_workflows`
+    就会 KeyError，而工具报错时 structuredContent 是空的，调用方只看到「0 个工作流」——
+    排查时完全看不出真因（真踩过一次）。
+    """
     d = data_dir() / "library"
     out = []
     if not d.exists():
@@ -639,17 +638,16 @@ def list_library() -> list:
     for f in sorted(d.glob("*.json")):
         data = _read_json(f) or {}
         graph = data.get("graph") or {}
-        out.append({"name": f.stem, "nodes": len(graph), "kinds": _kinds(graph),
-                    "saved_at": data.get("saved_at")})
+        # 分类推断由 server.py 注入（和界面上的能力分类同一套规则），
+        # 拿不到就留空——别在这里再写一份，两份规则迟早会走岔。
+        classify = getattr(E(), "graph_category", None)
+        cat = classify(graph, data) if callable(classify) else ""
+        out.append({"name": f.stem,
+                    "title": str(data.get("title") or "").strip() or f.stem,
+                    "file": f.name, "nodes": len(graph), "kinds": _kinds(graph),
+                    "icon": str(data.get("icon") or ""),
+                    "category": cat, "saved_at": data.get("saved_at"), **_takes(graph)})
     return out
-
-
-def _preset_graph(file: str) -> dict:
-    data = _read_json(Path(E().presets) / file) or {}
-    graph = data.get("graph") or data
-    if not isinstance(graph, dict):
-        raise ToolError(f"预设 {file} 里没有 API 图")
-    return graph
 
 
 def _takes(graph: dict) -> dict:
@@ -1438,23 +1436,17 @@ def _t_get_node(args):
                                                "refs": [r["node"]["id"] for r in refs]}}
 
 
-@tool("list_workflows", "列出可用工作流（内置预设 + 工作流库），标明「吃不吃图」。选错工作流是出图不对的第一大原因。")
+@tool("list_workflows", "列出工作流库里的工作流，标明「吃不吃图」。选错工作流是出图不对的第一大原因。")
 def _t_list_workflows(_args):
-    presets = E().list_presets()
     lib = list_library()
-    lines = ["内置预设："]
-    for p in presets:
-        caps = []
-        if p.get("takes_image"):
-            caps.append("吃图")
-        lines.append(f"- preset:{p['file']}「{p['title']}」· {p['nodes']} 节点 · {('、'.join(caps) or '纯文生图')}")
-    lines.append("工作流库：")
+    lines = ["工作流库："]
     if lib:
         for x in lib:
-            lines.append(f"- lib:{x['name']} · {x['nodes']} 节点 · {('、'.join(x.get('kinds') or []) or '未知产物')}")
+            caps = "吃图" if x.get("takes_image") else "纯文生图"
+            lines.append(f"- lib:{x['name']}「{x['title']}」· {x['nodes']} 节点 · {caps}")
     else:
-        lines.append("- （空）")
-    return {"text": "\n".join(lines), "data": {"presets": presets, "library": lib}}
+        lines.append("- （空）：先在「设置 → 工作流」里导入一个 API 图")
+    return {"text": "\n".join(lines), "data": {"library": lib}}
 
 
 @tool("search_styles", "在 397 个 Krea2 风格预设里检索。返回的风格名可以直接传给 add_image_node / set_generation 的 style 参数。",
@@ -1513,7 +1505,7 @@ def _t_add_text_node(args):
       "加一个图片节点（生成器）。参数会写进节点，随后用 run_node 出图。"
       "workflow 用 list_workflows 里的 id；style 用 search_styles 里的中文名；refs 是参考图节点 id 列表。",
       {"prompt": {"type": "string", "description": "提示词（可含 @[图名] 引用参考图）"},
-       "workflow": {"type": "string", "description": "preset:xxx.json 或 lib:名字，默认用第一个预设"},
+       "workflow": {"type": "string", "description": "lib:名字，默认用库里第一个"},
        "aspect": {"type": "string", "enum": ASPECTS, "description": "画幅，默认 1:1"},
        "size": {"type": "string", "enum": ["1k", "2k", "4k", "custom"], "description": "清晰度（长边像素），默认 1k"},
        "width": {"type": "integer", "description": "自定义宽（size=custom 时用）"},
@@ -1569,7 +1561,7 @@ def _t_add_image_node(args):
 
 
 @tool("add_workflow_node", "加一个工作流节点（把整张 API 图摆到画布上，可调插槽后运行）。",
-      {"workflow": {"type": "string", "description": "preset:xxx.json 或 lib:名字"},
+      {"workflow": {"type": "string", "description": "lib:名字"},
        "title": {"type": "string", "description": "标题，默认用工作流标题"},
        **_pos_props()}, ["workflow"])
 def _t_add_workflow_node(args):
@@ -1630,7 +1622,7 @@ def _t_update_node(args):
       "只改传进来的字段，其它不动。",
       {"node": _node_field(),
        "prompt": {"type": "string"},
-       "workflow": {"type": "string", "description": "preset:xxx.json 或 lib:名字"},
+       "workflow": {"type": "string", "description": "lib:名字"},
        "aspect": {"type": "string", "enum": ASPECTS},
        "size": {"type": "string", "enum": ["1k", "2k", "4k", "custom"]},
        "width": {"type": "integer"}, "height": {"type": "integer"},

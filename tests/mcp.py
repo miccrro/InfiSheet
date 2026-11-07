@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TMP = ROOT / "tests" / ".tmp"
+# 工作流样本（真机导出的 API 图）：e2e / mcp / selftest 共用这一份
+FIXTURE_WF = ROOT / "tests" / "fixtures" / "workflows"
 sys.path.insert(0, str(ROOT))
 
 PASS = 0
@@ -247,6 +250,12 @@ def main() -> int:
     TMP.mkdir(parents=True, exist_ok=True)
     data_dir = TMP / f"mcp-{int(time.time())}-{id(object()) % 1000}"
     (data_dir / "projects").mkdir(parents=True, exist_ok=True)
+    # 工作流样本灌进临时 data 的 library：内置预设已整档删掉，工作流只剩「库」一个来源。
+    # 灌的是临时目录，跑测试不会碰用户自己的 data/library/。
+    lib_dir = data_dir / "library"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    for f in FIXTURE_WF.glob("*.json"):
+        shutil.copy2(f, lib_dir / f.name)
     port = free_port()
     env = dict(os.environ)
     env["NO_PROXY"] = "127.0.0.1,localhost"
@@ -385,13 +394,15 @@ def main() -> int:
               out["text"].splitlines()[-1])
 
         out, data = c.tool("list_workflows")
-        presets = data.get("presets") or []
-        # 数量不写死：presets/ 是用户目录，随时会增删（今天就从 6 个删到 4 个）。
-        # 真正的约束是「清单不能漏」——返回的条数必须等于目录里的 json 数。
-        disk = len(list((ROOT / "presets").glob("*.json")))
-        check("工作流清单与 presets/ 目录一一对应，且带 takes_image、不带 takes_mask",
-              all("takes_image" in p for p in presets) and len(presets) == disk
-              and not any("takes_mask" in p for p in presets), f"{len(presets)}/{disk} 个预设")
+        library = data.get("library") or []
+        # 数量不写死：library 是用户目录，随时会增删。
+        # 真正的约束是「清单不能漏」——返回的条数必须等于灌进 library 的 json 数。
+        disk = len(list(FIXTURE_WF.glob("*.json")))
+        check("工作流清单与 library 目录一一对应，且带 takes_image、不带 takes_mask",
+              all("takes_image" in p for p in library) and len(library) == disk
+              and not any("takes_mask" in p for p in library), f"{len(library)}/{disk} 个工作流")
+        check("list_workflows 不再回 presets 字段（内置预设已整档删除）",
+              "presets" not in data, ",".join(sorted(data.keys())))
 
         out, data = c.tool("search_styles", {"query": "动漫", "limit": 5})
         items = data.get("items") or []
@@ -495,10 +506,10 @@ def main() -> int:
 
         # ---------- 需要 ComfyUI：真实出图 ----------
         if comfy_online():
-            # 工作流名从 list_workflows 取，别写死：预设改过一次名
+            # 工作流名从 list_workflows 取，别写死：库里的条目改过一次名
             # （krea2-txt2img → krea2-文生图），写死会让这条真机用例因为改名整条红掉
             _wfo, wfs = c.tool("list_workflows")
-            txt2img = next((p for p in (wfs.get("presets") or [])
+            txt2img = next((p for p in (wfs.get("library") or [])
                             if p.get("category") == "txt2img"), None)
             wf_file = (txt2img or {}).get("file") or ""
             check("真机出图前能挑到 txt2img 工作流", bool(wf_file), wf_file or "none")
@@ -599,7 +610,6 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             proc.kill()
         if not keep:
-            import shutil
             shutil.rmtree(data_dir, ignore_errors=True)
 
 

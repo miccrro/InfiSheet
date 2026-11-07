@@ -30,8 +30,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "server.py"
-# 不写死预设文件名：它改过一次名（krea2-txt2img → krea2-文生图），写死会让整个
-# 「预设与插槽分析」段落连坐失败，还看不出是测试过期。改为按能力从 /api/library 挑。
+# 工作流样本（真机导出的 API 图）：e2e / mcp / selftest 共用这一份。
+# 内置预设已整档删掉，工作流只剩「库」一个来源，测试要挑工作流就得先往库里灌样本。
+FIXTURE_WF = ROOT / "tests" / "fixtures" / "workflows"
+# 不写死工作流文件名：它改过一次名（krea2-txt2img → krea2-文生图），写死会让整个
+# 「工作流与插槽分析」段落连坐失败，还看不出是测试过期。改为按能力从 /api/library 挑。
 
 # 控制台统一 UTF-8：Windows 默认 GBK，中文断言名会乱码（bat 里也已 chcp 65001）
 for _stream in (sys.stdout, sys.stderr):
@@ -159,6 +162,11 @@ def main() -> int:
     tmp = staging / "run"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
+    # 先把工作流样本灌进临时 data 的 library（不碰用户自己的 data/library/）
+    lib_seed = tmp / "data" / "library"
+    lib_seed.mkdir(parents=True, exist_ok=True)
+    for _f in FIXTURE_WF.glob("*.json"):
+        shutil.copy2(_f, lib_seed / _f.name)
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     log_path = tmp / "server.log"      # 服务进程自己继承控制台输出，这里只留路径给报错提示
@@ -190,47 +198,57 @@ def main() -> int:
                 status == 200 and b"function buildGenPanel" in raw, f"HTTP {status}")
 
         # 目录穿越必须被挡
-        status, _, _ = http("GET", base + "/presets/../../server.py")
-        c.check("presets 目录穿越被拒", status in (400, 403, 404), f"HTTP {status}")
+        status, _, _ = http("GET", base + "/api/library/../../server.py")
+        c.check("工作流库目录穿越被拒", status in (400, 403, 404), f"HTTP {status}")
         status, _, _ = http("GET", base + "/../server.py")
         c.check("静态目录穿越被拒", status in (400, 403, 404), f"HTTP {status}")
 
-        # ---------------- 2. 预设与插槽分析 ----------------
+        # ---------------- 2. 工作流库与插槽分析 ----------------
         status, lib = jget(base, "/api/library")
-        presets = (lib or {}).get("presets") or []
-        c.check("library 列出内置预设", status == 200 and len(presets) >= 1,
-                f"presets={len(presets)} items={len((lib or {}).get('items') or [])}")
-        kinds = (presets[0] or {}).get("kinds") if presets else None
-        c.check("预设带 kinds 能力标记", isinstance(kinds, list) and "image" in (kinds or []),
+        items = (lib or {}).get("items") or []
+        c.check("library 列出工作流", status == 200 and len(items) >= 1,
+                f"items={len(items)}")
+        c.check("library 不再有 presets 字段（内置预设已整档删除）",
+                "presets" not in (lib or {}),
+                ",".join(sorted((lib or {}).keys())))
+        kinds = (items[0] or {}).get("kinds") if items else None
+        c.check("工作流带 kinds 能力标记", isinstance(kinds, list) and "image" in (kinds or []),
                 f"kinds={kinds}")
 
-        # 按能力挑，不按名字：预设改名 / 换一个内置流程都不该让这段测试红
-        target = next((p for p in presets if "image" in (p.get("kinds") or [])),
-                      presets[0] if presets else None)
+        # 按能力挑，不按名字：工作流改名 / 换一份样本都不该让这段测试红
+        target = next((p for p in items if "image" in (p.get("kinds") or [])),
+                      items[0] if items else None)
         if not target:
-            c.check("presets/ 里至少有一个工作流", False, "一个都没有")
+            c.check("library 里至少有一个工作流", False, "一个都没有")
             target = {"file": "", "title": "", "name": ""}
 
-        status, preset = jget(base, "/presets/" + urllib.parse.quote(target["file"]))
-        graph = (preset or {}).get("graph")
-        c.check("预设文件可读取并含 graph",
+        # 直链的 name 是库里的 name（文件名去掉 .json），不是完整文件名
+        status, item = jget(base, "/api/library/" + urllib.parse.quote(target["name"]))
+        graph = (item or {}).get("graph")
+        c.check("工作流文件可读取并含 graph",
                 status == 200 and isinstance(graph, dict) and len(graph) >= 1,
                 f"{target['file']} nodes={len(graph or {}) if isinstance(graph, dict) else 0}")
         # 读不到也要继续跑：下面每条断言各自报 FAIL，比整段抛 TypeError 崩掉好查
         graph = graph if isinstance(graph, dict) else {}
 
-        # 改名不该炸老画布：resolve 认文件名 / stem / 改名兼容表 / 标题 / uid
+        # 改名不该炸老画布：resolve 认名字 / 去掉 .api 的短名 / 标题
         q = lambda v: "/api/wf/resolve?id=" + urllib.parse.quote(v, safe="")   # noqa: E731
-        status, res_file = jget(base, q("preset:" + target["file"]))
-        c.check("resolve 按文件名取到图",
-                status == 200 and (res_file or {}).get("ok") is True and (res_file or {}).get("graph"),
-                f"matched={(res_file or {}).get('matched')}")
-        status, res_stem = jget(base, q("preset:" + target["file"].replace(".api.json", "")))
-        c.check("resolve 认去掉 .api.json 的短名（改名的常见写法）",
+        status, res_name = jget(base, q("lib:" + target["name"]))
+        c.check("resolve 按库名取到图",
+                status == 200 and (res_name or {}).get("ok") is True and (res_name or {}).get("graph"),
+                f"matched={(res_name or {}).get('matched')}")
+        status, res_stem = jget(base, q("lib:" + target["file"].replace(".api.json", "")))
+        c.check("resolve 认去掉 .api 的短名（改名的常见写法）",
                 status == 200 and (res_stem or {}).get("ok") is True
-                and (res_stem or {}).get("id") == "preset:" + target["file"],
+                and (res_stem or {}).get("id") == "lib:" + target["name"],
                 f"id={(res_stem or {}).get('id')} matched={(res_stem or {}).get('matched')}")
-        status, res_miss = jget(base, q("preset:这个预设根本不存在.api.json"))
+        # 老画布里的 preset: 引用也要认得：文件已经删了，但用户自己导过同名工作流
+        status, res_old = jget(base, q("preset:" + target["file"]))
+        c.check("老画布的 preset: 引用按名字映射到库（惰性迁移）",
+                status == 200 and (res_old or {}).get("ok") is True
+                and str((res_old or {}).get("id") or "").startswith("lib:"),
+                f"id={(res_old or {}).get('id')} matched={(res_old or {}).get('matched')}")
+        status, res_miss = jget(base, q("lib:这个工作流根本不存在"))
         c.check("resolve 找不到时不 500，回候选让人重选",
                 status == 200 and (res_miss or {}).get("ok") is False
                 and len((res_miss or {}).get("candidates") or []) >= 1,

@@ -202,7 +202,7 @@
   },
   "489": {
    "inputs": {
-    "image": "Krea2_turbo_00483_.png"
+    "image": ""
    },
    "class_type": "LoadImage",
    "_meta": {
@@ -211,7 +211,7 @@
   },
   "502": {
    "inputs": {
-    "image": "023.jpg"
+    "image": ""
    },
    "class_type": "LoadImage",
    "_meta": {
@@ -220,7 +220,7 @@
   },
   "503": {
    "inputs": {
-    "image": "023.jpg"
+    "image": ""
    },
    "class_type": "LoadImage",
    "_meta": {
@@ -229,7 +229,7 @@
   },
   "504": {
    "inputs": {
-    "image": "023.jpg"
+    "image": ""
    },
    "class_type": "LoadImage",
    "_meta": {
