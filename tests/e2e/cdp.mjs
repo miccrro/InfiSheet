@@ -227,6 +227,21 @@ export async function newPage(port) {
       await send('DOM.setFileInputFiles', { nodeId, files: files.map((f) => path.resolve(f)) });
       return true;
     },
+    // 改视口尺寸。窗口大小是启动参数定死的（--window-size），跑起来之后只有
+    // Emulation.setDeviceMetricsOverride 能换——窄屏回归（1024×768）要靠它。
+    async setViewport(width, height, { dsf = 1, mobile = false } = {}) {
+      await send('Emulation.setDeviceMetricsOverride', {
+        width, height, deviceScaleFactor: dsf, mobile,
+      });
+      await new Promise((r) => setTimeout(r, 260));   // 让 resize 相关的重排跑完
+      return { width, height };
+    },
+    // 撤掉覆盖，回到 --window-size 定的真实视口（窄屏用例跑完必须还原，
+    // 否则后面所有按坐标算的用例都跟着漂）
+    async clearViewport() {
+      try { await send('Emulation.clearDeviceMetricsOverride'); } catch { /* 没设过 */ }
+      await new Promise((r) => setTimeout(r, 260));
+    },
     async screenshot(file, { selector = null, scale = 1 } = {}) {
       let clip;
       if (selector) {

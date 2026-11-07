@@ -42,6 +42,11 @@
   "link": "<path d=\"M13.7 7.9l1.9-1.9a3.4 3.4 0 0 1 4.8 4.8l-1.9 1.9\"/><path d=\"M10.3 16.1l-1.9 1.9a3.4 3.4 0 0 1-4.8-4.8l1.9-1.9\"/><path d=\"M8.9 15.1l6.2-6.2\"/>",
   "snap": "<circle cx=\"5.6\" cy=\"5.6\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"12\" cy=\"5.6\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"18.4\" cy=\"5.6\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"5.6\" cy=\"12\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"12\" cy=\"12\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"18.4\" cy=\"12\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"5.6\" cy=\"18.4\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"12\" cy=\"18.4\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"18.4\" cy=\"18.4\" r=\"1.2\" fill=\"currentColor\" stroke=\"none\"/>",
 
+  /* ---------- 编辑 ---------- */
+  // 撤销 / 重做：一段圆弧 + 箭头。两个互为镜像，一眼能看出方向。
+  "undo": "<path d=\"M7.4 6.6 3.6 10.4l3.8 3.8\"/><path d=\"M3.6 10.4h10.2a6 6 0 0 1 0 12H11\"/>",
+  "redo": "<path d=\"M16.6 6.6l3.8 3.8-3.8 3.8\"/><path d=\"M20.4 10.4H10.2a6 6 0 0 0 0 12H13\"/>",
+
   /* ---------- 节点类型 ---------- */
   "text": "<path d=\"M5.2 7.1V5.2h13.6v1.9\"/><path d=\"M12 5.2v13.6\"/><path d=\"M9.3 18.8h5.4\"/>",
   "image": "<rect x=\"3.5\" y=\"4.5\" width=\"17\" height=\"15\" rx=\"2.6\"/><circle cx=\"8.6\" cy=\"9.2\" r=\"1.5\"/><path d=\"M5.6 16.8 9.2 13.2 12.6 16.4 14.9 14.1 17.8 17.2\"/>",

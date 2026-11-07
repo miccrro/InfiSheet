@@ -62,11 +62,13 @@
     undoStack.stack.push(snap);
     if (undoStack.stack.length > undoStack.limit) undoStack.stack.shift();
     undoStack.idx = undoStack.stack.length - 1;
+    syncUndoBtns();
   }
 
   function seedHistory() {
     undoStack.stack = [snapshotState()];
     undoStack.idx = 0;
+    syncUndoBtns();
   }
 
   function applySnapshot(snap) {
@@ -80,6 +82,7 @@
     undoStack.idx -= 1;
     applySnapshot(undoStack.stack[undoStack.idx]);
     flash(`已撤销（还可退 ${undoStack.idx} 步）`);
+    syncUndoBtns();
   }
 
   function redo() {
@@ -87,6 +90,16 @@
     undoStack.idx += 1;
     applySnapshot(undoStack.stack[undoStack.idx]);
     flash(`已重做（还可进 ${undoStack.stack.length - 1 - undoStack.idx} 步）`);
+    syncUndoBtns();
+  }
+
+  // 撤销 / 重做常驻在底栏：栈见底就置灰，不隐藏——藏起来用户会以为功能没了。
+  // DOM 还没就绪时（commit 在首屏就可能在跑）静默跳过，别为了一颗按钮的灰态抛错。
+  function syncUndoBtns() {
+    const u = document.querySelector('#bar [data-act="undo"]');
+    const r = document.querySelector('#bar [data-act="redo"]');
+    if (u) u.disabled = undoStack.idx <= 0;
+    if (r) r.disabled = undoStack.idx >= undoStack.stack.length - 1;
   }
 
   /* ---------------- 复制 / 粘贴节点 ---------------- */
@@ -5178,6 +5191,13 @@
                 </div>
               </div>
               <div class="set-sep"></div>
+              <div class="set-group">界面</div>
+              <div class="set-density" id="setDensity" role="radiogroup" aria-label="界面密度">
+                <button type="button" data-density="comfortable" role="radio" aria-checked="true">舒适（默认）</button>
+                <button type="button" data-density="compact" role="radio" aria-checked="false">紧凑</button>
+              </div>
+              <p class="set-tip">舒适：图标大一档、主按钮热区 40px、核心入口带文字。紧凑：尺寸小一档、以图标为主——原来的高信息密度用法。只影响界面，不动画布内容。</p>
+              <div class="set-sep"></div>
               <div class="set-group">画布</div>
               <label class="set-row"><input type="checkbox" id="setSnap" /> 网格吸附</label>
               <label class="set-row"><input type="checkbox" id="setLinks" /> 显示连线</label>
@@ -5310,6 +5330,13 @@
     // 先用手里那份渲染，再悄悄拉一次最新的：别让面板空着等网络，
     // 也别让「刚在资产库里导入的工作流」在设置里看不到
     refreshWorkflows().then(() => { if (document.body.contains(box)) renderSetWorkflows(box); });
+    const dens = box.querySelector('#setDensity');
+    if (dens) {
+      dens.querySelectorAll('[data-density]').forEach((b) => {
+        b.onclick = () => applyDensity(b.dataset.density);
+      });
+      applyDensity(currentDensity(), box);   // 每次打开面板都把当前那档点亮
+    }
     const snap = box.querySelector('#setSnap');
     const links = box.querySelector('#setLinks');
     const mini = box.querySelector('#setMinimap');
@@ -7909,6 +7936,26 @@
     if (el) el.textContent = text;
   }
 
+  /* ---------------- 界面密度 ---------------- */
+  // 舒适（默认）/ 紧凑两档。只切 body[data-density]，所有尺寸都走 style.css 里的
+  // --ui-* token，这里不碰具体像素——不然下次调数值又得改两处。
+  const DENSITY_KEY = 'infisheet-density';
+  function currentDensity() {
+    try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; }
+  }
+  function applyDensity(v, root) {
+    const val = v === 'compact' ? 'compact' : 'comfortable';
+    document.body.dataset.density = val;
+    try { localStorage.setItem(DENSITY_KEY, val); } catch { /* 隐私模式下写不了，这次不记住而已 */ }
+    // 设置面板刚拼好、还没挂进文档时，全局查询是空的——所以允许传一个容器进来
+    (root || document).querySelectorAll('#setDensity [data-density]').forEach((b) => {
+      const on = b.dataset.density === val;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    return val;
+  }
+
   function flushSave() {
     clearTimeout(saveTimer);
     try { localStorage.setItem(STORE_KEY, JSON.stringify(serialize())); } catch { /* 超配额忽略 */ }
@@ -7951,7 +7998,11 @@
       const d = new Date();
       const hh = String(d.getHours()).padStart(2, '0');
       const mm = String(d.getMinutes()).padStart(2, '0');
-      setSaveState('已保存 ' + hh + ':' + mm);
+      // 状态位只说「已保存」。时间戳放进 tooltip——顶上那一条本来就窄，
+      // 挂个「已保存 04:43」既占位置又每存一次就跳一下，反而看不出「刚存过没有」。
+      setSaveState('已保存');
+      const el = document.getElementById('saveState');
+      if (el) el.title = `上次保存 ${hh}:${mm}`;
     } catch {
       setSaveState('保存失败');
     }
@@ -8200,11 +8251,14 @@
     if (act === 'storyboard') { showCanvas(); addScriptNode(); return; }
     if (act === 'settings') { openSettingsSheet(); return; }
     if (act === 'assets') { showCanvas(); openAssetSheet(); return; }
-    if (act === 'tutorial') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
     if (act === 'history') { showCanvas(); openSettingsSheet('history'); return; }
     if (act === 'pan-mode') { setTool(true); return; }
     if (act === 'select-mode') { setTool(false); return; }
-    if (act === 'help') { flash('拖空白框选 · 空格/中键平移 · 滚轮缩放 · 双击空白建节点 · Ctrl+G 打组 · F 适配视图'); return; }
+    if (act === 'undo') { undo(); return; }
+    if (act === 'redo') { redo(); return; }
+    // 底栏「帮助」= 快捷键 + 教程。以前是两颗按钮（快捷键 / 教程与说明），
+    // 各开一次同一个面板——合并成一颗，少一个要记的入口。
+    if (act === 'help') { document.getElementById('helpSheet').classList.toggle('hidden'); return; }
     if (act === 'all-tools') {
       openPopMenu(btn, [
         ['撤销（Ctrl+Z）', () => undo()],
@@ -8214,6 +8268,8 @@
         ['创建副本（Ctrl+D）', () => duplicateSelection()],
         ['打组（Ctrl+G）', () => createGroup(state.selected)],
         ['适配视图', () => fitView()],
+        ['生成历史…', () => { showCanvas(); openSettingsSheet('history'); }],
+        ['教程与说明…', () => document.getElementById('helpSheet').classList.toggle('hidden')],
         ['导出画布 JSON', () => exportCanvas()],
         ['导入画布 JSON', () => importCanvas()],
         ['导入工作流 JSON…', () => importWorkflowFile()],
@@ -8234,6 +8290,8 @@
   }
   bindActions($('#dockWrap'));   // orb 已拆到 #bar 外面，改绑外层容器
   bindActions($('#topBar'));
+  // 界面密度要在首屏就生效，别等用户打开设置才切——那样会先闪一下大尺寸再缩回去
+  applyDensity(currentDensity());
 
   // 生成队列：入口在顶栏状态条里，面板是 body 直接子节点（见 index.html 的注释）
   const queueBtnEl = document.getElementById('queueBtn');
@@ -8740,8 +8798,9 @@
       dot.className = 'dot ok';
       chip.classList.remove('pending');
       chip.classList.add('on');
-      // 名字放在灯里：用户要的就是「哪个应用接的」，不该只藏在 tooltip 里
-      text.textContent = named ? `MCP 已连接 · ${app}` : 'MCP 已连接';
+      // 灯里只留「已连接」。客户端名 / 连接时间 / 调用次数全在 tooltip 里——
+      // 顶栏是状态位，不是诊断面板；挂一长串应用名会把旁边的 ComfyUI 挤到换行。
+      text.textContent = 'MCP 已连接';
       chip.title = [
         named ? `${who} 正通过 MCP 接入这块画布` : '某个 MCP 客户端正通过 MCP 接入这块画布',
         `${when ? `连上于 ${when} · ` : ''}已调用 ${m.calls || 0} 次工具`
@@ -8777,7 +8836,7 @@
       dot.className = 'dot';
       chip.classList.remove('on');
       chip.classList.add('pending');
-      text.textContent = named ? `MCP 已断开 · ${app}` : 'MCP 已断开';
+      text.textContent = 'MCP 已断开';
       chip.title = [
         `${named ? app : '上次那个客户端'} 已经不在线了：桥的心跳停了 ${Math.round(m.stale || 0)}s，超过租约 ${Math.round(m.lease || 0)}s`,
         `${when ? `上次连上于 ${when} · ` : ''}已调用 ${m.calls || 0} 次工具`,
@@ -9068,17 +9127,27 @@
     const htext = document.getElementById('homeStatus');
     if (res.comfy) {
       const dev = (res.devices || [])[0] || {};
-      // 顶栏只放「版本 + 队列」，显卡型号塞进 title，避免状态条拉得过长
-      const label = `ComfyUI ${res.version || ''} · 队列 ${res.running}/${res.pending}`;
-      dot.className = 'dot ok';
+      // 状态位只回答「现在能不能跑」：在线 / 生成中 / 未连接，文字 + 圆点颜色双重表达。
+      // 版本号、队列数、显卡型号全挪进 tooltip——以前那一长串「ComfyUI 0.44.0 · 队列 0/0」
+      // 对「能不能开始」这件事没有帮助，还把状态条撑得很长。
+      const running = Number(res.running) || 0;
+      const pending = Number(res.pending) || 0;
+      const busy = running > 0 || pending > 0;
+      const label = busy ? `ComfyUI 生成中${pending ? ` · 排队 ${pending}` : ''}` : 'ComfyUI 在线';
+      dot.className = busy ? 'dot warn' : 'dot ok';
       text.textContent = label;
-      text.title = `${dev.name || ''}${dev.vram_total ? ' · ' + Math.round(dev.vram_total / 1024 / 1024 / 1024) + 'GB' : ''}`;
-      if (hdot) hdot.className = 'dot ok';
+      text.title = [
+        `ComfyUI ${res.version || ''} · 队列 ${running}/${pending}`,
+        dev.name ? `${dev.name}${dev.vram_total ? ' · ' + Math.round(dev.vram_total / 1024 / 1024 / 1024) + 'GB' : ''}` : '',
+        '点一下改地址（换电脑 / 换端口 / 另一台机器都在这）',
+      ].filter(Boolean).join('\n');
+      if (hdot) hdot.className = busy ? 'dot warn' : 'dot ok';
       if (htext) htext.textContent = label;
     } else {
-      const label = `ComfyUI 未连接：${(res.error || '').slice(0, 60)}`;
+      const label = 'ComfyUI 未连接';
       dot.className = 'dot bad';
       text.textContent = label;
+      text.title = `${(res.error || '').slice(0, 200)}\n点一下填地址或重新检测`;
       if (hdot) hdot.className = 'dot bad';
       if (htext) htext.textContent = label;
     }
@@ -9427,14 +9496,29 @@
     closePopMenu();
     const menu = document.createElement('div');
     menu.className = 'popmenu';
+    // 只要有开关项，整张菜单的普通项也跟着让出勾选列，否则两组文字左边缘差 14px
+    if (items.some((it) => it[4] !== undefined)) menu.classList.add('pm-checkable');
     if (title) {
       const h = document.createElement('div');
       h.className = 'popmenu-title';
       h.textContent = title;
       menu.appendChild(h);
     }
-    items.forEach(([label, fn, cls, ico]) => {
+    items.forEach(([label, fn, cls, ico, on]) => {
       const b = document.createElement('button');
+      // 开关型菜单项（视图菜单里的勾选项）：第 5 个参数传 true/false，
+      // 前面挂一个定宽勾选列。别用「✓ + 全角空格」拼字符串——两者宽度不等，
+      // 有勾的和没勾的文字左边缘会参差。
+      if (on !== undefined) {
+        const mark = document.createElement('span');
+        mark.className = 'pm-mark';
+        mark.textContent = on ? '✓' : '';
+        mark.setAttribute('aria-hidden', 'true');
+        b.appendChild(mark);
+        b.classList.add('has-mark');
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.setAttribute('role', 'menuitemcheckbox');
+      }
       if (ico) {
         // 带图标的那几项（工作流菜单）：图标是现成的 HTML（彩色模型标 / 传的图），
         // 文字另起一个 span，别用 innerHTML 拼——工作流名字是用户自己起的，会带尖括号。
@@ -9443,6 +9527,10 @@
         s.textContent = label;
         b.appendChild(s);
         b.classList.add('has-ico');
+      } else if (on !== undefined) {
+        const s = document.createElement('span');
+        s.textContent = label;
+        b.appendChild(s);
       } else {
         b.textContent = label;
       }
@@ -9454,6 +9542,32 @@
     placePopMenu(menu, anchor);
     popAnchor = anchor;
     armPopClose(anchor);
+    // 键盘：锚点是「Tab 过来的」（:focus-visible 为真）才把焦点送进菜单第一项。
+    // 鼠标点的菜单不抢焦点，行为跟以前一模一样。
+    // 菜单项挂在 body 末尾，不主动送焦点的话 Tab 会跑到别处，
+    // 被收进菜单的功能就等于键盘到不了。
+    let byKeyboard = false;
+    try { byKeyboard = !!(anchor && anchor.matches && anchor.matches(':focus-visible')); } catch { /* 老浏览器 */ }
+    if (byKeyboard) {
+      const first = menu.querySelector('button');
+      if (first) first.focus({ preventScroll: true });
+    }
+    menu.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault(); ev.stopPropagation();
+        closePopMenu();
+        if (anchor && anchor.focus) anchor.focus({ preventScroll: true });
+        return;
+      }
+      if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+      ev.preventDefault(); ev.stopPropagation();
+      const list = [...menu.querySelectorAll('button')];
+      if (!list.length) return;
+      const i = list.indexOf(document.activeElement);
+      const step = ev.key === 'ArrowDown' ? 1 : -1;
+      const next = list[i < 0 ? 0 : (i + step + list.length) % list.length];
+      if (next) next.focus({ preventScroll: true });
+    });
   }
 
   function initProjectBar() {
@@ -9553,6 +9667,21 @@
     applyView();
     renderAll();                      // 已含 renderLinks
     if (location.hash !== '#canvas') history.replaceState(null, '', '#canvas');
+    flashNavLabels();                 // 只在第一次进画布时给一次文字提示
+  }
+
+  // 顶栏的素材 / 故事板 / 设置常态是纯图标。第一次进画布时把文字亮 2 秒，
+  // 让新用户认一遍这几个入口，之后靠 tooltip + aria-label。
+  // 只做一次：存个标记，熟练用户不该每次开画布都被闪一下。
+  function flashNavLabels() {
+    try {
+      if (localStorage.getItem('infisheet-nav-labels')) return;
+      localStorage.setItem('infisheet-nav-labels', '1');
+    } catch { return; }   // 隐私模式：不记，也别每次都闪
+    const bar = document.getElementById('projectBar');
+    if (!bar) return;
+    bar.classList.add('show-labels');
+    setTimeout(() => bar.classList.remove('show-labels'), 2000);
   }
 
   const CAP_ICONS = {
@@ -9586,11 +9715,16 @@
       btn.className = 'cap-btn';
       btn.innerHTML = `<span class="cap-ico">${CAP_ICONS[d.key] || ''}</span><span class="cap-label">${d.label}</span>`;
       // 用不了的按钮不再用原生 disabled：点不动的按钮给不出任何解释，
-      // 新用户只看到一排灰块。改成「点得下去，点完告诉你下一步」。
+      // 新用户只看到一排灰块。改成「点得下去，点完告诉你下一步」，
+      // 并且在按钮上挂一个「未配置」小字——灰一点不算状态表达，颜色不能是唯一载体。
       const off = (why, act) => {
         btn.classList.add('is-off');
         btn.setAttribute('aria-disabled', 'true');
         btn.title = why;
+        const tag = document.createElement('span');
+        tag.className = 'cap-tag';
+        tag.textContent = '未配置';
+        btn.appendChild(tag);
         btn.onclick = () => { flash(why); if (act) act(); };
       };
       if (d.key === 'script') {
@@ -9603,7 +9737,7 @@
         // 而图片节点自己就带生成面板（提示词、参考图、工作流胶囊、生成按钮全在里面），
         // 再配两个节点只是多两个要删的东西。这里直接给一个选中的图片节点。
         btn.onclick = () => addImageStarter();
-        btn.title = '放入一个图片节点：直接写提示词，或先上传图片';
+        btn.title = '新建图片节点，直接输入提示词生成';
       } else {
         const wf = pickWorkflowByKind(d.key);
         if (wf) {
@@ -10034,6 +10168,15 @@
   // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
   // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
   const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint', 'download']);
+  // 窄屏收纳：这四个都是「整张交给模型重做一遍」，用得少、名字又长，宽度不够时收进
+  // 「更多编辑」。裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载始终留在条上——它们是高频且
+  // 一眼能认出图标的那几个。收起的按钮不做成 display:none 就完事：菜单里要能用 Tab 走到。
+  const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale']);
+  const IMG_MORE_ORDER = ['erase', 'detext', 'cutout', 'upscale'];
+  // 收进菜单后没有图标可看，得把「点下去会发生什么」写在文字里
+  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成' };
+  // 低于这个宽度就收起（1024×768 那档是主要目标：整条 640px 会横着压掉半个画布）
+  const IMG_NARROW_W = 1200;
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
   // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
   // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
@@ -10077,6 +10220,7 @@
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'it-btn';
+      if (IMG_TOOL_MORE.has(kind)) b.classList.add('it-more-item');
       b.dataset.tool = kind;
       b.title = tip;
       b.setAttribute('aria-label', `${label}：${tip}`);
@@ -10084,9 +10228,55 @@
       b.onclick = (ev) => { ev.stopPropagation(); runImgTool(kind, b); };
       bar.appendChild(b);
     });
+    // 「更多编辑」占第三段（整图交给模型那组）的末尾，下载另起一段。
+    // 它在宽屏下是 display:none，宽度一紧就顶替掉那四个按钮。
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'it-btn it-more-toggle';
+    more.dataset.moreToggle = '1';
+    more.title = '更多编辑：擦除 / 去字 / 抠图 / 高清';
+    more.setAttribute('aria-label', '更多编辑');
+    more.innerHTML = `${icon('more')}<span>更多编辑</span>`;
+    more.onclick = (ev) => { ev.stopPropagation(); openImgMore(more); };
+    const seps = bar.querySelectorAll(':scope > .it-sep');
+    const lastSep = seps[seps.length - 1];
+    if (lastSep) bar.insertBefore(more, lastSep); else bar.appendChild(more);
     document.body.appendChild(bar);
+    // 视口宽度变了要重新决定「摊开还是收起」——拖窗口是最常见的触发方式。
+    // 挂在 ensureImgTools 里只注册一次（这函数有 isConnected 短路）。
+    window.addEventListener('resize', () => {
+      if (bar.classList.contains('hidden')) return;
+      fitImgTools();
+      positionImgTools();
+    });
     imgToolsEl = bar;
     return bar;
+  }
+
+  // 窄屏时被收起来的那四个。菜单项里把「点下去要发生什么」写进文字：
+  // 收进菜单就没有图标可扫了，只剩标签的话「高清 / 抠图」看不出会新建节点、会排队。
+  function openImgMore(anchor) {
+    const ok = maskCapable();
+    const items = IMG_MORE_ORDER.map((k) => {
+      const def = IMG_TOOLS.find((t) => t[0] === k) || [k, k, 'edit'];
+      const blocked = (k === 'erase' || k === 'detext') && !ok;
+      const label = blocked ? `${def[1]} · 暂不可用` : `${def[1]} · ${IMG_MORE_HINT[k]}`;
+      return [label, () => {
+        if (blocked) { flash('这台机器上没有能吃图的工作流，涂了也没法重绘'); return; }
+        runImgTool(k, anchor);
+      }, '', icon(def[2])];
+    });
+    openPopMenu(anchor, items, '更多编辑');
+  }
+
+  // 宽度够就整条摊开，不够就把四个「模型编辑」收进「更多编辑」。
+  // 判据两重：视口窄于 1200（1024×768 那档是主要目标），或者整条真的塞不下视口。
+  function fitImgTools() {
+    const bar = imgToolsEl;
+    if (!bar || bar.classList.contains('hidden')) return;
+    bar.classList.remove('is-narrow');
+    const overflow = bar.scrollWidth > window.innerWidth - 24;
+    bar.classList.toggle('is-narrow', window.innerWidth < IMG_NARROW_W || overflow);
   }
 
   function positionImgTools() {
@@ -10197,6 +10387,7 @@
       // 「扩图」是个开关：开着的时候按钮亮着，再点一次收起
       const ob = bar.querySelector('[data-tool="outpaint"]');
       if (ob) ob.classList.toggle('on', outpaintOn(n));
+      fitImgTools();
       positionImgTools();
     }
   }

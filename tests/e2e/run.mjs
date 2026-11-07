@@ -1782,15 +1782,25 @@ try {
   check('画布放大上限 800%', zoom.spun === '800%' && zoom.scale8 && zoom.hasPresets && zoom.preset === '800%',
     JSON.stringify(zoom));
 
-  // 悬浮控制条：统一 12px 圆角矩形 + 条内按钮 8px 圆角（不再是胶囊 / 正圆），四条条同高
-  const shapes = await page.evaluate(`(() => ({
-    bar: getComputedStyle(document.getElementById('bar')).borderRadius,
-    vt: getComputedStyle(document.getElementById('viewTools')).borderRadius,
-    prime: getComputedStyle(document.querySelector('#bar .icon.prime')).borderRadius,
-    hs: ['projectBar', 'statusChip', 'viewTools', 'bar'].map((id) => Math.round(document.getElementById(id).getBoundingClientRect().height))
-  }))()`);
-  check('dock / 视图工具为 12px 圆角矩形，白色加号为 8px 圆角，四条条同高',
-    shapes.bar === '12px' && shapes.vt === '12px' && shapes.prime === '8px'
+  // 悬浮控制条：12px 圆角矩形（不是胶囊）；底栏按界面密度放大热区——
+  // 主按钮 ≥40×40、次级 ≥36×36，所以它比另外三条单行条高，不参与「同高」比较
+  const shapes = await page.evaluate(`(() => {
+    const prime = document.querySelector('#bar .icon.prime');
+    const sec = document.querySelector('#bar [data-act="select-mode"]');
+    const pr = prime.getBoundingClientRect(), sr = sec.getBoundingClientRect();
+    return {
+      bar: getComputedStyle(document.getElementById('bar')).borderRadius,
+      vt: getComputedStyle(document.getElementById('viewTools')).borderRadius,
+      primeR: getComputedStyle(prime).borderRadius,
+      prime: [Math.round(pr.width), Math.round(pr.height)],
+      sec: [Math.round(sr.width), Math.round(sr.height)],
+      hs: ['projectBar', 'statusChip', 'viewTools'].map((id) => Math.round(document.getElementById(id).getBoundingClientRect().height)),
+    };
+  })()`);
+  check('底栏 / 视图工具是 12px 圆角矩形；主按钮热区 ≥40、次级 ≥36；三条单行悬浮条同高',
+    shapes.bar === '12px' && shapes.vt === '12px'
+      && shapes.prime[0] >= 40 && shapes.prime[1] >= 40
+      && shapes.sec[0] >= 36 && shapes.sec[1] >= 36
       && shapes.hs.every((h) => h === shapes.hs[0]), JSON.stringify(shapes));
 
   // 从端口拖到空白 → 菜单里挑节点：建完必须顺手接上。
@@ -4569,10 +4579,13 @@ try {
     const nb = document.querySelector('.node[data-id="${pick.img}"]').getBoundingClientRect();
     return {
       hidden: bar.classList.contains('hidden'),
-      tools: [...bar.querySelectorAll('.it-btn')].map((b) => b.textContent.trim()),
+      // 只数真正摊开的那几个：「更多编辑」是窄屏才顶替上来的，宽屏下 display:none
+      tools: [...bar.querySelectorAll('.it-btn')]
+        .filter((b) => b.getClientRects().length).map((b) => b.textContent.trim()),
       seps: bar.querySelectorAll('.it-sep').length,
       // 分隔线插在哪儿是「分组」这件事本身，光数个数看不出错位
       layout: [...bar.querySelectorAll('.it-btn, .it-sep')]
+        .filter((el) => el.classList.contains('it-sep') || el.getClientRects().length)
         .map((el) => (el.classList.contains('it-sep') ? '|' : el.dataset.tool)).join('/'),
       // 居中；居中放不下时改成和节点左/右边缘对齐（见 positionImgTools），两种都算「贴着自己」
       attached: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2
@@ -4609,6 +4622,113 @@ try {
     toolBar.seps === 3
       && toolBar.layout === 'crop/rotate/color/|/mask/erase/detext/|/outpaint/cutout/upscale/|/download',
     toolBar.layout);
+
+  // ---- 窄屏收纳：1024 宽时把四个「整图交给模型」的工具收进「更多编辑」 ----
+  // 整条带文字约 590px，1024 的窗口里横着几乎占满，很难找到不压别人标题的位置。
+  // 收起来之后只剩 440 左右，好摆得多。收的是擦除 / 去字 / 抠图 / 高清，
+  // 裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载 必须一直在条上。
+  const wideTools = await page.evaluate(`(() => {
+    const bar = document.getElementById('imgTools');
+    const vis = [...bar.querySelectorAll('.it-btn')].filter((b) => b.getClientRects().length);
+    const btns = vis.map((b) => b.getBoundingClientRect());
+    const blocked = [...document.querySelectorAll('#nodes .node')]
+      .filter((el) => el.dataset.id !== '${pick.img}')
+      .map((el) => el.querySelector('.node-title')).filter(Boolean)
+      .filter((t) => {
+        const q = t.getBoundingClientRect();
+        return btns.some((b) => !(q.right < b.left || q.left > b.right || q.bottom < b.top || q.top > b.bottom));
+      }).length;
+    return { narrow: bar.classList.contains('is-narrow'),
+      tools: vis.map((b) => b.dataset.tool || 'more'),
+      toggleShown: vis.some((b) => b.dataset.moreToggle),
+      blocked };
+  })()`);
+  check('宽屏：工具条整条摊开，不出现「更多编辑」',
+    wideTools.narrow === false && !wideTools.toggleShown && wideTools.tools.length === 10,
+    JSON.stringify(wideTools));
+
+  await page.setViewport(1024, 768);
+  await new Promise((r) => setTimeout(r, 400));
+  const narrowTools = await page.evaluate(`(() => {
+    const bar = document.getElementById('imgTools');
+    const r = bar.getBoundingClientRect();
+    const vis = [...bar.querySelectorAll('.it-btn')].filter((b) => b.getClientRects().length);
+    const nb = document.querySelector('.node[data-id="${pick.img}"]').getBoundingClientRect();
+    const toggle = bar.querySelector('.it-more-toggle');
+    // 「盖住标题」按**按钮**算，不按整条算：整条 pointer-events:none，空白处点下去会穿透，
+    // 真正会抢点击的只有按钮本身。整条压到标题上一直是允许的（宽屏也一样）。
+    const btns = vis.map((b) => b.getBoundingClientRect());
+    const blockedTitles = [...document.querySelectorAll('#nodes .node')]
+      .filter((el) => el.dataset.id !== '${pick.img}')
+      .map((el) => ({ id: el.dataset.id, t: el.querySelector('.node-title') }))
+      .filter((x) => x.t)
+      .filter((x) => {
+        const q = x.t.getBoundingClientRect();
+        return btns.some((b) => !(q.right < b.left || q.left > b.right || q.bottom < b.top || q.top > b.bottom));
+      })
+      .map((x) => x.id);
+    return {
+      narrow: bar.classList.contains('is-narrow'),
+      w: Math.round(r.width),
+      tools: vis.map((b) => b.dataset.tool || 'more'),
+      // 收起的那四个必须真的不占位（getClientRects 为空），不然只是「看不见但还挡着」
+      gone: ['erase', 'detext', 'cutout', 'upscale']
+        .every((k) => !bar.querySelector('[data-tool="' + k + '"]').getClientRects().length),
+      // 「更多编辑」是个真按钮：可 Tab 到（tabIndex >= 0）、不是 display:none 的假元素
+      toggleFocusable: !!toggle && toggle.tabIndex >= 0 && toggle.getClientRects().length > 0,
+      inView: r.left >= 0 && r.right <= window.innerWidth,
+      attached: Math.abs((r.left + r.width / 2) - (nb.left + nb.width / 2)) <= 2
+        || Math.abs(r.left - nb.left) <= 2 || Math.abs(r.right - nb.right) <= 2,
+      blockedTitles,
+      vw: window.innerWidth,
+    };
+  })()`);
+  check('1024 宽：四个「整图编辑」收进「更多编辑」，核心六个还在（条从 ~590 收到 ~440）',
+    narrowTools.narrow && narrowTools.gone
+      && narrowTools.tools.join('/') === 'crop/rotate/color/mask/outpaint/more/download'
+      && narrowTools.toggleFocusable && narrowTools.w < 520,
+    JSON.stringify(narrowTools));
+  // 收纳的意义就是「腾地方」：条窄了之后，被按钮盖住的标题数不能比宽屏时更多。
+  // （不要求「一个都不盖」：画布被用户拖乱之后，任何固定宽度的浮条都可能压到别人的标题，
+  //   宽屏下也一样——这里只验「收起来确实更省地方」。）
+  check('1024 宽：收纳之后工具条仍在视口内、仍贴着自己这个节点，且被按钮压住的标题不比宽屏多',
+    narrowTools.inView && narrowTools.attached
+      && narrowTools.blockedTitles.length <= wideTools.blocked,
+    JSON.stringify({ inView: narrowTools.inView, attached: narrowTools.attached,
+      narrowBlocked: narrowTools.blockedTitles, wideBlocked: wideTools.blocked, w: narrowTools.w }));
+
+  const moreMenu = await page.evaluate(`(async () => {
+    const t = document.querySelector('#imgTools .it-more-toggle');
+    t.click();
+    await new Promise((r) => setTimeout(r, 260));
+    const m = document.querySelector('.popmenu');
+    const out = m ? {
+      title: (m.querySelector('.popmenu-title') || {}).textContent || '',
+      items: [...m.querySelectorAll('button')].map((b) => b.textContent.trim()),
+      icons: [...m.querySelectorAll('button')].filter((b) => b.querySelector('svg')).length,
+    } : null;
+    t.click();          // 再点一次收起
+    await new Promise((r) => setTimeout(r, 200));
+    return out;
+  })()`);
+  check('「更多编辑」菜单：四项都在，且写清「需要生成 / 将在新节点中生成」',
+    !!moreMenu && moreMenu.items.length === 4
+      && /擦除 · 需要生成/.test(moreMenu.items[0])
+      && /去字 · 需要生成/.test(moreMenu.items[1])
+      && /抠图 · 将在新节点中生成/.test(moreMenu.items[2])
+      && /高清 · 将在新节点中生成/.test(moreMenu.items[3])
+      && moreMenu.icons === 4,
+    JSON.stringify(moreMenu));
+
+  await page.clearViewport();
+  await new Promise((r) => setTimeout(r, 400));
+  const backWide = await page.evaluate(`(() => {
+    const bar = document.getElementById('imgTools');
+    return { narrow: bar.classList.contains('is-narrow'),
+      tools: [...bar.querySelectorAll('.it-btn')].filter((b) => b.getClientRects().length).length };
+  })()`);
+  check('视口还原后工具条自己摊开（不用刷新、不用重新选中）',
+    backWide.narrow === false && backWide.tools === 10, JSON.stringify(backWide));
 
   // 下载：把图存成本地文件。headless 里不真落盘（会污染下载目录），只把 <a> 的
   // click 拦下来，验「文件名取自节点标题、扩展名跟着 MIME 走」这两件真正会错的事。
@@ -6485,7 +6605,10 @@ try {
   check('顶栏 MCP 灯：客户端握手后自动点亮（不用刷新页面）',
     lampText.startsWith('MCP 已连接') && lampDiag.on === true && String(lampDiag.dot).includes('ok'),
     `第 ${lampTick} 次探测 · ${JSON.stringify(lampDiag)}`);
-  check('MCP 灯里写着是哪个应用接的', /MCP 已连接 · e2e/.test(lampDiag.text), lampDiag.text);
+  // 顶栏是状态位，不是诊断面板：灯里只留「MCP 已连接」，
+  // 客户端名 / 连接时间 / 调用次数都在 tooltip（下一条用例查那里）
+  check('MCP 灯默认只显示简短状态，不把客户端名挂在顶栏上',
+    lampDiag.text === 'MCP 已连接' && lampDiag.ellipsis === false, lampDiag.text);
   check('MCP 灯能说清是谁接进来的', /e2e/.test(lampDiag.title), lampDiag.title);
 
   // ---- MCP 安装入口：点顶栏那盏灯，落到设置的「连接」格 ----
@@ -6578,7 +6701,10 @@ try {
   }
   check('心跳停了、租约过期后灯自己变「已断开」（不刷新页面）',
     gone.startsWith('MCP 已断开'), `第 ${goneTick} 次探测 · ${gone}`);
-  check('断开的灯说得出是谁掉了线', /e2e/.test(gone), gone);
+  // 掉线的是谁：现在也在 tooltip 里，顶栏只留状态
+  const goneTitle = await page.evaluate(
+    `(() => { const el = document.getElementById('mcpChip'); return el ? el.title : ''; })()`);
+  check('断开的灯在 tooltip 里说得出是谁掉了线', /e2e/.test(goneTitle), goneTitle.split('\n')[0]);
 
   // 重新接上：这里必须**持续**心跳（真桥每 lease/3 秒一次）。只发一次的话，
   // 3 秒租约等不到下一次健康检查（10s 一轮），灯还没轮到就被判过期了——
@@ -6707,19 +6833,28 @@ try {
   const startState = await page.evaluate(`(() => ({
     nodes: document.querySelectorAll('#nodes .node').length,
     emptyShown: !document.getElementById('canvasEmpty').classList.contains('hidden'),
-    hint: (document.querySelector('#canvasEmpty .cap-hint') || {}).innerText || '',
+    sub: (document.getElementById('capSub') || {}).textContent || '',
   }))()`);
   check('新建画布：停在空态起始页，不自动放节点',
-    startState.nodes === 0 && startState.emptyShown && /双击画布/.test(startState.hint),
+    startState.nodes === 0 && startState.emptyShown && /双击空白处/.test(startState.sub),
     JSON.stringify(startState));
 
   const capBase = await page.evaluate(`(() => {
     const btns = [...document.querySelectorAll('#capRow button')];
     const off = document.getElementById('capOffline');
+    const isOff = (b) => b.getAttribute('aria-disabled') === 'true';
+    const tagOf = (b) => {
+      const t = b.querySelector('.cap-tag');
+      return t ? t.textContent.trim() : '';
+    };
     return {
       labels: btns.map((b) => b.querySelector('.cap-label').textContent.trim()),
       nativeDisabled: btns.filter((b) => b.disabled).length,
-      ariaOff: btns.filter((b) => b.getAttribute('aria-disabled') === 'true')
+      ariaOff: btns.filter(isOff).map((b) => b.querySelector('.cap-label').textContent.trim()),
+      tags: btns.map((b) => b.querySelector('.cap-label').textContent.trim() + '=' + tagOf(b)),
+      offWithoutTag: btns.filter((b) => isOff(b) && tagOf(b) !== '未配置')
+        .map((b) => b.querySelector('.cap-label').textContent.trim()),
+      onWithTag: btns.filter((b) => !isOff(b) && tagOf(b) !== '')
         .map((b) => b.querySelector('.cap-label').textContent.trim()),
       sub: (document.getElementById('capSub') || {}).textContent || '',
       offlineShown: !!off && !off.classList.contains('hidden'),
@@ -6730,8 +6865,16 @@ try {
     capBase.labels.join('/') === '图片生成/视频生成/音频生成/剧本生成/智能剪辑'
       && capBase.nativeDisabled === 0 && capBase.ariaOff.includes('视频生成'),
     JSON.stringify(capBase.labels) + ' · ariaOff=' + JSON.stringify(capBase.ariaOff));
-  check('起始页：有一句话说明「点上面能干什么」，不是只留一句双击提示',
-    /直接放下一个/.test(capBase.sub) && /提示词/.test(capBase.sub), capBase.sub);
+  // 空态只留一句「也可双击空白处添加节点」。以前这里还有一句「点上面任一可用能力直接放下一个…」，
+  // 跟能力卡自己的文案重复，方案 v2 已删——留一句就够，别把选择变多。
+  check('起始页：说明缩短为一句，不再和能力卡文案重复',
+    /^也可双击空白处添加节点$/.test(capBase.sub.trim()) && !/直接放下一个/.test(capBase.sub),
+    capBase.sub);
+  // 灰度不是状态表达：点不动的能力必须挂一个「未配置」小字，读屏和色弱用户都能拿到。
+  // 反过来可用的按钮不该挂，否则「未配置」变成装饰。
+  check('起始页：未配置的能力卡挂「未配置」文字标记，不只靠灰度',
+    capBase.ariaOff.length > 0 && capBase.offWithoutTag.length === 0 && capBase.onWithTag.length === 0,
+    JSON.stringify(capBase.tags));
   // 两种环境都要过：连不上时提示条必须出现且说人话；连得上时它必须收起（别平白吓人）
   check('起始页：连不上 ComfyUI 才出现提示条，且写的是「还没连上」而不是 urlopen 报错',
     comfyOnline

@@ -21,14 +21,19 @@
       <input id="projectName" aria-label="项目名称" value="未命名画布" spellcheck="false" />
       <button id="canvasMenuBtn" class="ghost" title="画布菜单">画布 1<span class="caret">▾</span></button>
       <span class="vsep"></span>
-      <button class="icon tiny" data-act="assets" title="资产库：所有生成结果与上传素材，可分组 / 多选 / 移除" aria-label="资产库">
+      <!-- 素材 / 故事板 / 设置：常态保持纯图标（左右停靠和窄屏都靠它省地方），
+           首次进入画布时给一次 2 秒的文字提示，之后靠 tooltip + aria-label。 -->
+      <button class="icon tiny" data-act="assets" title="素材库：所有生成结果与上传素材，可分组 / 多选 / 移除" aria-label="素材库">
         <span class="ico" data-icon="material" aria-hidden="true"></span>
+        <span class="lbl">素材</span>
       </button>
       <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点" aria-label="故事板">
         <span class="ico" data-icon="film" aria-hidden="true"></span>
+        <span class="lbl">故事板</span>
       </button>
       <button class="icon tiny" data-act="settings" title="设置：工作流 / 分类 / 背景 / 连接" aria-label="设置">
         <span class="ico" data-icon="setting" aria-hidden="true"></span>
+        <span class="lbl">设置</span>
       </button>
     </div>
     <div id="statusChip">
@@ -105,30 +110,34 @@
   <!-- 底部悬浮工具条 -->
   <div id="dockWrap">
   <header id="bar" class="floating">
-    <button class="icon prime" data-act="add-menu" title="添加节点（也可双击空白处）" aria-label="添加节点">
+    <!-- 层级：主操作（添加）→ 三个模式/库入口 → 低频（更多）→ 历史 / 帮助。
+         只有「添加」是强调态，「更多」在舒适模式带文字；其余保持纯图标 + tooltip，
+         因为 Dock 支持左右竖向停靠，长文字会把画布挤掉一条。 -->
+    <button class="icon dock-btn prime" data-act="add-menu" title="添加节点（也可双击空白处）" aria-label="添加节点">
       <span class="ico" data-icon="plus" aria-hidden="true"></span>
+      <span class="lbl">添加</span>
     </button>
-    <button class="icon active" data-act="select-mode" title="框选（默认）：拖画布空白处框选节点，Shift 加选" aria-label="框选">
+    <button class="icon dock-btn active" data-act="select-mode" title="框选（默认）：拖画布空白处框选节点，Shift 加选" aria-label="框选">
       <span class="ico" data-icon="select" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="pan-mode" title="移动（抓手模式：拖任意位置平移画布）" aria-label="移动画布">
+    <button class="icon dock-btn" data-act="pan-mode" title="抓手模式：拖任意位置平移画布" aria-label="抓手模式">
       <span class="ico" data-icon="hand" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="add-wf" title="工作流库：挑一个加到画布" aria-label="工作流库">
+    <button class="icon dock-btn" data-act="add-wf" title="工作流库：挑一个加到画布" aria-label="工作流库">
       <span class="ico" data-icon="grid4" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="all-tools" title="全部功能" aria-label="全部功能">
+    <span class="vsep"></span>
+    <button class="icon dock-btn" data-act="all-tools" title="更多功能" aria-label="更多功能">
       <span class="ico" data-icon="more" aria-hidden="true"></span>
-    </button>
-    <button class="icon" data-act="history" title="生成历史（ComfyUI 运行记录）" aria-label="生成历史">
-      <span class="ico" data-icon="time" aria-hidden="true"></span>
+      <span class="lbl">更多</span>
+      <span class="caret" aria-hidden="true">▾</span>
     </button>
     <span class="vsep"></span>
-    <button class="icon" data-act="help" title="快捷键" aria-label="快捷键">
-      <span class="ico" data-icon="help" aria-hidden="true"></span>
+    <button class="icon dock-btn" data-act="history" title="生成历史（ComfyUI 运行记录）" aria-label="生成历史">
+      <span class="ico" data-icon="time" aria-hidden="true"></span>
     </button>
-    <button class="icon" data-act="tutorial" title="教程与说明" aria-label="教程与说明">
-      <span class="ico" data-icon="book" aria-hidden="true"></span>
+    <button class="icon dock-btn" data-act="help" title="快捷键与说明" aria-label="帮助">
+      <span class="ico" data-icon="help" aria-hidden="true"></span>
     </button>
   </header>
 
@@ -141,7 +150,10 @@
       <svg id="links" xmlns="http://www.w3.org/2000/svg"></svg>
       <div id="nodes"></div>
     </div>
-    <!-- 空画布起始页：新建画布后出现，有节点即隐藏 -->
+    <!-- 空画布起始页：新建画布后出现，有节点即隐藏。
+         刻意不另做一张「开始创作」大卡——能力卡本身就是入口，再加一层标题和
+         一排重复的新建按钮只是把选择变多。这里只做两件事：离线原因优先说明，
+         底部一句话交代「也可以双击空白处」。 -->
     <div id="canvasEmpty">
       <!-- ComfyUI 没连上时才出现：能力按钮点下去要等它，先把「为什么点不动」说在明面上 -->
       <div id="capOffline" class="cap-offline hidden">
@@ -150,12 +162,8 @@
         <button type="button" class="co-act" data-co="addr">填地址</button>
         <button type="button" class="co-act" data-co="retry">重新检测</button>
       </div>
-      <div class="cap-hint">
-        <span class="ico" data-icon="pointer" aria-hidden="true"></span>
-        <span>双击画布 自由生成节点</span>
-      </div>
       <div class="cap-row" id="capRow"></div>
-      <p class="cap-sub" id="capSub">也可以点上面任一可用能力：图片生成直接放下一个能写提示词的节点，其余能力会摆好整条工作流</p>
+      <p class="cap-sub" id="capSub">也可双击空白处添加节点</p>
     </div>
     <div id="addMenu" class="hidden"></div>
     <div id="viewTools">
