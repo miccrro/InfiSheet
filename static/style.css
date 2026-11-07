@@ -3691,6 +3691,17 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 /* 分隔线跟着变矮，不然 40 高的条里会顶满上下边 */
 #bar .vsep, #projectBar .vsep { height: 18px; margin: 0 3px; }
 
+/* 项目栏内部间距收敛到一套 8pt 栅格
+   ---------------------------------------------------------
+   改之前同一排里有三种间距：控件 gap 4，相邻图标又叠了个 margin-left 2（实际 6），
+   分隔线两侧 gap 4 + margin 3 = 7，输入框两边只有 4。挨在一起看就是没对齐。
+   这里按 macOS / Material 的 8pt 栅格定：所有元素一律 8px，分隔线两侧也是 8px
+   （不再靠 margin 额外加宽），条两端内边距 8px。相邻图标的 margin 清零，
+   间距只由 gap 一处决定——以后要调，改这一个数就够。 */
+#projectBar { gap: 8px; padding: 0 8px; }
+#projectBar .icon.tiny + .icon.tiny { margin-left: 0; }
+#projectBar .vsep { margin: 0; }
+
 /* 小地图：同一套圆角，尺寸不变（它是画布视口，不是按钮条） */
 #minimap { border-radius: var(--ui-bar-r); }
 
