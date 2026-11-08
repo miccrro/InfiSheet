@@ -289,6 +289,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .cap-btn.is-off .cap-tag {
   color: #b5b5b5; background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.16);
 }
+/* 「不支持」≠「未配置」：前者配不了，后者去导入一个工作流就能用。
+   同一个灰胶囊里换一句话不够，再加一道虚线边框，扫一眼就能分出两类。 */
+.cap-btn.is-off .cap-tag.is-na {
+  color: #8a8a8a; background: transparent;
+  border-style: dashed; border-color: rgba(255, 255, 255, 0.20);
+}
 .cap-btn.is-off:hover { border-color: rgba(255, 255, 255, 0.08); background: #1f1f1f; }
 /* 点下去到出节点之间要等 ComfyUI 分析工作流（离线时几秒）：先给个动静 */
 .cap-btn.is-busy { pointer-events: none; opacity: 0.75; }
@@ -582,7 +588,10 @@ select option { background: #1f1f1f; color: var(--text); }
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
-.node.selected .gen-panel { display: block; }
+/* 只在**单选**时展开：多选是批量操作（移动 / 对齐 / 删除），
+   四五个面板同时弹出来会把画布本身盖掉，也看不出自己选了谁。
+   单选判定挂在 body.single-sel 上（paintSelection 里维护）。 */
+body.single-sel .node.selected .gen-panel { display: block; }
 /* ---------- 左下：画布视图控制 ---------- */
 #viewTools {
   position: absolute; left: 8px; bottom: 12px; z-index: 25;
@@ -1659,7 +1668,9 @@ body.resizing .node-resize { opacity: 1; }
   transition: border-color 0.15s, background 0.15s;
 }
 .proj-card:hover { border-color: rgba(110, 168, 254, 0.45); background: var(--panel-2); }
-.proj-card.current { border-color: rgba(110, 168, 254, 0.6); }
+/* 「当前打开」不再做视觉区分：卡片本来就是按最近保存排序的，第一张基本就是它，
+   再加一圈蓝边反而让首页多出一块「被选中的错觉」（多选选中态也是蓝的）。 */
+.proj-card.current { border-color: var(--line); }
 .proj-card .pm {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px;
   padding: 0; border: none; background: transparent; color: var(--text);
@@ -2226,7 +2237,9 @@ body[data-density="compact"] #projectBar.show-labels .icon.tiny .lbl { display: 
 /* ---------- 底栏按钮：带文字的自适应胶囊 ---------- */
 /* 从「统一 32×32 正方形」改成「图标 + 可选文字」：舒适模式下 新建/选择/移动/工作流/视图
    都带文字，宽度按内容撑开；紧凑模式把 .lbl 收起来，又回到纯图标的样子。 */
-#bar { height: auto; min-height: 52px; padding: 6px; gap: 2px; }
+/* 顶部项目栏 / 状态栏与底部 Dock 始终同高。舒适模式是 32px 内容 + 3px 内边距，
+   紧凑模式由下面的 28px 内容 + 5px 内边距填满同一条 40px 外壳。 */
+#bar { height: auto; min-height: var(--ui-bar-h); padding: 3px; gap: 2px; }
 #bar .icon {
   width: auto; min-width: var(--ui-hit-2); height: var(--ui-hit-2);
   padding: 0 10px; border-radius: var(--ui-radius);
@@ -2250,14 +2263,24 @@ body[data-density="compact"] #projectBar.show-labels .icon.tiny .lbl { display: 
 #bar .icon:disabled { opacity: 0.32; cursor: default; }
 #bar .icon:disabled:hover { background: transparent; color: #b5b5b5; }
 #bar .icon.prime {
-  min-width: var(--ui-hit); height: var(--ui-hit);
+  min-width: var(--ui-hit); height: var(--ui-hit-2);
   padding: 0 14px; border-radius: calc(var(--ui-radius) + 1px);
 }
-#bar .icon.prime svg { width: var(--ui-icon); height: var(--ui-icon); }
+#bar .icon.prime svg { width: var(--ui-icon-2); height: var(--ui-icon-2); }
 /* 紧凑模式没有文字了，左右内边距必须一起收掉：留着 10px 会得到 36×32 的长方块，
    一排里全是「比正方略宽」的按钮，看着像没对齐。 */
 body[data-density="compact"] #bar .icon,
 body[data-density="compact"] #bar .icon.prime { padding: 0; }
+/* 紧凑模式不保留「添加」的宽按钮例外：所有按钮都是 28px 正方形。
+   外壳高度仍是 40px，四边 5px 留白让它与顶部两条控制栏同高、且内边距等距。 */
+body[data-density="compact"] #bar {
+  min-height: var(--ui-bar-h);
+  padding: 5px;
+}
+body[data-density="compact"] #bar .icon.prime {
+  width: var(--ui-hit-2);
+  min-width: var(--ui-hit-2);
+}
 body[data-density="compact"] #bar .icon .caret { display: none; }
 /* 左右停靠时是一列窄条，文字会把工具条撑成半个画布，收回去 */
 #dockWrap[data-dock="left"] #bar .icon,
@@ -2410,7 +2433,7 @@ body[data-density="compact"] #bar .icon .caret { display: none; }
 #projectBar .icon.tiny .oi, #viewTools .vt .oi { --oi-stroke: 1.86; }                  /* 20px */
 #alignBar .ab-btn .oi, #addMenu .am-ico .oi, .pc-thumb .pc-ph .oi { --oi-stroke: 1.95; } /* 18px */
 .cap-btn .oi { --oi-stroke: 1.82; }                                                   /* 21px */
-#bar .icon.prime .oi { --oi-stroke: 1.72; }                                           /* 22px 主按钮 */
+#bar .icon.prime .oi { --oi-stroke: 1.82; }                                           /* 20px Dock 主按钮 */
 .rc-empty .oi { --oi-stroke: 1.7; }                                                   /* 22px */
 .thumb-empty .ph-big .oi { --oi-stroke: 1.55; }                                        /* 74px 空态大图 */
 
@@ -2422,7 +2445,7 @@ body[data-density="compact"] #bar .icon .caret { display: none; }
 .img-zoom { border-radius: 50%; }
 
 #bar .icon .oi { width: var(--ui-icon-2); height: var(--ui-icon-2); }
-#bar .icon.prime .oi { width: var(--ui-icon); height: var(--ui-icon); }
+#bar .icon.prime .oi { width: var(--ui-icon-2); height: var(--ui-icon-2); }
 #projectBar .icon.tiny .oi { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
 #viewTools .vt .oi { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
 .node-title .oi { width: 16px; height: 16px; color: inherit; }
@@ -2455,7 +2478,7 @@ button.primary { border-radius: 999px; }
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。
    底栏的 .dock-btn 也是：它现在是「图标 + 文字」的宽按钮，要的是 10px 圆角矩形，
    做成 999px 会变成一颗药丸。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2493,7 +2516,7 @@ button.primary:hover,
 
 /* 底部 dock / 视图工具：跟着「8px 栅格统一」那段走 12px 圆角矩形，不再是胶囊。
    这里必须显式写，否则文件后面那条统一的 #projectBar/#statusChip/#viewTools 规则
-   不包含 #bar（底栏要按界面密度装 40px 主按钮，高度自适应），圆角就漏回 999px 了。 */
+   不包含 #bar（底栏带文字且高度自适应），圆角就漏回 999px 了。 */
 #bar { border-radius: var(--ui-bar-r); }
 #viewTools { border-radius: var(--ui-bar-r); }
 
@@ -3724,14 +3747,19 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 
 .mcp-block .mcp-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .mcp-block .mcp-k { flex: 0 0 66px; font-size: 11.5px; color: var(--faint); }
-.mcp-block .mcp-row code {
+/* HTTP 端点 / 配置文件：和上面 ComfyUI 地址一样是「只读字段」，不是一段文本。
+   盒子沿用原来的 code 外观，补上输入框该有的焦点边框与可选中光标。 */
+.mcp-block .mcp-row .mcp-val {
   flex: 1 1 auto; min-width: 0;
   padding: 6px 9px; border-radius: 8px;
   background: rgba(0, 0, 0, 0.28); border: 1px solid var(--line);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 11.5px; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: text;
 }
+.mcp-block .mcp-row .mcp-val:focus { outline: none; border-color: var(--accent); }
+.mcp-block .mcp-row .mcp-val::selection { background: rgba(120, 170, 255, 0.35); }
 .mcp-block .mcp-flag { flex: 0 0 auto; font-size: 11px; color: var(--faint); }
 .mcp-block .mcp-flag.ok { color: var(--ok); }
 
@@ -4005,7 +4033,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
    舒适 32 / 20、紧凑 28 / 18——这里不再写第二份，否则会盖掉紧凑模式。 */
 
 /* 三条单行悬浮条：高度、圆角、内边距、垂直居中对齐。
-   底栏 #bar 不在这里——它要按界面密度装 40px 的主按钮，高度得跟着内容走。 */
+   底栏 #bar 不在这里——它带文字且高度得跟着内容走；主次按钮仍共用同一高度。 */
 #projectBar,
 #statusChip,
 #viewTools {
@@ -4021,7 +4049,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
    选择器前面必须带 #app：文件上方那条
    `button:not(#newCanvas):not(.cap-btn)…` 的 :not() 链里含一个 id，
    实际特异性是 (1,12,1)，光写 `#bar .icon`(1,1,0) 压不住，圆角会被它改回 999px。
-   底栏 #bar 的按钮不在这条里：它要按界面密度给 32/40px 热区、带文字时宽度自适应，
+   底栏 #bar 的按钮不在这条里：它按界面密度给 32/28px 高度、带文字时宽度自适应，
    见上方「底栏按钮：带文字的自适应胶囊」。 */
 #app #projectBar .icon.tiny {
   min-width: var(--ui-ctl);
@@ -4092,3 +4120,115 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 #minimap { right: 12px; bottom: 12px; }
 /* 缩放下拉跟着视图工具条一起挪到 12px：它挂在工具条正上方，左边对齐才不歪 */
 #zoomMenu { left: 12px; bottom: 60px; border-radius: var(--ui-bar-r); }
+
+/* =========================================================
+   可读性 & 收纳（本轮界面调整）
+   这五段都放在文件末尾，靠顺序覆盖上面的历史层。
+   ========================================================= */
+
+/* ---- 1. 顶栏文字：整体再亮一档 ---- */
+/* 项目名 / 画布名原来是 13px + #d4d4d4，压在 #262626 上对比只有 4:1 出头，
+   1080p 缩放 125% 下基本糊成一片灰。图标上一轮已经放大，文字这次跟上。 */
+#projectName { color: #ffffff; font-size: 14px; }
+#canvasMenuBtn { color: #e6e6e6; font-size: 13.5px; }
+#canvasMenuBtn:hover { color: #ffffff; }
+/* 状态条整条从 #919191 提到 #c9c9c9；「已保存」原来用 --faint(#6b6b6b)，几乎看不见。 */
+#statusChip { color: #c9c9c9; font-size: 12.5px; }
+#statusChip .chip-dim { color: #a8a8a8; }
+#statusChip .chip-comfy { font-size: 12.5px; }
+#statusChip #mcpChip { font-size: 12px; }
+#statusChip .chip-btn { font-size: 12.5px; }
+
+/* ---- 2. 状态区自适应收纳 ---- */
+/* 宽度不够时按「任务文字 → MCP 文字 → 保存状态文字」的顺序收，
+   每一步都保留灯和 tooltip——收的是字，不是状态。档位由 fitStatusChip() 按 scrollWidth 定。 */
+#statusChip[data-fit="1"] .q-lbl,
+#statusChip[data-fit="2"] .q-lbl,
+#statusChip[data-fit="3"] .q-lbl { display: none; }
+#statusChip[data-fit="2"] #mcpText,
+#statusChip[data-fit="3"] #mcpText { display: none; }
+/* 文字收了，后面那个「›」也得跟着收：只剩一个点和一支箭头，看着像没画完的标点 */
+#statusChip[data-fit="2"] #mcpChip .mcp-go,
+#statusChip[data-fit="3"] #mcpChip .mcp-go { display: none; }
+/* 第三级：保存状态收成一个点，title 里仍有「上次保存 hh:mm」。
+   用 font-size:0 而不是 color:transparent——后者文字还占着宽度，等于没收。 */
+#statusChip[data-fit="3"] #saveState {
+  width: 6px; height: 6px; flex: 0 0 6px;
+  border-radius: 50%; background: #8a8a8a;
+  font-size: 0; overflow: hidden;
+}
+
+/* ---- 3. 左下视图工具：给一个轻量标签 ---- */
+/* 左下和底部中间两条都是横条，功能却是两件事：这条只管「看」（缩放 / 网格 / 连线 / 小地图），
+   底部 Dock 管「做」（加节点 / 框选 / 工作流）。一个 11.5px 的灰标签把语义分开，
+   紧凑模式收起——那一档用户已经认得这些图标了。 */
+#viewTools .vt-tag {
+  flex: 0 0 auto; padding: 0 4px 0 2px;
+  font-size: 11.5px; line-height: 1; color: var(--faint);
+  letter-spacing: 0.04em; user-select: none;
+}
+body[data-density="compact"] #viewTools .vt-tag { display: none; }
+
+/* ---- 4. 节点标题 / 尺寸信息 ---- */
+/* 画布一缩小，节点上的字最先消失。标题 13.5 → 14、名字从 --dim 提到 #dcdcdc，
+   尺寸单独一档 12px（比标题小但不再是「装饰」）。 */
+.node-title { font-size: 14px; }
+.node-title .n-name { color: #dcdcdc; }
+.node:hover .node-title .n-name,
+.node.selected .node-title .n-name { color: #ffffff; }
+.node-title .n-dim {
+  font-size: 12px; color: #a8a8a8;
+  font-variant-numeric: tabular-nums;
+}
+.node.selected .node-title .n-dim { color: #d0d0d0; }
+
+/* ---- 5. 小地图：边框与层级 ---- */
+/* 只改颜色不改宽度：0.5px 的边框是这套 token 的一部分，动宽度会让整块画布尺寸跳一格。
+   视口框与选中节点的高对比在 renderMinimap() 里画（画布内容只能靠 canvas API）。 */
+#minimap { border-color: #4a4a4a; }
+
+/* ---------- 最近项目：多选 ---------- */
+/* 标题行改成 flex：左边「最近项目」，右边是多选操作条（选中 ≥1 张时才出现）。 */
+.recent-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.recent-head h3 { margin: 0; }
+#recentBar { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+#recentBar.hidden { display: none; }
+#recentBar .rb-count { color: var(--text); margin-right: 2px; font-variant-numeric: tabular-nums; }
+/* 选择器带 #recentBar：文件上方那条 button:not(…) 的 :not() 链特异性是 (0,19,1)，
+   光写 .rb-btn(0,1,0) 压不住它，圆角会被改回 999px。 */
+#recentBar .rb-btn {
+  height: 24px; padding: 0 10px; font-size: 11.5px; line-height: 1;
+  background: transparent; border: 1px solid var(--line); border-radius: 7px;
+  color: var(--dim); cursor: pointer;
+}
+#recentBar .rb-btn:hover { color: var(--text); border-color: var(--line-strong); background: rgba(255, 255, 255, 0.05); }
+#recentBar .rb-btn.danger:hover { color: var(--err); border-color: var(--err); }
+
+/* 勾选点压在缩略图左上角：绝对定位，不参与卡片布局，否则每张卡的文字都会右移。 */
+.proj-card { position: relative; }
+#recentList .pc-check {
+  position: absolute; left: 6px; top: 6px; z-index: 2;
+  width: 20px; height: 20px; padding: 0; display: grid; place-items: center;
+  border-radius: 6px; cursor: pointer;
+  background: rgba(12, 12, 12, 0.74); border: 1px solid rgba(255, 255, 255, 0.3);
+  color: transparent; opacity: 0;
+  transition: opacity 0.12s, background 0.12s, border-color 0.12s;
+}
+#recentList .pc-check svg { width: 13px; height: 13px; }
+/* 平时只在 hover / 键盘聚焦时露出来；一旦进入多选态就常驻，不用再逐张去找。
+   这三条必须带 #recentList：上面那条基础态是 (1,1,0)，光写 .proj-card:hover .pc-check
+   只有 (0,3,0)，压不住它——勾选点会一直 opacity:0。 */
+#recentList .proj-card:hover .pc-check,
+#recentList .proj-card:focus-within .pc-check,
+body.home-multi #recentList .pc-check { opacity: 1; }
+#recentList .pc-check:hover { border-color: rgba(255, 255, 255, 0.6); background: rgba(20, 20, 20, 0.92); }
+#recentList .pc-check[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #10151d;
+}
+.proj-card.is-sel {
+  border-color: rgba(122, 162, 255, 0.55);
+  background: rgba(122, 162, 255, 0.08);
+}

@@ -6703,10 +6703,10 @@ try {
       // MCP 必须落在「连接」格里面，不是另一个弹窗
       inConn: !!pane && pane.contains(document.getElementById('setMcp')),
       active: ((document.querySelector('#setTabs .tab.active') || {}).dataset || {}).set || '',
-      endpoint: (document.getElementById('mcpSetupEndpoint') || {}).textContent || '',
+      endpoint: (document.getElementById('mcpSetupEndpoint') || {}).value || '',
       tabs: [...document.querySelectorAll('#mcpSetupTabs .mcp-tab')].map((b) => b.textContent),
       on: [...document.querySelectorAll('#mcpSetupTabs .mcp-tab.on')].map((b) => b.textContent),
-      path: (document.getElementById('mcpSetupPath') || {}).textContent || '',
+      path: (document.getElementById('mcpSetupPath') || {}).value || '',
       json: (document.getElementById('mcpSetupJson') || {}).textContent || '',
       exists: (document.getElementById('mcpSetupExists') || {}).textContent || '',
       note: note ? note.textContent : '',

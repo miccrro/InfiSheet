@@ -5227,7 +5227,7 @@
                 </div>
                 <div class="mcp-row">
                   <span class="mcp-k">HTTP 端点</span>
-                  <code id="mcpSetupEndpoint">…</code>
+                  <input type="text" class="mcp-val" id="mcpSetupEndpoint" readonly spellcheck="false" autocomplete="off" value="…" />
                   <button type="button" class="mcp-btn" data-copy="endpoint">复制</button>
                 </div>
                 <p class="mcp-tip">
@@ -5238,7 +5238,7 @@
                 <div class="mcp-pane">
                   <div class="mcp-row">
                     <span class="mcp-k">配置文件</span>
-                    <code id="mcpSetupPath">…</code>
+                    <input type="text" class="mcp-val" id="mcpSetupPath" readonly spellcheck="false" autocomplete="off" value="…" />
                     <span class="mcp-flag" id="mcpSetupExists"></span>
                   </div>
                   <pre class="mcp-json" id="mcpSetupJson"></pre>
@@ -5970,6 +5970,9 @@
 
   /* ---------------- 选中 / 拖拽 ---------------- */
   function paintSelection() {
+    // 单选标记：生成器面板 / 文本工具条这类「跟着一个节点走」的浮层只该在单选时出现。
+    // 多选时全展开过一次——四五个面板叠在画布上，连自己选了谁都看不清。
+    document.body.classList.toggle('single-sel', state.selected.size === 1);
     nodesEl.querySelectorAll('.node').forEach((el) => el.classList.toggle('selected', state.selected.has(el.dataset.id)));
     // 对齐悬浮条只在真的能对齐时出现（选中 2 个以上）
     const bar = $('#alignBar');
@@ -5983,6 +5986,8 @@
     updateImgTools();
     // 提示词格式条：单选一个文本节点时浮在它上方（标题 / 列表 / 加粗 / 底色）
     updateTextTools();
+    // 小地图里选中的那个节点会被提亮，选中变了就得重画
+    scheduleMinimap();
   }
 
   function selectOnly(id) {
@@ -7138,6 +7143,7 @@
       badge.classList.toggle('hidden', !sum.live);
     }
     if (btn) btn.classList.toggle('on', sum.live > 0);
+    fitStatusChip();   // 计数徽标一出现，状态条就变宽，收纳档位跟着重算
     if (sumEl) sumEl.textContent = sum.text;
     // 面板关着就只更新角标：每 1.5 秒一次的任务 tick 不该去重建一个看不见的列表
     if (!listEl || !panel || panel.classList.contains('hidden')) return;
@@ -7934,6 +7940,49 @@
   function setSaveState(text) {
     const el = document.getElementById('saveState');
     if (el) el.textContent = text;
+    fitStatusChip();
+  }
+
+  /* ---------------- 顶栏状态区自适应收纳 ---------------- */
+  // 项目一复杂，右上角四段（保存 / MCP / ComfyUI / 任务）就挤在一起。
+  // 宽度不够时按「任务文字 → MCP 文字 → 保存状态文字」的顺序收，灯和 tooltip 全部保留：
+  // 收的是字，不是状态。保存失败那一级不收——那是必须看见的信息。
+  let chipFitQueued = false;
+  function fitStatusChip() {
+    if (chipFitQueued) return;
+    chipFitQueued = true;
+    requestAnimationFrame(() => {
+      chipFitQueued = false;
+      const chip = document.getElementById('statusChip');
+      if (!chip) return;
+      chip.removeAttribute('data-fit');
+      // 首页时顶栏是隐藏的，clientWidth 为 0：这时候「装不下」是假象，
+      // 一收就会把文字全收掉，回到画布也不恢复。量不到就不动。
+      const allowed = chip.clientWidth;
+      if (!allowed) return;
+      // 不能拿 scrollWidth 比 clientWidth：flex 会先把文字压成省略号（子项 min-width:0），
+      // 这时两者相等，看着「装下了」，实际已经挤成一团。所以临时把它变成不可压缩、
+      // 宽度取 max-content 再量一次真正需要的宽度，量完立刻还原（同一帧内，不会闪）。
+      const need = () => {
+        const w0 = chip.style.width, m0 = chip.style.maxWidth, f0 = chip.style.flex;
+        chip.style.flex = '0 0 auto';
+        chip.style.width = 'max-content';
+        chip.style.maxWidth = 'none';
+        const w = chip.scrollWidth;
+        chip.style.flex = f0;
+        chip.style.width = w0;
+        chip.style.maxWidth = m0;
+        return w;
+      };
+      if (need() <= allowed + 1) return;
+      const save = document.getElementById('saveState');
+      const keepSave = !!save && /失败/.test(save.textContent || '');
+      for (const lv of ['1', '2', '3']) {
+        if (lv === '3' && keepSave) break;
+        chip.dataset.fit = lv;
+        if (need() <= allowed + 1) return;
+      }
+    });
   }
 
   /* ---------------- 界面密度 ---------------- */
@@ -8944,7 +8993,7 @@
     });
     const pathEl = document.getElementById('mcpSetupPath');
     if (pathEl) {
-      pathEl.textContent = c.path;
+      pathEl.value = c.path;
       pathEl.title = c.path;
     }
     const flag = document.getElementById('mcpSetupExists');
@@ -8968,7 +9017,7 @@
       if (!setup || setup.ok === false) throw new Error((setup && setup.error) || '服务端没有 /api/mcp/setup');
       mcpSetupData = setup;
       const ep = box.querySelector('#mcpSetupEndpoint');
-      if (ep) { ep.textContent = setup.endpoint; ep.title = setup.endpoint; }
+      if (ep) { ep.value = setup.endpoint; ep.title = setup.endpoint; }
       paintMcpSetupStatus(health && health.mcp);
       renderMcpSetupTabs();
       selectMcpSetupClient(mcpSetupClient);
@@ -8980,10 +9029,12 @@
   // 复制端点 / 复制 JSON / 写入配置文件。面板是每次打开重建的，绑定也得跟着重建。
   function bindMcpSection(box) {
     if (!box) return;
+    // 端点 / 配置文件这两个只读框与上面的 ComfyUI 地址同属「字段」：能聚焦、有同样的焦点边框，
+    // 光标落在点到的位置。**不要**在 focus 时全选——那样想只改 / 只复制其中一段就没法下手。
     const epBtn = box.querySelector('[data-copy="endpoint"]');
     if (epBtn) {
       epBtn.onclick = async () => {
-        const text = (box.querySelector('#mcpSetupEndpoint') || {}).textContent || '';
+        const text = (box.querySelector('#mcpSetupEndpoint') || {}).value || '';
         const ok = await copyText(text);
         mcpSetupNote(ok ? '端点已复制' : '复制失败，手动选一下吧', ok ? 'ok' : 'err');
       };
@@ -9089,7 +9140,9 @@
   function initComfyChip() {
     const chip = document.getElementById('comfyChip');
     if (!chip) return;
-    const open = () => openSettingsSheet(state.comfyOnline ? undefined : 'comfy');
+    // 在线 / 离线都落到「连接」格的地址输入框：这盏灯的唯一动作就是改地址，
+    // 以前在线时传 undefined，会落到默认的「工作流」页，看着像点错了地方。
+    const open = () => openSettingsSheet('comfy');
     chip.onclick = open;
     chip.onkeydown = (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
@@ -9152,6 +9205,7 @@
       if (htext) htext.textContent = label;
     }
     updateMcpChip(res);
+    fitStatusChip();          // 文案会变长（生成中 / 未连接），收纳档位要跟着重算
     // 空画布上那条「还没连上 ComfyUI」跟着探测结果走：连上就收起，断了就出现
     updateCapOffline();
   }
@@ -9224,29 +9278,43 @@
     const oy = -minY * k - pad * k + (H - sh * k) / 2;
     mm = { k, ox, oy };
     const COLOR = {
-      wf: ['rgba(110,168,254,0.45)', 'rgba(110,168,254,0.85)'],
-      image: ['rgba(52,211,153,0.4)', 'rgba(52,211,153,0.8)'],
-      out: ['rgba(167,139,250,0.4)', 'rgba(167,139,250,0.8)'],
-      text: ['rgba(255,255,255,0.16)', 'rgba(255,255,255,0.4)'],
+      wf: ['rgba(110,168,254,0.32)', 'rgba(110,168,254,0.7)'],
+      image: ['rgba(52,211,153,0.3)', 'rgba(52,211,153,0.68)'],
+      out: ['rgba(167,139,250,0.3)', 'rgba(167,139,250,0.68)'],
+      text: ['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.34)'],
     };
+    // 选中的那个必须一眼能找回来：其余节点保持低饱和，只把它提亮成白块。
+    const sel = state.selected || new Set();
     state.nodes.forEach((n, i) => {
       const b = boxes[i];
+      const on = sel.has(n.id);
       const [fill, stroke] = COLOR[n.type] || COLOR.text;
       const w = Math.max(3, b.w * k), h = Math.max(3, b.h * k);
       ctx.beginPath();
       ctx.roundRect(b.x * k + ox, b.y * k + oy, w, h, 2);
-      ctx.fillStyle = fill; ctx.fill();
-      ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke();
+      if (on) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.98)';
+        ctx.lineWidth = 1.5;
+      } else {
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1;
+      }
+      ctx.stroke();
     });
     const vx = vxWorld * k + ox;
     const vy = vyWorld * k + oy;
     const vw = vwWorld * k;
     const vh = vhWorld * k;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
+    // 视口框用主题青，而不是白：白框和「选中的白块」撞色，两者一起看反而分不清哪个是视野
+    ctx.fillStyle = 'rgba(9, 202, 245, 0.08)';
     ctx.fillRect(vx, vy, vw, vh);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(vx + 0.5, vy + 0.5, Math.max(1, vw - 1), Math.max(1, vh - 1));
+    ctx.strokeStyle = 'rgba(9, 202, 245, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(vx + 0.75, vy + 0.75, Math.max(1, vw - 1.5), Math.max(1, vh - 1.5));
   }
 
   function setViewTool(name, on) {
@@ -9666,6 +9734,7 @@
     if (home) home.classList.add('hidden');
     applyView();
     renderAll();                      // 已含 renderLinks
+    fitStatusChip();                  // 状态条刚挂上，量一次真实宽度再定收纳档位
     if (location.hash !== '#canvas') history.replaceState(null, '', '#canvas');
     flashNavLabels();                 // 只在第一次进画布时给一次文字提示
   }
@@ -9717,13 +9786,15 @@
       // 用不了的按钮不再用原生 disabled：点不动的按钮给不出任何解释，
       // 新用户只看到一排灰块。改成「点得下去，点完告诉你下一步」，
       // 并且在按钮上挂一个「未配置」小字——灰一点不算状态表达，颜色不能是唯一载体。
-      const off = (why, act) => {
+      // 第三参数是标记文字：本地压根没有的能力（剪辑）不能说「未配置」——
+      // 那三个字读起来是「去配置一下就好」，而它配不了。
+      const off = (why, act, tagText = '未配置') => {
         btn.classList.add('is-off');
         btn.setAttribute('aria-disabled', 'true');
         btn.title = why;
         const tag = document.createElement('span');
-        tag.className = 'cap-tag';
-        tag.textContent = '未配置';
+        tag.className = 'cap-tag' + (tagText === '未配置' ? '' : ' is-na');
+        tag.textContent = tagText;
         btn.appendChild(tag);
         btn.onclick = () => { flash(why); if (act) act(); };
       };
@@ -9731,7 +9802,7 @@
         btn.onclick = () => addScriptNode();
         btn.title = '放入一个提示词节点，用来写剧本 / 分镜';
       } else if (d.key === 'clip') {
-        off('本地画布没有剪辑能力：视频生成后下载，用外部剪辑软件剪');
+        off('本地画布没有剪辑能力：视频生成后下载，用外部剪辑软件剪', null, '不支持');
       } else if (d.key === 'image') {
         // 图片生成不走 addWorkflowStarter：那会摆成「提示词 → 工作流 → 输出」三件套，
         // 而图片节点自己就带生成面板（提示词、参考图、工作流胶囊、生成按钮全在里面），
@@ -9873,10 +9944,23 @@
       try { items = ((await api('/api/projects')).items) || []; } catch { /* 离线 */ }
       list.innerHTML = '';
       row.hidden = !items.length;
+      // 选中集合里可能有已经不存在的 id（别处删掉了 / 刚批量删完）：
+      // 不清掉的话操作条会显示「已选 3 个」，列表里却只剩 1 张卡。
+      const alive = new Set(items.map((it) => it.id));
+      [...homeSel].forEach((id) => { if (!alive.has(id)) homeSel.delete(id); });
       items.forEach((it) => {
         const card = document.createElement('div');
         card.className = 'proj-card' + (it.id === state.projectId ? ' current' : '');
         card.dataset.id = it.id;
+        // 多选勾选点：绝对定位压在缩略图左上角，不占卡片布局（否则每张卡的文字都会右移）。
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.className = 'pc-check';
+        pick.title = '选中这个画布（可批量删除）';
+        pick.setAttribute('aria-pressed', homeSel.has(it.id) ? 'true' : 'false');
+        pick.setAttribute('aria-label', '选中这个画布');
+        pick.innerHTML = icon('check');
+        pick.onclick = (ev) => { ev.stopPropagation(); toggleHomeSel(it.id); };
         const open = document.createElement('button');
         open.className = 'pm';
         // 左边缩略图 = 这个画布「最近生成的那张」。一屏十几个「未命名画布」时，
@@ -9892,18 +9976,114 @@
           + `<b class="pc-name">${esc(it.name || '未命名画布')}</b>`
           + `<span class="pc-date">${cardDate(it.savedAt)}</span>`
           + '</span>';
-        open.onclick = () => openProject(it.id);
+        // 已经进入多选（有任意一张被选中）时，点卡片本体就是「加选 / 取消」，
+        // 不再打开项目——不然想选第二张就被跳进画布了。
+        open.onclick = () => (homeSel.size ? toggleHomeSel(it.id) : openProject(it.id));
         const more = document.createElement('button');
         more.className = 'pc-more';
         more.title = '更多操作';
         more.setAttribute('aria-label', '更多操作');
         more.innerHTML = '<span></span><span></span><span></span>';
         more.onclick = (ev) => { ev.stopPropagation(); projectMenu(more, it); };
+        card.appendChild(pick);
         card.appendChild(open);
         card.appendChild(more);
         list.appendChild(card);
       });
+      paintHomeSel();
+      bindHomeSelBar();
     }
+  }
+
+  /* ---------------- 最近项目：多选 ---------------- */
+  // 首页只做「选 + 删」这一件事：卡片上的四个动作（打开 / 重命名 / 改封面 / 删除）
+  // 里只有删除是能批量做的，其余逐个操作反而更快。
+  const homeSel = new Set();
+  let homeSelKeys = false;
+
+  function paintHomeSel() {
+    const bar = document.getElementById('recentBar');
+    const list = document.getElementById('recentList');
+    const cnt = document.getElementById('recentSelCount');
+    if (!bar) return;
+    const n = homeSel.size;
+    bar.classList.toggle('hidden', n === 0);
+    if (cnt) cnt.textContent = `已选 ${n} 个`;
+    // body 上挂一个标记：勾选点在「多选态」下常驻显示，平时只在 hover / 聚焦时露出来
+    document.body.classList.toggle('home-multi', n > 0);
+    if (list) {
+      list.querySelectorAll('.proj-card').forEach((c) => {
+        const on = homeSel.has(c.dataset.id);
+        c.classList.toggle('is-sel', on);
+        const b = c.querySelector('.pc-check');
+        if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+    const all = document.getElementById('recentSelAll');
+    if (all) {
+      const total = list ? list.querySelectorAll('.proj-card').length : 0;
+      all.textContent = n && n === total ? '全不选' : '全选';
+    }
+  }
+
+  function toggleHomeSel(id) {
+    if (!id) return;
+    if (homeSel.has(id)) homeSel.delete(id); else homeSel.add(id);
+    paintHomeSel();
+  }
+
+  function bindHomeSelBar() {
+    const all = document.getElementById('recentSelAll');
+    if (all) {
+      all.onclick = () => {
+        const cards = [...document.querySelectorAll('#recentList .proj-card')];
+        const onAll = cards.length > 0 && cards.every((c) => homeSel.has(c.dataset.id));
+        homeSel.clear();
+        if (!onAll) cards.forEach((c) => homeSel.add(c.dataset.id));
+        paintHomeSel();
+      };
+    }
+    const del = document.getElementById('recentSelDel');
+    if (del) del.onclick = () => deleteSelectedProjects();
+    const clr = document.getElementById('recentSelClear');
+    if (clr) clr.onclick = () => { homeSel.clear(); paintHomeSel(); };
+    // Esc 退出多选：只绑一次（initHome 会被反复调用，绑多次就会叠一堆监听）
+    if (!homeSelKeys) {
+      homeSelKeys = true;
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Escape' || !homeSel.size) return;
+        const home = document.getElementById('home');
+        if (!home || home.classList.contains('hidden')) return;
+        homeSel.clear();
+        paintHomeSel();
+      });
+    }
+  }
+
+  // 批量删除：一次确认，逐个删。单个失败不影响其余，最后汇总告诉用户。
+  async function deleteSelectedProjects() {
+    const ids = [...homeSel];
+    if (!ids.length) return;
+    if (!confirm(`删除选中的 ${ids.length} 个项目？存档会从本机移除，无法恢复。`)) return;
+    let failed = 0;
+    for (const id of ids) {
+      let res = null;
+      try {
+        res = await api('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' });
+      } catch { res = null; }
+      if (!res || !res.ok) { failed++; continue; }
+      if (state.projectId === id) {
+        state.projectId = null;
+        clearTimeout(saveTimer);
+        lastSavedSnap = JSON.stringify(serialize());   // 别让排队中的自动保存把删掉的项目又写回去
+        try { localStorage.removeItem('infisheet-project'); } catch { /* noop */ }
+      }
+    }
+    homeSel.clear();
+    await initHome();
+    flash(failed
+      ? `已删除 ${ids.length - failed} 个，${failed} 个失败`
+      : `已删除 ${ids.length} 个项目`);
   }
 
   async function createProject(name) {
@@ -13019,7 +13199,7 @@
       };
     });
 
-    window.addEventListener('resize', () => scheduleMinimap());
+    window.addEventListener('resize', () => { scheduleMinimap(); fitStatusChip(); });
     initViewTools();
     initProjectBar();
     initHelpSheet();

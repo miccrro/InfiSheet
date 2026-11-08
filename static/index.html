@@ -60,7 +60,7 @@
       <span class="chip-sep"></span>
       <button id="queueBtn" class="chip-btn" title="任务队列：画布上所有排队 / 生成中 / 已完成的任务">
         <span class="ico" data-icon="time" aria-hidden="true"></span>
-        <span>任务</span>
+        <span class="q-lbl">任务</span>
         <span id="queueCount" class="qb-count hidden">0</span>
       </button>
     </div>
@@ -89,7 +89,17 @@
       </button>
 
       <section class="home-row" id="recentRow" hidden>
-        <h3>最近项目</h3>
+        <div class="recent-head">
+          <h3>最近项目</h3>
+          <!-- 多选操作条：只在选中 ≥1 张卡片时出现。不选东西时它完全不存在，
+               不给首页再添一条常驻工具栏。 -->
+          <div class="recent-bar hidden" id="recentBar">
+            <span class="rb-count" id="recentSelCount">已选 0 个</span>
+            <button type="button" class="rb-btn" id="recentSelAll">全选</button>
+            <button type="button" class="rb-btn danger" id="recentSelDel">删除</button>
+            <button type="button" class="rb-btn" id="recentSelClear">取消</button>
+          </div>
+        </div>
         <div class="recent-grid" id="recentList"></div>
       </section>
 
@@ -167,6 +177,9 @@
     </div>
     <div id="addMenu" class="hidden"></div>
     <div id="viewTools">
+      <!-- 左下这条只管「看」：缩放、网格、连线、小地图。它和底部 Dock（管节点操作）
+           是两件事，给一个小标签把语义说清；紧凑模式收起（见 style.css）。 -->
+      <span class="vt-tag" aria-hidden="true">视图</span>
       <button class="vt" data-vt="fit" title="整理画布（适配视图，Alt+Shift+F）" aria-label="整理画布">
         <span class="ico" data-icon="fit" aria-hidden="true"></span>
       </button>
