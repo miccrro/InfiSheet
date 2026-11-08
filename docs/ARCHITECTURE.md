@@ -930,6 +930,27 @@ k = tw / W                                  ← **恒定**，原图铺满缩略�
 - **`pad` 在开框时用 `img.naturalWidth/Height` 记下来**（存在 `gen.outpaint.w/h` 里）：
   拖动时不能临时去读图，渲染那一刻它可能还没解码。
 
+### 界面密度（`--ui-*` token）
+
+`body[data-density="comfortable" | "compact"]` 只切一组 CSS 变量，组件里不写像素：
+
+| token | 舒适 | 紧凑 | 用在哪 |
+|---|---:|---:|---|
+| `--ui-ctl` / `--ui-ico-ctl` | 32 / 20 | 28 / 18 | Dock、项目栏、视图工具的**普通按钮**（三处同一档） |
+| `--ui-hit` / `--ui-icon` | 40 / 20 | 36 / 18 | 底栏主按钮 `#bar .icon.prime` |
+| `--ui-hit-2` / `--ui-icon-2` | 32 / 20 | 28 / 18 | 底栏次级按钮（跟着 `--ui-ctl` 走） |
+| `--ui-font` / `--ui-gap` / `--ui-radius` / `--ui-label` | 14 / 8 / 10 / inline | 13 / 6 / 8 / none | 正文、栅格、圆角、核心入口是否带文字 |
+
+选中档存在 `localStorage: infisheet-density`，`applyDensity()` 在首屏渲染前跑一遍。
+
+**尺寸只留一个出处**：就是文件开头那组 token。别在组件里再写死 `width: 32px`——`#bar .icon` 开头
+那条旧规则曾经钉着 32×32 / 图标 17px，和后面按 token 写的那条抢同一组属性，紧凑模式压不下去，
+改一次得改两处。同理，项目栏按钮的左右内边距只在 `.show-labels`（首次进画布那 2 秒）里给，
+常态纯图标必须是正方形，否则紧凑模式下会得到 34×28 的长方块。
+
+切换有过渡（全局 `button { transition: 0.15s }`），量尺寸的测试要等它跑完再 `getBoundingClientRect`，
+不然量到的是上一档的值——e2e 里踩过，两条用例都多等 420ms。
+
 ### CSS 的三层结构（也是已知债）
 
 `style.css` 是几轮视觉迭代叠出来的，实际生效顺序是：**基础 token → 组件 → 覆盖层**。

@@ -21,9 +21,14 @@
      核心入口带文字。紧凑模式回到原来的高信息密度（纯图标为主）。
      间距一律走 4/8/12/16 栅格，别再在别处写 13px、17px 这种散值。 */
   --ui-icon: 20px;        /* 主图标 */
-  --ui-icon-2: 18px;      /* 次级图标 */
+  --ui-icon-2: 20px;      /* 次级图标 */
   --ui-hit: 40px;         /* 主按钮热区 */
-  --ui-hit-2: 36px;       /* 次级按钮热区 */
+  --ui-hit-2: 32px;       /* 次级按钮热区 */
+  /* 条内普通按钮：Dock、项目栏、视图工具共用这一个尺寸。
+     以前三处各写各的（28 / 28 / 36），同一屏里三种大小，图标 16 / 17 / 18 也跟着飘；
+     现在按钮 32、图标 20，三条条摆在一起是同一档。 */
+  --ui-ctl: 32px;
+  --ui-ico-ctl: 20px;
   --ui-font: 14px;        /* 正文 */
   --ui-gap: 8px;          /* 栅格间距 */
   --ui-gap-2: 4px;        /* 半格 */
@@ -33,9 +38,11 @@
 /* 紧凑模式：和以前一样密，只是把新加的文字收回去 */
 body[data-density="compact"] {
   --ui-icon: 18px;
-  --ui-icon-2: 16px;
+  --ui-icon-2: 18px;
   --ui-hit: 36px;
-  --ui-hit-2: 32px;
+  --ui-hit-2: 28px;
+  --ui-ctl: 28px;
+  --ui-ico-ctl: 18px;
   --ui-font: 13px;
   --ui-gap: 6px;
   --ui-radius: 8px;
@@ -69,14 +76,17 @@ body {
   border-radius: 12px;
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
 }
+/* 尺寸不在这里定：宽高由下方「底栏按钮」那条按密度 token 给（32 / 28），
+   这里只留外形。以前这里钉死 32×32、图标 17px，和后面那条抢同一组属性，
+   改一个数要改两处，紧凑模式还压不下去。 */
 #bar .icon {
-  width: 32px; height: 32px; display: grid; place-items: center;
+  display: grid; place-items: center;
   background: transparent; border: none; border-radius: 8px;
   color: #b5b5b5; padding: 0; font-size: 13px;
 }
 #bar .icon:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; border-color: transparent; }
 #bar .icon svg {
-  width: 17px; height: 17px; fill: none; stroke: currentColor;
+  width: var(--ui-icon-2); height: var(--ui-icon-2); fill: none; stroke: currentColor;
   stroke-linecap: round; stroke-linejoin: round;
 }
 #bar .vsep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); margin: 0 2px; }
@@ -2061,7 +2071,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   height: 38px; padding: 0 5px; gap: 1px; border-radius: 10px;
 }
 #projectBar .icon.tiny {
-  width: auto; min-width: 28px; height: 28px; padding: 0 7px; border-radius: 8px;
+  /* 常态纯图标 → 正方形，左右内边距为 0；只有「正在显示文字」的那 2 秒才给 8px 呼吸
+     （见下面的 .show-labels）。以前这里常驻 7px，紧凑模式下文字收起了按钮却还是 34 宽。 */
+  width: auto; min-width: var(--ui-ctl); height: var(--ui-ctl); padding: 0; border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.10);
   background: rgba(255, 255, 255, 0.02);
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
@@ -2076,13 +2088,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   overflow: hidden;
   transition: opacity 0.18s, max-width 0.18s;
 }
+#projectBar.show-labels .icon.tiny:has(.lbl) {
+  padding: 0 8px;
+}
 #projectBar.show-labels .icon.tiny .lbl {
   display: inline;
   opacity: 1;
   max-width: 60px;
 }
+body[data-density="compact"] #projectBar.show-labels .icon.tiny { padding: 0; }
 body[data-density="compact"] #projectBar.show-labels .icon.tiny .lbl { display: none; }
-#projectBar .icon.tiny:not(:has(.lbl)) { padding: 0; min-width: 28px; }
+#projectBar .icon.tiny:not(:has(.lbl)) { min-width: var(--ui-ctl); }
 #projectBar .icon.tiny + .icon.tiny { margin-left: 2px; }
 #projectBar .vsep { height: 18px; margin: 0 5px; }
 #projectName {
@@ -2218,6 +2234,9 @@ body[data-density="compact"] #projectBar.show-labels .icon.tiny .lbl { display: 
   font-size: 12.5px; white-space: nowrap;
 }
 #bar .icon svg { width: var(--ui-icon-2); height: var(--ui-icon-2); }
+/* 不带文字的按钮是正方形：左右各 10px 的呼吸只留给「添加 / 更多」，
+   否则 20 图标 + 20 内边距 = 40×32 的长方块，一排看过去像没对齐。 */
+#bar .icon:not(:has(.lbl)) { padding: 0; }
 #bar .icon .lbl { display: var(--ui-label); line-height: 1; }
 /* 小三角：`▾` 在 9px 下缩成一个点，看着像多余的标点。跟 #canvasMenuBtn 一样用边框画。 */
 #bar .icon .caret {
@@ -2249,12 +2268,12 @@ body[data-density="compact"] #bar .icon .caret { display: none; }
 #dockWrap[data-dock="right"] #bar .icon .caret { display: none; }
 #projectBar { height: 42px; }
 /* 宽度不钉死：首次进画布的 2 秒文字提示要靠它撑开（见 .show-labels） */
-#projectBar .icon.tiny { min-width: 32px; height: 32px; border-radius: 9px; }
-#projectBar .icon.tiny svg { width: 16px; height: 16px; }
-#projectName { height: 32px; }
-#canvasMenuBtn { height: 32px; }
-#viewTools .vt { width: 32px; height: 32px; }
-#viewTools .vt svg { width: 17px; height: 17px; }
+#projectBar .icon.tiny { min-width: var(--ui-ctl); height: var(--ui-ctl); border-radius: 9px; }
+#projectBar .icon.tiny svg { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
+#projectName { height: var(--ui-ctl); }
+#canvasMenuBtn { height: var(--ui-ctl); }
+#viewTools .vt { width: var(--ui-ctl); height: var(--ui-ctl); }
+#viewTools .vt svg { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
 
 /* ---------- 背景：#1a1a1a + #474747 点阵，20px ---------- */
 #stage {
@@ -2388,8 +2407,8 @@ body[data-density="compact"] #bar .icon .caret { display: none; }
 .node-title .n-icon .oi, .gen-run .oi, #setTabs .tab .oi, .img-zoom .oi,
 .be-head .be-ico .oi, #imgTools .it-btn .oi, #textTools .it-btn .oi,
 .tf-bar .it-btn .oi { --oi-stroke: 2.1; }                                             /* 16–17px */
-#projectBar .icon.tiny .oi, #viewTools .vt .oi, #alignBar .ab-btn .oi,
-#addMenu .am-ico .oi, .pc-thumb .pc-ph .oi { --oi-stroke: 1.95; }                      /* 18px */
+#projectBar .icon.tiny .oi, #viewTools .vt .oi { --oi-stroke: 1.86; }                  /* 20px */
+#alignBar .ab-btn .oi, #addMenu .am-ico .oi, .pc-thumb .pc-ph .oi { --oi-stroke: 1.95; } /* 18px */
 .cap-btn .oi { --oi-stroke: 1.82; }                                                   /* 21px */
 #bar .icon.prime .oi { --oi-stroke: 1.72; }                                           /* 22px 主按钮 */
 .rc-empty .oi { --oi-stroke: 1.7; }                                                   /* 22px */
@@ -2404,8 +2423,8 @@ body[data-density="compact"] #bar .icon .caret { display: none; }
 
 #bar .icon .oi { width: var(--ui-icon-2); height: var(--ui-icon-2); }
 #bar .icon.prime .oi { width: var(--ui-icon); height: var(--ui-icon); }
-#projectBar .icon.tiny .oi { width: 18px; height: 18px; }
-#viewTools .vt .oi { width: 18px; height: 18px; }
+#projectBar .icon.tiny .oi { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
+#viewTools .vt .oi { width: var(--ui-ico-ctl); height: var(--ui-ico-ctl); }
 .node-title .oi { width: 16px; height: 16px; color: inherit; }
 .cap-btn .oi { width: 21px; height: 21px; }
 .img-zoom { display: grid; place-items: center; }
@@ -3974,15 +3993,16 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
    以前四条单行控制条各写各的：项目栏 42、状态条 34、视图工具 46、底部工具条 52，
    圆角是 16 / 16 / 999 / 999，条内按钮又是 50% 正圆——一排东西放在一起，
    高度差半格、端点一半是胶囊一半是方角，看着像四个人各画了一块。
-   这里统一成一套 token：条高 40、条圆角 12、条内控件 28×28 圆角 8。
+   这里统一成一套 token：条高 40、条圆角 12、条内控件 32×32 圆角 8（紧凑模式 28）。
    只覆盖这四条悬浮条和条内控件，节点卡片、弹窗、生成面板内部都不动。 */
 :root {
-  --ui-bar-h: 40px;    /* 单行悬浮条高度（28 控件 + 5×2 内边距 + 1×2 边框） */
-  --ui-ctl: 28px;      /* 条内按钮 / 输入框高度 */
+  --ui-bar-h: 40px;    /* 单行悬浮条高度（32 控件 + 4×2 内边距 + 1×2 边框） */
   --ui-bar-r: 12px;    /* 悬浮条圆角 */
   --ui-ctl-r: 8px;     /* 条内按钮圆角：圆角矩形，不再是正圆 / 胶囊 */
-  --ui-pad: 5px;       /* 悬浮条内边距 */
+  --ui-pad: 4px;       /* 悬浮条内边距：32 + 8 = 40，刚好一条 */
 }
+/* 条内控件尺寸 --ui-ctl / --ui-ico-ctl 定义在文件开头的密度 token 里，
+   舒适 32 / 20、紧凑 28 / 18——这里不再写第二份，否则会盖掉紧凑模式。 */
 
 /* 三条单行悬浮条：高度、圆角、内边距、垂直居中对齐。
    底栏 #bar 不在这里——它要按界面密度装 40px 的主按钮，高度得跟着内容走。 */
@@ -3997,16 +4017,16 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 #viewTools { padding: var(--ui-pad); gap: 4px; }
 
-/* 条内控件：一律 28×28 + 8px 圆角矩形。
+/* 条内控件：一律 --ui-ctl 方块（舒适 32 / 紧凑 28）+ 8px 圆角矩形。
    选择器前面必须带 #app：文件上方那条
    `button:not(#newCanvas):not(.cap-btn)…` 的 :not() 链里含一个 id，
    实际特异性是 (1,12,1)，光写 `#bar .icon`(1,1,0) 压不住，圆角会被它改回 999px。
-   底栏 #bar 的按钮不在这条里：它要按界面密度给 36/40px 热区、带文字时宽度自适应，
+   底栏 #bar 的按钮不在这条里：它要按界面密度给 32/40px 热区、带文字时宽度自适应，
    见上方「底栏按钮：带文字的自适应胶囊」。 */
 #app #projectBar .icon.tiny {
   min-width: var(--ui-ctl);
   height: var(--ui-ctl);
-  flex: 0 0 auto;          /* 带文字的入口要按内容撑宽，不能钉死 28px */
+  flex: 0 0 auto;          /* 带文字的入口要按内容撑宽，不能钉死 32px */
   border-radius: var(--ui-ctl-r);
 }
 #app #viewTools .vt {

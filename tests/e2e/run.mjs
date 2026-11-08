@@ -1783,25 +1783,67 @@ try {
     JSON.stringify(zoom));
 
   // 悬浮控制条：12px 圆角矩形（不是胶囊）；底栏按界面密度放大热区——
-  // 主按钮 ≥40×40、次级 ≥36×36，所以它比另外三条单行条高，不参与「同高」比较
+  // 主按钮 ≥40×40、次级 32×32，所以它比另外三条单行条高，不参与「同高」比较。
+  // 「普通按钮 32 方块 + 20 图标」这三条条是同一档：以前项目栏 / 视图工具是 28、底栏是 36，
+  // 同一屏里三种大小，图标 16 / 17 / 18 也跟着飘。
   const shapes = await page.evaluate(`(() => {
     const prime = document.querySelector('#bar .icon.prime');
     const sec = document.querySelector('#bar [data-act="select-mode"]');
-    const pr = prime.getBoundingClientRect(), sr = sec.getBoundingClientRect();
+    const pb = document.querySelector('#projectBar .icon.tiny');
+    const vt = document.querySelector('#viewTools .vt');
+    const size = (el) => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
+    const ico = (el) => {
+      const s = el.querySelector('svg.oi') || el.querySelector('svg');
+      const r = s.getBoundingClientRect();
+      return Math.round(r.width);
+    };
     return {
       bar: getComputedStyle(document.getElementById('bar')).borderRadius,
       vt: getComputedStyle(document.getElementById('viewTools')).borderRadius,
       primeR: getComputedStyle(prime).borderRadius,
-      prime: [Math.round(pr.width), Math.round(pr.height)],
-      sec: [Math.round(sr.width), Math.round(sr.height)],
+      prime: size(prime),
+      sec: size(sec),
+      ctl: [size(pb), size(vt), size(sec)],
+      ico: [ico(pb), ico(vt), ico(sec)],
       hs: ['projectBar', 'statusChip', 'viewTools'].map((id) => Math.round(document.getElementById(id).getBoundingClientRect().height)),
     };
   })()`);
-  check('底栏 / 视图工具是 12px 圆角矩形；主按钮热区 ≥40、次级 ≥36；三条单行悬浮条同高',
+  const square = (s) => s[0] === s[1];
+  check('底栏 / 视图工具是 12px 圆角矩形；主按钮热区 ≥40、次级 ≥32；三条单行悬浮条同高',
     shapes.bar === '12px' && shapes.vt === '12px'
       && shapes.prime[0] >= 40 && shapes.prime[1] >= 40
-      && shapes.sec[0] >= 36 && shapes.sec[1] >= 36
+      && shapes.sec[0] >= 32 && shapes.sec[1] >= 32
       && shapes.hs.every((h) => h === shapes.hs[0]), JSON.stringify(shapes));
+  check('项目栏 / 视图工具 / 底栏的普通按钮是同一档：32 方块 + 20 图标',
+    shapes.ctl.every(square) && shapes.ctl.every((s) => s[0] === 32)
+      && shapes.ico.every((n) => n === 20),
+    JSON.stringify({ ctl: shapes.ctl, ico: shapes.ico }));
+
+  // 紧凑模式走同一套 token：普通按钮 28 方块 + 18 图标，文字收起。
+  // 直接改 body 上的 dataset 只验证 CSS 那一层（切换与持久化在「设置 → 界面密度」里另测）。
+  // 按钮上有过渡，切完要等它跑完再量——否则量到的是上一档的 32。
+  const shapeOf = () => page.evaluate(`(() => {
+    const pb = document.querySelector('#projectBar .icon.tiny');
+    const vt = document.querySelector('#viewTools .vt');
+    const sec = document.querySelector('#bar [data-act="select-mode"]');
+    const size = (el) => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
+    const ico = (el) => Math.round((el.querySelector('svg.oi') || el.querySelector('svg')).getBoundingClientRect().width);
+    return {
+      ctl: [size(pb), size(vt), size(sec)],
+      ico: [ico(pb), ico(vt), ico(sec)],
+      label: getComputedStyle(document.querySelector('#bar .icon.prime .lbl')).display,
+    };
+  })()`);
+  const prevDensity = await page.evaluate(`document.body.dataset.density || 'comfortable'`);
+  await page.evaluate(`document.body.dataset.density = 'compact'`);
+  await new Promise((r) => setTimeout(r, 420));
+  const compactShape = await shapeOf();
+  await page.evaluate(`document.body.dataset.density = '${prevDensity}'`);
+  await new Promise((r) => setTimeout(r, 420));
+  check('紧凑模式：同一批普通按钮收到 28 方块 + 18 图标，文字收起',
+    compactShape.ctl.every((s) => s[0] === 28 && s[1] === 28)
+      && compactShape.ico.every((n) => n === 18) && compactShape.label === 'none',
+    JSON.stringify(compactShape));
 
   // 从端口拖到空白 → 菜单里挑节点：建完必须顺手接上。
   // 用户是从端口一路拖出来松手的，看到一个没连上的新节点等于白拖一次
@@ -2866,6 +2908,42 @@ try {
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
   const settingsClosed = await page.evaluate(`(() => { const el = document.getElementById('appSettings'); return !el || el.classList.contains('hidden'); })()`);
   check('设置弹层开关', settingsOpen && settingsClosed);
+
+  // ---- 设置 → 界面密度 ----
+  // 两档切换要立刻改到实际控件上（不只是换个 class），并且记住选择。
+  // 这里只验证「点了之后按钮尺寸真的变了 + 存进了 localStorage」，刷新恢复在启动时读。
+  await page.click('#projectBar [data-act="settings"]', { settle: 500 });
+  const vtW = () => page.evaluate(`Math.round(document.querySelector('#viewTools .vt').getBoundingClientRect().width)`);
+  const pickDensity = (v) => page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    const b = box.querySelector('#setDensity [data-density="${v}"]');
+    b.click();
+    return { checked: b.getAttribute('aria-checked'), stored: localStorage.getItem('infisheet-density') };
+  })()`);
+  const densityHas = await page.evaluate(`(() => {
+    const box = document.getElementById('appSettings');
+    // 密度在「外观」页：默认停在「工作流」，先切过去
+    box.querySelector('#setTabs [data-set="look"]').click();
+    return box.querySelectorAll('#setDensity [data-density]').length;
+  })()`);
+  const densityBefore = await vtW();
+  const pickCompact = await pickDensity('compact');
+  await new Promise((r) => setTimeout(r, 420));   // 有过渡，等它跑完再量
+  const densityCompact = await vtW();
+  const pickComfort = await pickDensity('comfortable');
+  await new Promise((r) => setTimeout(r, 420));
+  const densityComfort = await vtW();
+  const density = {
+    has: densityHas, before: densityBefore, compact: densityCompact, comfort: densityComfort,
+    compactStored: pickCompact.stored, comfortStored: pickComfort.stored,
+    compactChecked: pickCompact.checked,
+  };
+  check('设置 → 界面密度：切到紧凑视图工具收到 28，切回舒适回到 32，并记住选择',
+    density.has === 2 && density.before === 32 && density.compact === 28 && density.comfort === 32
+      && density.compactStored === 'compact' && density.comfortStored === 'comfortable'
+      && density.compactChecked === 'true',
+    JSON.stringify(density));
+  await page.key('Escape', { code: 'Escape', keyCode: 27 });
 
   // ---- 设置里的工作流区 ----
   // 以前是六个按钮挤成两组，其中三对是同一件事（打开库 == 管理库、新增预设 ≈ 导入 JSON、
