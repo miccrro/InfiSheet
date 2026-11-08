@@ -913,6 +913,7 @@ def analyze_graph(graph: dict) -> dict:
     slots: list[dict] = []
     outputs: list[dict] = []
     unknown_types: list[str] = []
+    autogrow: list[dict] = []   # 动态图片组（见下方 COMFY_AUTOGROW_V3）
     resolved = 0          # 成功拿到 object_info 的节点数
     unresolved = 0        # 这次没取到的节点数（ComfyUI 不可达）
     reachable: bool | None = None   # 只在真需要区分「没连上 / 不认识」时探一次
@@ -998,6 +999,40 @@ def analyze_graph(graph: dict) -> dict:
                     slot["max"] = 4294967295 if slot.get("integer") else 1e9
             slots.append(slot)
 
+        # 动态图片组：Qwen 编辑流的 TextEncodeQwenImage21 只声明了一个 images 输入
+        # （类型 COMFY_AUTOGROW_V3），实际能挂 image_1..image_16。工作流导出时通常只连了
+        # image_1，于是前端按「图里有几个图片插槽」算容量 → 认为只吃 1 张，多出来的图
+        # 既没有插槽可连，提示词里的「图2」也指不到东西。这里把容量和已占用的名字报出去，
+        # 前端才知道还能接几张（接的时候要补一个 LoadImage，见前端 runWorkflow）。
+        for name, decl in (spec or {}).items():
+            if not (isinstance(decl, list) and decl) or decl[0] != "COMFY_AUTOGROW_V3":
+                continue
+            cfg = decl[1] if len(decl) > 1 and isinstance(decl[1], dict) else {}
+            # names / min 挂在 template 里（不是 cfg 顶层）：cfg 只有 tooltip 与 template。
+            # 两个位置都读一遍，免得不同 ComfyUI 版本换个摆放方式就又认不出来。
+            tpl = cfg.get("template") if isinstance(cfg.get("template"), dict) else {}
+            decl_input = ((tpl.get("input") or {}).get("required") or {}) or \
+                         ((cfg.get("input") or {}).get("required") or {})
+            if not isinstance(decl_input, dict) or not decl_input:
+                continue
+            item_decl = next(iter(decl_input.values()))
+            if not (isinstance(item_decl, list) and item_decl and item_decl[0] == "IMAGE"):
+                continue        # 只有图片组需要前端补节点，别的类型（文本/参数）先不碰
+            names = [str(x) for x in (tpl.get("names") or cfg.get("names") or [])]
+            if not names:
+                continue
+            prefix = name + "."
+            used = sorted(k[len(prefix):] for k in inputs
+                          if isinstance(k, str) and k.startswith(prefix))
+            autogrow.append({
+                "node": node_id,
+                "class_type": ct,
+                "input": name,          # images
+                "prefix": prefix,       # images.
+                "names": names,         # image_1 .. image_16
+                "used": used,           # 图里已经连上的（image_1 …）
+            })
+
     # 一个节点定义都没读到 → 不是「工作流有问题」，是 ComfyUI 没连上；
     # 这种情况直接报清楚，别让前端提示「含无法识别的节点」把人带到错的方向。
     if resolved == 0 and unresolved:
@@ -1007,6 +1042,9 @@ def analyze_graph(graph: dict) -> dict:
     return {
         "slots": slots,
         "outputs": outputs,
+        # 动态图片组：能挂几张图、已经占了哪几个名字。前端按这个补插槽，
+        # 否则「工作流只连了 1 张」会把多图连接全挡在门外。
+        "autogrow": autogrow,
         "node_count": len(graph),
         "unknown_types": sorted(set(unknown_types)),
         "unresolved_nodes": unresolved,

@@ -1202,10 +1202,12 @@
   // （Qwen-Image-Edit 的 images.image_1..4，一个编码器吃多张）。画布上给了几张就按顺序填几张，
   // 这样提示词里的「图1 / 图2」和实际送进去的图才对得上；剩下的槽位从下游断开，
   // 画布一张没给就原样不动（必填组不能拆空，否则工作流直接报错）。
-  function bindRefImages(g, slots, images) {
+  function bindRefImages(g, slots, images, autogrow) {
     const list = (Array.isArray(images) ? images : [images]).filter(Boolean);
     const imgSlots = (slots || []).filter((x) => x.kind === 'image');
-    if (!imgSlots.length || !list.length) return { bound: [], pruned: [] };
+    // 动态图片组：工作流只连了 image_1 时，插槽数算出来就是 1，第 2 张起会被静默丢掉
+    const grows = (autogrow || []).filter((x) => x && x.node && (x.names || []).length);
+    if (!list.length || (!imgSlots.length && !grows.length)) return { bound: [], pruned: [] };
     const setSlot = (key, value) => {
       const i = key.lastIndexOf('.');
       const nid = key.slice(0, i), input = key.slice(i + 1);
@@ -1234,32 +1236,66 @@
     });
     const pruned = [];
     const orphans = new Set();
+    let bound = [];
     if (!main || main.length < 2) {
-      setSlot(imgSlots[0].key, list[0]);
-      return { bound: [imgSlots[0].key], pruned };
+      // 单图：只填第一个插槽（一个图片插槽都没有时交给下面的动态组）
+      if (imgSlots.length) {
+        setSlot(imgSlots[0].key, list[0]);
+        bound = [imgSlots[0].key];
+      }
+    } else {
+      // 按 images.image_N 里的 N 排序：第 1 张写进 image_1，提示词里的「图1」才指得对。
+      // 不排序的话会把画布第 1 张塞进 image_3，模型看到的是另一张。
+      const orderOf = (it) => { const m = /(\d+)$/.exec(it.name); return m ? Number(m[1]) : 0; };
+      const sorted = main.slice().sort((a, b) => orderOf(a) - orderOf(b));
+      sorted.forEach((it, i) => {
+        if (i < list.length) { setSlot(it.slot.key, list[i]); return; }
+        const nd = g[it.nid];
+        if (!nd || !nd.inputs || !(it.name in nd.inputs)) return;
+        delete nd.inputs[it.name];
+        orphans.add(String(it.slot.node));
+        if (it.slot.value) pruned.push(String(it.slot.value));
+      });
+      // 光断线不够：ComfyUI 会校验整张图里的每个节点，孤儿 LoadImage 里那个本地文件名
+      // 只要不在 input/ 目录，整次生成就被 400 驳回。所以没人引用的 LoadImage 直接摘掉。
+      orphans.forEach((id) => {
+        const nd = g[id];
+        if (!nd || nd.class_type !== 'LoadImage') return;
+        const stillUsed = Object.entries(g).some(([nid, other]) => nid !== id
+          && Object.values((other && other.inputs) || {}).some((v) => Array.isArray(v) && String(v[0]) === id));
+        if (!stillUsed) delete g[id];
+      });
+      bound = sorted.slice(0, Math.min(list.length, sorted.length)).map((it) => it.slot.key);
     }
-    // 按 images.image_N 里的 N 排序：第 1 张写进 image_1，提示词里的「图1」才指得对。
-    // 不排序的话会把画布第 1 张塞进 image_3，模型看到的是另一张。
-    const orderOf = (it) => { const m = /(\d+)$/.exec(it.name); return m ? Number(m[1]) : 0; };
-    const sorted = main.slice().sort((a, b) => orderOf(a) - orderOf(b));
-    sorted.forEach((it, i) => {
-      if (i < list.length) { setSlot(it.slot.key, list[i]); return; }
-      const nd = g[it.nid];
-      if (!nd || !nd.inputs || !(it.name in nd.inputs)) return;
-      delete nd.inputs[it.name];
-      orphans.add(String(it.slot.node));
-      if (it.slot.value) pruned.push(String(it.slot.value));
+    // 还有没送进去的图 → 挂到动态图片组上（ComfyUI 的 COMFY_AUTOGROW_V3）。
+    // Qwen 编辑流的 TextEncodeQwenImage21 声明的是 images.image_1..image_16，但工作流导出时
+    // 常常只连了 image_1。光按「图里有几个图片插槽」算，第 2 张起就被丢掉：用户连了 5 张、
+    // 提示词里写着「图2…图5」，模型只看到第 1 张，指代全成了空话。这里给每张补一个 LoadImage
+    // 节点接上空位——和工作流自带的那个一模一样，ComfyUI 校验得过。
+    let next = bound.length;
+    grows.forEach((grp) => {
+      const nd = g[grp.node];
+      if (!nd || !nd.inputs) return;
+      for (const nm of grp.names) {
+        if (next >= list.length) return;
+        const key = grp.prefix + nm;
+        if (key in nd.inputs) continue;      // 这个位置工作流自己占了
+        const nid = freshNodeId(g);
+        g[nid] = { class_type: 'LoadImage', inputs: { image: list[next] } };
+        nd.inputs[key] = [nid, 0];
+        bound.push(`${grp.node}.${key}`);
+        next += 1;
+      }
     });
-    // 光断线不够：ComfyUI 会校验整张图里的每个节点，孤儿 LoadImage 里那个本地文件名
-    // 只要不在 input/ 目录，整次生成就被 400 驳回。所以没人引用的 LoadImage 直接摘掉。
-    orphans.forEach((id) => {
-      const nd = g[id];
-      if (!nd || nd.class_type !== 'LoadImage') return;
-      const stillUsed = Object.entries(g).some(([nid, other]) => nid !== id
-        && Object.values((other && other.inputs) || {}).some((v) => Array.isArray(v) && String(v[0]) === id));
-      if (!stillUsed) delete g[id];
-    });
-    return { bound: sorted.slice(0, Math.min(list.length, sorted.length)).map((it) => it.slot.key), pruned };
+    return { bound, pruned };
+  }
+
+  // 这次最多能送几张参考图：已有图片插槽数 vs 动态图片组容量，取大的那个。
+  // 只数插槽的话，Qwen 编辑流（images.image_1..16 但只连了 image_1）永远只算 1 张。
+  function refCapacity(a) {
+    const slots = ((a && a.slots) || []).filter((s) => s.kind === 'image').length;
+    const grow = ((a && a.autogrow) || []).reduce((m, x) => Math.max(m, (x.names || []).length), 0);
+    return Math.max(slots, grow);
   }
 
   // 尺寸该写到哪里？「名字里带 width 的字面量插槽」这条路只对文生图工作流成立。
@@ -1368,7 +1404,7 @@
   }
 
   // 把提示词 / 画幅 / 张数 / 种子写进 API 图
-  function buildGenGraph(graph, slots, dims, batch, prompt, refImages, seedOpt) {
+  function buildGenGraph(graph, slots, dims, batch, prompt, refImages, seedOpt, autogrow) {
     const out = JSON.parse(JSON.stringify(graph));
     const setVal = (key, value) => {
       const i = key.lastIndexOf('.');
@@ -1384,8 +1420,9 @@
     const seed = planSeed(seedOpt);
     const seedKeys = (slots || []).filter((x) => x.kind === 'seed');
     seedKeys.forEach((x) => setVal(x.key, seed.value));
-    // 参考图：给了几张就按顺序绑几张（多图编辑器一组 images.image_1..N），顺手摘掉工作流自带的残留图
-    const refs = bindRefImages(out, slots, refImages);
+    // 参考图：给了几张就按顺序绑几张（多图编辑器一组 images.image_1..N），顺手摘掉工作流自带的残留图。
+    // autogrow 是服务端报的「动态图片组容量」：工作流只连了 image_1 时靠它补 LoadImage。
+    const refs = bindRefImages(out, slots, refImages, autogrow);
     // 先钉出图节点；钉不到才退回「按插槽名写」，最后仍写不进就让调用方把话说清楚
     let sized = false;
     // 「张数」有没有真的落进图里：有些工作流（自定义导入的、视频流）根本没有 batch 插槽，
@@ -1621,12 +1658,16 @@
     const styleRef = (n.gen && n.gen.style && n.gen.style.cn) ? n.gen.style : null;
     wrap.classList.toggle('hidden', refs.length === 0 && !styleRef);
     wrap.innerHTML = '';
+    // 工作流能吃几张就亮几格：靠后那几张压暗 = 「它不会生效」
+    const cap = refCapOf(n);
     refs.forEach((r, i) => {
       const item = document.createElement('div');
-      item.className = `gen-ref via-${r.via}${i === 0 ? ' primary' : ''}`;
+      item.className = `gen-ref via-${r.via}${i < cap ? ' primary' : ''}`;
       // 别写死「工作流只有一个图片插槽」：多图编辑器（Qwen 编辑流的 images.image_1..4）能吃好几张。
       // 到底用几张要看工作流，这里只交代顺序——第 N 张就是提示词里的「图N」。
-      const why = i === 0 ? ' · 提示词里的「图1」' : ` · 提示词里的「图${i + 1}」，工作流吃不下的靠后几张不会用`;
+      const why = i < cap
+        ? (i === 0 ? ' · 提示词里的「图1」' : ` · 提示词里的「图${i + 1}」`)
+        : ` · 提示词里的「图${i + 1}」，工作流吃不下的靠后几张不会用`;
       item.title = `${i + 1}. ${r.node.title || '图片'}（${REF_VIA_LABEL[r.via]}）${why}`;
       // 多张时左下角标序号（对齐参考图里的 1 / 2），单张就不必了
       const num = refs.length > 1 ? `<span class="gen-ref-n">${i + 1}</span>` : '';
@@ -2060,9 +2101,35 @@
     wrap.className = 'gen-refs hidden';
     wrap.dataset.refsFor = n.id;
     panel.appendChild(wrap);
+    primeRefCap(n);
     // 此刻面板还没挂到 #nodes 上，按 id 找不到自己；等挂完这一帧再填内容
     requestAnimationFrame(() => renderRefs(n));
     return wrap;
+  }
+
+  // 这个工作流这次能吃几张参考图：面板上「图1 / 图2…」亮几格靠它。
+  // 以前只亮第一格、其余压暗——多图连接修好之后，那句「只有第一张会生效」就成假话了。
+  // 按工作流 id 缓存（一次会话分析一次就够）；分析不出来就当 1 张，
+  // 宁可少亮一格，也不要假装多张都生效。
+  const wfRefCap = new Map();
+  function refCapOf(n) {
+    const id = n && n.gen && n.gen.wf;
+    return (id && wfRefCap.get(id)) || 1;
+  }
+  function primeRefCap(n) {
+    const id = n && n.gen && n.gen.wf;
+    if (!id || wfRefCap.has(id)) return;
+    wfRefCap.set(id, 1);          // 占位：同一个工作流只发一次
+    (async () => {
+      try {
+        const graph = await loadGraphById(id);
+        if (!graph) return;
+        const a = await postJson('/api/analyze', { graph });
+        if (!a || !a.ok) return;
+        wfRefCap.set(id, Math.max(1, refCapacity(a)));
+        state.nodes.filter((x) => x.gen && x.gen.wf === id).forEach((x) => renderRefs(x));
+      } catch { /* 分析不了就按 1 张算 */ }
+    })();
   }
 
   // 底部原来并排放着「画幅 / 尺寸 / 张数」三个下拉：一行里挤四个控件，每个窄到只能显示两个字，
@@ -3282,15 +3349,15 @@
       // 裁切重绘时尺寸必须跟着**裁剪框**走：模型只看到那一小块，给它整图尺寸等于让它
       // 按原图比例重算一张小图，贴回去要缩两次、细节全糊。对齐 16 由 cropRectFor 保证。
       const dims = cropRect ? { width: cropRect.w, height: cropRect.h } : dimsOf(g);
-      // 工作流能吃几张图（Qwen 编辑流是 images.image_1..4）就用几张；一张都不吃就退回纯文本，
+      // 工作流能吃几张图（Qwen 编辑流是 images.image_1..16）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
-      const cap = (a.slots || []).filter((s) => s.kind === 'image').length;
+      const cap = refCapacity(a);
       const use = cap > 0 ? picked.slice(0, cap) : [];
       const prompt = refMarks(promptText, use);   // @[甲] → 图1，和送进去的顺序一一对应
       if (!prompt) throw new Error('提示词里只有 @ 引用，没有文字');
       stage = '构建参数';
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
-        { mode: g.seedMode, value: g.seed });
+        { mode: g.seedMode, value: g.seed }, a.autogrow);
       stage = '提交任务';
       const res = await postJson('/api/run', { graph: built.graph });
       if (!res.ok) throw new Error(JSON.stringify(res.error || {}).slice(0, 180));
@@ -5455,6 +5522,31 @@
       body.appendChild(h);
       list.forEach((s) => body.appendChild(buildSlot(n, s, linked.has(s.key))));
     });
+    // 动态图片组补出来的插槽（图里没有对应的 LoadImage）：不在 slots 里，单列一组。
+    // 只交代「已经连了哪一格」并给一个断开入口——否则连上之后就找不到地方摘了。
+    const grown = state.links
+      .filter((l) => l.to === n.id && wfGrowSlotOf(n, l.toKey))
+      .map((l) => wfGrowSlotOf(n, l.toKey));
+    if (grown.length) {
+      const h = document.createElement('div');
+      h.className = 'slot-group';
+      h.textContent = '图片组（动态补的插槽）';
+      body.appendChild(h);
+      grown.forEach((s) => {
+        const row = document.createElement('div');
+        row.className = 'slot linked';
+        const lab = document.createElement('div');
+        lab.className = 'lab';
+        lab.innerHTML = `<span class="name">${esc(s.node_title)} · ${esc(s.name)}</span>`
+          + '<span class="badge">image</span><span class="linkmark" title="点击断开连线">⛓ 已连线</span>';
+        lab.querySelector('.linkmark').onclick = () => {
+          removeLink(n.id, s.key);
+          if (slotSheetNode === n.id) openSlotSheet(getNode(n.id));
+        };
+        row.appendChild(lab);
+        body.appendChild(row);
+      });
+    }
     sheet.appendChild(body);
     box.appendChild(sheet);
     box.onclick = (ev) => { if (ev.target === box) closeSlotSheet(); };
@@ -6208,7 +6300,55 @@
   function wfFreeSlot(node, kind) {
     if (kind !== 'text' && kind !== 'image') return null;
     const used = new Set(state.links.filter((l) => l.to === node.id).map((l) => l.toKey));
-    return (node.slots || []).find((s) => s.kind === kind && !used.has(s.key)) || null;
+    return (node.slots || []).find((s) => s.kind === kind && !used.has(s.key)) || wfGrowSlot(node, kind);
+  }
+
+  // 动态图片组（Qwen 编辑流 images.image_1..16）：工作流导出时往往只连了 image_1，
+  // 图里就只有 1 个图片插槽 —— 第 2 张起「没有空闲的对应插槽」，端口不再高亮，连不上。
+  // 用户看到的就是「只认第一张图」。这里按 object_info 报的容量补一个虚拟插槽：
+  // key 仍写成 `<节点id>.images.image_2`，提交时照着它补一个 LoadImage 接上去（见 runWorkflow）。
+  function wfGrowSlotOf(node, key) {
+    for (const grp of (node.autogrow || [])) {
+      const base = `${node.id}.${grp.prefix}`;
+      if (!String(key).startsWith(base)) continue;
+      const name = String(key).slice(base.length);
+      if (!(grp.names || []).includes(name)) continue;
+      return {
+        key, kind: 'image', virtual: true, grow: grp, name,
+        node: grp.node, input: grp.prefix + name,
+        class_type: grp.class_type, node_title: grp.class_type, value: '',
+      };
+    }
+    return null;
+  }
+
+  function wfGrowSlot(node, kind) {
+    if (kind !== 'image') return null;
+    for (const grp of (node.autogrow || [])) {
+      const base = `${node.id}.${grp.prefix}`;
+      // 已经被占的名字：图里连着的（used，那是真实插槽的地盘）+ 画布上已经接过去的
+      const taken = new Set(grp.used || []);
+      state.links
+        .filter((l) => l.to === node.id && String(l.toKey).startsWith(base))
+        .forEach((l) => taken.add(String(l.toKey).slice(base.length)));
+      const name = (grp.names || []).find((nm) => !taken.has(nm));
+      if (name) return wfGrowSlotOf(node, `${base}${name}`);
+    }
+    return null;
+  }
+
+  // 插槽按 key 取：真实插槽在 slots 里，动态图片组补出来的不在（虚拟插槽）
+  function wfSlotByKey(node, key) {
+    return (node.slots || []).find((s) => s.key === key) || wfGrowSlotOf(node, key);
+  }
+
+  // 动态图片组要补的 LoadImage 节点 id：ComfyUI 的 API 图就是「id → 节点」的字典，
+  // 唯一字符串都行，用数字只是为了和导出的图看起来是一家人
+  function freshNodeId(g) {
+    for (let i = 900001; ; i++) {
+      const k = String(i);
+      if (!g[k]) return k;
+    }
   }
 
   function markLinkTargets(kindWanted) {
@@ -6556,7 +6696,7 @@
         if (!free) { flash('没有空闲的对应插槽，先在「设置」里断开一条'); return false; }
         key = free.key;
       }
-      const slot = (dst.slots || []).find((s) => s.key === key);
+      const slot = wfSlotByKey(dst, key);
       if (!slot || slot.kind !== srcKind) { flash('这个插槽的类型不匹配'); return false; }
     } else {
       const b = (portCache.get(`${to}:${key}`) || {}).dataset;
@@ -6773,6 +6913,9 @@
       // widgets_values（他上次填的提示词、图片名、种子）整份写进存档。
       graph: res.graph || graph,
       slots: res.slots, outputs: res.outputs, values: {},
+      // 动态图片组容量（Qwen 编辑流 images.image_1..16）：工作流只连了 image_1 时，
+      // 光按插槽数算就是「只吃 1 张」。多图连接靠它，见 wfGrowSlot。
+      autogrow: res.autogrow || [],
       nodeCount: res.node_count, unknownTypes: res.unknown_types || [],
       status: 'idle', statusText: `共 ${res.node_count} 个节点`, artifacts: [],
     };
@@ -6895,6 +7038,16 @@
         if (src.type === 'text') value = src.value || '';
         else if (src.type === 'image') value = await ensureUploaded(src);
         else continue;
+        // 动态图片组补出来的插槽：图里没有对应的 LoadImage，照着工作流自带的那个补一只再接上
+        const grow = wfGrowSlotOf(n, link.toKey);
+        if (grow) {
+          if (!value) continue;
+          const gid = freshNodeId(graph);
+          graph[gid] = { class_type: 'LoadImage', inputs: { image: value } };
+          const tgt = graph[grow.grow.node];
+          if (tgt && tgt.inputs) tgt.inputs[grow.grow.prefix + grow.name] = [gid, 0];
+          continue;
+        }
         // toKey 形如 "<节点id>.<输入名>"
         const dot = link.toKey.lastIndexOf('.');
         const nodeId = link.toKey.slice(0, dot);
@@ -7845,6 +7998,8 @@
         bg: n.type === 'text' ? n.bg : undefined,
         graph: n.graph, slots: n.slots, outputs: n.outputs, values: n.values,
         nodeCount: n.nodeCount, unknownTypes: n.unknownTypes,
+        // 动态图片组容量：不存的话刷新后多图连接又退回「只认第一张」
+        autogrow: n.autogrow && n.autogrow.length ? n.autogrow : undefined,
         artifacts: n.artifacts, status: 'idle', statusText: n.statusText,
         // 纯图片节点：只放一张图，不挂下面的生成面板。丢了它刷新后图片下面
         // 会突然长出一整块提示词 / 工作流 / 生成，节点高度也跟着变，画布布局就乱了
@@ -13184,6 +13339,21 @@
     state.hydrated = true;
     seedHistory();   // 启动后的画布作为撤销栈底
     lastSavedSnap = JSON.stringify(serialize());
+
+    // 老存档里没有 autogrow（这个字段是后加的）：后台补一次，否则旧画布上的工作流节点
+    // 永远只认一个图片插槽，多图连接还是连不上。分析不了（ComfyUI 没开）就保持原样降级。
+    (async () => {
+      const todo = state.nodes.filter((x) => x.type === 'wf' && !x.autogrow && x.graph);
+      if (!todo.length) return;
+      for (const x of todo) {
+        try {
+          const res = await postJson('/api/analyze', { graph: x.graph });
+          if (res.ok) x.autogrow = res.autogrow || [];
+        } catch { /* 离线：保持原样 */ }
+      }
+      // 补出来的是派生信息，不该把画布标成「未保存」
+      lastSavedSnap = JSON.stringify(serialize());
+    })();
 
     // 首页交互
     const newBtn = document.getElementById('newCanvas');
