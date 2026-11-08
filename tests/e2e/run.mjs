@@ -49,8 +49,8 @@ try {
     }
     throw new Error(`${name} 的括号没闭合`);
   }
-  const { buildGenGraph, dimsTarget, promptPlan, planSeed, refMarks, batchShortfall } = new Function(
-    `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
+  const { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall } = new Function(
+    `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'freshNodeId')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'dimsSwitches')}\n${pickFn(appSrc, 'refCapacity')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
 
   // 生成历史的存档逻辑：上限 30 条、旧档兼容。这两件事在浏览器里造不出来（要真跑 35 次生成），
   // 所以在 Node 里直接验；测的仍然是 app.js 里那份实现。
@@ -420,6 +420,29 @@ try {
   check('没有尺寸来源的样本不钉尺寸，但必须真吃得下输入图（局部重绘 / 超分都是「尺寸跟着原图走」）',
     followers.length >= 1 && followers.every((p) => !p.sized && p.takesImage),
     followers.map((p) => `${p.f}→${p.t || '无'}·吃图=${p.takesImage}`).join(' | ') || '没有这类样本');
+
+  // ---- 尺寸被「开关」挡着：Qwen turbo 编辑流（SamplerCustomAdvanced + ComfySwitchNode）----
+  // 编码器自己会按参考图吐一个 latent，工作流用开关二选一：on_true = 空 latent（面板尺寸），
+  // on_false = 编码器那个（参考图尺寸）。导出时停在 on_false，尺寸写进 on_true 却不拨开关，
+  // 出图永远是参考图大小——用户看到的就是「自定义画幅不生效」（面板 1152×2048，出图 1024×1008）。
+  const turbo = {
+    '505': { class_type: 'SamplerCustomAdvanced', inputs: { latent_image: ['468', 0] } },
+    '468': { class_type: 'ComfySwitchNode', inputs: { switch: false, on_false: ['474', 2], on_true: ['456', 0] } },
+    '456': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '474': { class_type: 'TextEncodeQwenImage21', inputs: { prompt: 'p' } },
+  };
+  const tr = buildGenGraph(turbo, [], { width: 1152, height: 2048 }, 1, 'p', null);
+  check('尺寸写进开关的另一支时，开关要跟着拨过去（否则自定义画幅不生效）',
+    tr.sized && tr.graph['468'].inputs.switch === true
+      && tr.graph['456'].inputs.width === 1152 && tr.graph['456'].inputs.height === 2048,
+    JSON.stringify(tr.graph['468'].inputs));
+  check('开关是连线的（工作流自己的机关）就不硬改，但也不能谎报尺寸生效',
+    (() => {
+      const g = JSON.parse(JSON.stringify(turbo));
+      g['468'].inputs.switch = ['999', 0];
+      const r = buildGenGraph(g, [], { width: 512, height: 768 }, 1, 'p', null);
+      return r.sized === false && Array.isArray(r.graph['468'].inputs.switch);
+    })(), 'blocked');
 
   // ---- 提示词落点：不能取「排序第一个 text 插槽」----
   // Qwen 文生图的真实结构：481 是个 1hew_MultiStringJoin，它的 input / separator 也是 STRING，

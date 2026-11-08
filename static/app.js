@@ -1304,8 +1304,12 @@
   // 真正的落点应该是「KSampler 的 latent_image 往上第一个同时有 width/height 输入的节点」：
   // 那个节点的宽高就是出图尺寸，把连线换成字面量即可（ComfyUI 的输入本来就能二选一）。
   function dimsTarget(g) {
+    // 别只认 KSampler / KSamplerAdvanced：Qwen turbo 编辑流用的是 SamplerCustomAdvanced
+    // （latent_image 走 ComfySwitchNode），写死 KSampler 就等于「这张图根本没有尺寸来源」，
+    // 面板上选的宽高只能退化成「按插槽名碰运气」。KSamplerSelect 之类没有 latent_image，
+    // 会被下面这一条挡掉，不会误判。
     const ks = Object.entries(g).find(([, nd]) => nd && typeof nd.class_type === 'string'
-      && /KSampler/i.test(nd.class_type) && nd.inputs && Array.isArray(nd.inputs.latent_image));
+      && /Sampler/i.test(nd.class_type) && nd.inputs && Array.isArray(nd.inputs.latent_image));
     if (!ks) return null;
     const seen = new Set();
     const queue = [String(ks[1].inputs.latent_image[0])];
@@ -1321,6 +1325,49 @@
       });
     }
     return null;
+  }
+
+  // 尺寸节点被「开关」挡着的情况：Qwen turbo 编辑流把 latent 来源做成 ComfySwitchNode
+  // （on_true = 空 latent，按面板尺寸；on_false = 编码器按参考图出的 latent），导出时停在 on_false。
+  // 尺寸写进 on_true 那支、开关却不动，出图永远是参考图的尺寸——面板写着 1152 × 2048，
+  // 出来的还是 1024 × 1008，这就是「不识别自定义画幅」。这里沿 latent_image 往上，
+  // 把「通往尺寸节点那条路」上的开关逐级拨到正确的那一支。
+  function dimsSwitches(g, target) {
+    const ks = Object.entries(g).find(([, nd]) => nd && typeof nd.class_type === 'string'
+      && /Sampler/i.test(nd.class_type) && nd.inputs && Array.isArray(nd.inputs.latent_image));
+    if (!ks || !target) return { flips: [], blocked: false };
+    const prev = new Map();      // 子节点 id → { from, input }
+    const queue = [String(ks[1].inputs.latent_image[0])];
+    const seen = new Set(queue);
+    while (queue.length) {
+      const id = queue.shift();
+      if (id === String(target)) {
+        const flips = [];
+        let blocked = false;
+        let cur = id;
+        while (prev.has(cur)) {
+          const { from, input } = prev.get(cur);
+          const pn = g[from];
+          if (pn && pn.inputs && 'switch' in pn.inputs && (input === 'on_true' || input === 'on_false')) {
+            // switch 是连线的：由别的节点决定走哪支，是工作流自己的机关。硬改会把它的逻辑顶掉，
+            // 所以不改——但要报 blocked，免得状态栏写着尺寸生效、出图还是参考图大小。
+            if (typeof pn.inputs.switch === 'boolean') flips.push({ node: from, branch: input });
+            else blocked = true;
+          }
+          cur = from;
+        }
+        return { flips, blocked };
+      }
+      const nd = g[id];
+      if (!nd || !nd.inputs) continue;
+      Object.entries(nd.inputs).forEach(([name, v]) => {
+        if (Array.isArray(v) && v.length === 2 && typeof v[1] === 'number') {
+          const cid = String(v[0]);
+          if (!seen.has(cid)) { seen.add(cid); prev.set(cid, { from: id, input: name }); queue.push(cid); }
+        }
+      });
+    }
+    return { flips: [], blocked: false };
   }
 
   // 提示词到底该写进哪个节点？不能再取「排序第一个 text 插槽」了——
@@ -1440,6 +1487,14 @@
       ins.height = dims.height;
       if ('batch_size' in ins) { ins.batch_size = batch; batched = true; }
       sized = true;
+      // 尺寸所在的那一支被开关挡着就拨过去：不拨的话宽高写进去了也不参与出图
+      const sw = dimsSwitches(out, target);
+      sw.flips.forEach((f) => {
+        const sn = out[f.node];
+        if (sn && sn.inputs) sn.inputs.switch = f.branch === 'on_true';
+      });
+      // 开关由别的节点驱动，拨不动：宽高虽然写进去了也不一定生效，状态栏要如实说
+      if (sw.blocked) sized = false;
       dropped.forEach((id) => {
         if (!out[id] || id === target) return;
         const stillUsed = Object.entries(out).some(([nid, nd]) => nid !== id
