@@ -159,7 +159,7 @@ def build_app() -> Path:
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
-""", encoding="utf-8")
+""", encoding="utf-8", newline="\n")
 
     # 双击 .app 不会给终端窗口：转手交给 Terminal 打开项目根那个 启动.command，
     # 这样日志、报错、"按任意键关闭"全都和原来一样，只是图标换成了 InfiSheet。
