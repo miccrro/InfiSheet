@@ -1,0 +1,45 @@
+# InfiSheet · Python 侧工程配置
+#
+# 这个文件目前只放 ruff 的配置。项目运行时仍然零依赖（标准库），
+# ruff 只是开发期的静态检查工具，不进运行时。
+#
+# 装：pip install ruff   （或 winget / brew / pipx install ruff）
+# 用：npm run lint:py    （等价于 ruff check .）
+
+[tool.ruff]
+line-length = 120
+# 与 README 声明的最低版本一致。改这个值会连带影响 UP / RUF 系列规则的判断，
+# 不要因为「本机是 3.12」就往上调。
+target-version = "py39"
+
+exclude = [
+  "data",
+  "dist",
+  "node_modules",
+  "tests/.tmp",
+  "tests/fixtures",
+  ".trash",
+]
+
+[tool.ruff.lint]
+# 只选「能抓到真 bug」和「团队一致性」这两类：
+#   E/W  pycodestyle 的基础错误        F    pyflakes（未定义名、重复定义、未使用）
+#   I    import 排序                    B    bugbear（可变默认值、循环里改迭代对象等）
+#   UP   pyupgrade（老写法）            BLE  blind except（吞掉所有异常）
+#   SIM  可简化的分支
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "SIM"]
+
+ignore = [
+  # 注释和文档字符串是中文，全角标点会被判成「易混淆字符」，纯误报
+  "RUF001", "RUF002", "RUF003",
+  # try/except/pass 改成 contextlib.suppress 只是写法偏好，不值得为它动 20 多处
+  "SIM105",
+  # 历史 noqa 注释保留：它们标的是「这里故意吞异常」，删掉就丢了意图
+  "RUF100",
+  # 性能建议类（PERF*）对本地工具没有意义，全部不开
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 自测脚本是「跑一遍看结果」的性质，允许 print 与宽异常
+"selftest.py" = ["BLE001"]
+"tests/*.py" = ["BLE001", "B007"]

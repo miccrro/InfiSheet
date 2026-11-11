@@ -11,6 +11,11 @@
     "start": "python server.py",
     "dev": "python server.py --port 8788 --no-browser",
     "check": "node tools/check.mjs",
+    "lint": "npm run lint:js && npm run lint:py",
+    "lint:js": "eslint static tests tools",
+    "lint:py": "ruff check .",
+    "fix": "eslint static tests tools --fix && ruff check . --fix",
+    "hooks": "git config core.hooksPath tools/hooks",
     "test": "python tests/smoke.py",
     "test:api": "python selftest.py",
     "test:images": "python tests/images.py",
@@ -22,6 +27,7 @@
     "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\""
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
     "prettier": "3.3.3"
   }
 }

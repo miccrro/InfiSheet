@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { launchChrome, newPage, stopChrome } from './cdp.mjs';
-import { E2E_DIR, ROOT, TMP, freePort, makeDataDir, seedProject, startServer, rmDir } from './lib/server.mjs';
+import { ROOT, TMP, freePort, makeDataDir, seedProject, startServer, rmDir } from './lib/server.mjs';
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -49,7 +49,7 @@ try {
     }
     throw new Error(`${name} 的括号没闭合`);
   }
-  const { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall } = new Function(
+  const { buildGenGraph, dimsTarget, refMarks, batchShortfall } = new Function(
     `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'freshNodeId')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'dimsSwitches')}\n${pickFn(appSrc, 'refCapacity')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
 
   // 生成历史的存档逻辑：上限 30 条、旧档兼容。这两件事在浏览器里造不出来（要真跑 35 次生成），
@@ -3025,8 +3025,6 @@ try {
 
   const libCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-cat');
   await page.clickAt(libCell.x, libCell.y, { settle: 500 });
-  const catMenu = await page.evaluate(
-    `JSON.stringify([...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()))`);
   await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
     .find((b) => b.textContent.trim() === '我的常用').click()`);
   await new Promise((r) => setTimeout(r, 900));

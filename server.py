@@ -380,7 +380,7 @@ def _ws_loop() -> None:
                     continue
                 try:
                     msg = json.loads(data.decode("utf-8"))
-                except Exception:
+                except ValueError:      # 半个帧 / 非 JSON：跳过这一条，别把整条连接带崩
                     continue
                 if msg.get("type") not in ("progress", "progress_state"):
                     continue
@@ -392,8 +392,8 @@ def _ws_loop() -> None:
                     for node_id, st in (d.get("nodes") or {}).items():
                         if isinstance(st, dict):
                             _progress_update(pid, node_id, st.get("value"), st.get("max"))
-        except Exception:
-            time.sleep(3)
+        except Exception:  # noqa: BLE001 — 进度流是「有就用、没有也不影响生成」的旁路，
+            time.sleep(3)  # 任何异常都只该让它歇一下重连，不能把线程打死
         finally:
             with _ws_lock:
                 if _ws_sock is sock:
@@ -401,7 +401,7 @@ def _ws_loop() -> None:
             if sock:
                 try:
                     sock.close()
-                except Exception:
+                except OSError:
                     pass
             time.sleep(1)
 
@@ -814,12 +814,12 @@ def flatten_ui(workflow: dict) -> dict:
 
     def instance_ctx(nodes, links, ctx, prefix, inst):
         out = {}
-        for l in links:
-            if str(l.get("target_id")) != str(inst.get("id")):
+        for link in links:
+            if str(link.get("target_id")) != str(inst.get("id")):
                 continue
-            ep = resolve(nodes, links, ctx, prefix, l.get("origin_id"), l.get("origin_slot"))
+            ep = resolve(nodes, links, ctx, prefix, link.get("origin_id"), link.get("origin_slot"))
             if ep:
-                out[int(l.get("target_slot") or 0)] = ep
+                out[int(link.get("target_slot") or 0)] = ep
         return out
 
     def instance_output(nodes, links, ctx, prefix, inst, slot):
@@ -828,10 +828,10 @@ def flatten_ui(workflow: dict) -> dict:
             return None
         gid = prefix + str(inst.get("id"))
         ictx = instance_ctx(nodes, links, ctx, prefix, inst)
-        for l in sub.get("links") or []:
-            if str(l.get("target_id")) == "-20" and int(l.get("target_slot") or 0) == slot:
+        for link in sub.get("links") or []:
+            if str(link.get("target_id")) == "-20" and int(link.get("target_slot") or 0) == slot:
                 return resolve(sub.get("nodes") or [], sub.get("links") or [], ictx, gid + "/",
-                               l.get("origin_id"), l.get("origin_slot"))
+                               link.get("origin_id"), link.get("origin_slot"))
         return None
 
     def emit(nodes, links, ctx, prefix):
@@ -850,23 +850,23 @@ def flatten_ui(workflow: dict) -> dict:
             copy["inputs"] = [dict(i) for i in (node.get("inputs") or [])]
             flat_nodes.append(copy)
             by_gid[copy["id"]] = copy
-        for l in links:
-            if str(l.get("target_id")) == "-20":
+        for link in links:
+            if str(link.get("target_id")) == "-20":
                 continue
-            target = find_node(nodes, l.get("target_id"))
+            target = find_node(nodes, link.get("target_id"))
             if target is not None and str(target.get("type")) in subdefs:
                 continue
-            src = resolve(nodes, links, ctx, prefix, l.get("origin_id"), l.get("origin_slot"))
+            src = resolve(nodes, links, ctx, prefix, link.get("origin_id"), link.get("origin_slot"))
             if not src:
                 continue
             lid = next_link_id()
             flat_links.append({"id": lid, "origin_id": src[0], "origin_slot": src[1],
-                               "target_id": prefix + str(l.get("target_id")),
-                               "target_slot": int(l.get("target_slot") or 0), "type": l.get("type")})
-            tnode = by_gid.get(prefix + str(l.get("target_id")))
+                               "target_id": prefix + str(link.get("target_id")),
+                               "target_slot": int(link.get("target_slot") or 0), "type": link.get("type")})
+            tnode = by_gid.get(prefix + str(link.get("target_id")))
             if tnode:
                 for inp in tnode.get("inputs") or []:
-                    if inp.get("link") == l.get("id"):
+                    if inp.get("link") == link.get("id"):
                         inp["link"] = lid
                         break
 
@@ -923,9 +923,9 @@ def ui_to_api(workflow: dict) -> dict:
             inputs[name] = values[vi]
             vi += 1
             # seed / noise_seed 后面跟着 control_after_generate（fixed / randomize ...），不是节点输入
-            if decl[0] == "INT" and str(name).lower() in ("seed", "noise_seed"):
-                if vi < len(values) and isinstance(values[vi], str) and values[vi] in SEED_CONTROL:
-                    vi += 1
+            if (decl[0] == "INT" and str(name).lower() in ("seed", "noise_seed")
+                    and vi < len(values) and isinstance(values[vi], str) and values[vi] in SEED_CONTROL):
+                vi += 1
         meta = {"title": node.get("title") or ntype}
         graph[nid] = {"class_type": ntype, "inputs": inputs, "_meta": meta}
     if not graph:
@@ -1255,7 +1255,7 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
     # history 的条目顺序就是执行顺序（旧→新）。倒过来遍历，资产列表最前面就是最新那张。
     entries = list(hist.items())
     entries.reverse()
-    for prompt_id, entry in entries:
+    for _prompt_id, entry in entries:
         if not isinstance(entry, dict):
             continue
         for art in collect_artifacts(entry):
@@ -1562,7 +1562,7 @@ def thumb_width(raw) -> int:
 
 
 def thumb_cache_file(src: str, w: int) -> Path:
-    h = hashlib.sha1(f"{src}|{w}".encode("utf-8")).hexdigest()[:20]
+    h = hashlib.sha1(f"{src}|{w}".encode()).hexdigest()[:20]
     return DATA / THUMB_DIR / f"{h}-{w}.jpg"
 
 
@@ -2518,7 +2518,7 @@ def mcp_install(cid: str) -> dict:
     try:
         path = mcp_config_path(cid)
     except KeyError:
-        raise ValueError(f"不认识的客户端：{cid}")
+        raise ValueError(f"不认识的客户端：{cid}") from None
 
     data: dict = {}
     backup = None
@@ -2528,7 +2528,7 @@ def mcp_install(cid: str) -> dict:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"现有配置不是合法 JSON（第 {exc.lineno} 行），没有动它：{path}")
+                raise ValueError(f"现有配置不是合法 JSON（第 {exc.lineno} 行），没有动它：{path}") from exc
             if not isinstance(data, dict):
                 raise ValueError(f"现有配置的顶层不是对象，没有动它：{path}")
             backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
@@ -2655,12 +2655,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
-        except Exception:
+        except (TypeError, ValueError):     # 头里是空的 / 不是数字，当没有 body
             length = 0
         if length > 0:
             try:
                 self.rfile.read(min(length, 64 * 1024 * 1024))
-            except Exception:
+            except OSError:                 # 客户端已经断开，没东西可丢
                 pass
         self._body_read = True
 
@@ -2674,7 +2674,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # 安静一点
         if os.environ.get("CANVAS_VERBOSE"):
-            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+            sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
 
     # ---------- MCP（Streamable HTTP + JSON-RPC 2.0） ----------
     def mcp_post(self):
@@ -3439,7 +3439,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(canvas, dict) and target.exists():
                 try:
                     current = json.loads(target.read_text(encoding="utf-8-sig"))
-                except Exception:
+                except (OSError, ValueError):   # 读不到 / 坏了：当作没有旧档，照常保存
                     current = None
                 if isinstance(current, dict):
                     incoming_boot = canvas.get("bootAt") or 0
@@ -3543,14 +3543,19 @@ def history_dir() -> Path:
 
 
 def archive_canvas(target: Path) -> None:
-    """覆盖 canvas.json 前，把旧版本归档一份（内容相同或离上次归档太近则跳过）。"""
+    """覆盖 canvas.json 前，把旧版本归档一份（内容相同或离上次归档太近则跳过）。
+
+    归档是「顺带做的事」：读不到、读坏了、删不掉都只跳过，不能影响这次保存本身。
+    所以这里一律只捕 OSError / ValueError —— 抓 Exception 会把真正的编程错误
+    （比如 Path 拼错导致 TypeError）也一起吞掉，出问题时完全查不出来。
+    """
     try:
         raw = target.read_bytes()
-    except Exception:
+    except OSError:
         return
     try:
         json.loads(raw.decode("utf-8-sig"))
-    except Exception:
+    except ValueError:      # 含 UnicodeDecodeError：旧档坏了就别再往 history 里塞
         return
     hd = history_dir()
     files = sorted(hd.glob("*.json"))
@@ -3558,13 +3563,13 @@ def archive_canvas(target: Path) -> None:
         try:
             if time.time() - files[-1].stat().st_mtime < HISTORY_MIN_GAP:
                 return
-        except Exception:
+        except OSError:
             pass
         # 和最近一份内容一致就不重复归档
         try:
             if files[-1].read_bytes() == raw:
                 return
-        except Exception:
+        except OSError:
             pass
     name = time.strftime("%Y%m%d-%H%M%S") + ".json"
     (hd / name).write_bytes(raw)
@@ -3572,7 +3577,7 @@ def archive_canvas(target: Path) -> None:
     for old in files[:-HISTORY_LIMIT]:
         try:
             old.unlink()
-        except Exception:
+        except OSError:
             pass
 
 
@@ -3584,7 +3589,7 @@ def list_canvas_history() -> list[dict]:
     for f in sorted(hd.glob("*.json"), reverse=True):
         try:
             d = json.loads(f.read_text(encoding="utf-8-sig"))
-        except Exception:
+        except (OSError, ValueError):   # 单个坏档不该让整张历史列表报错
             continue
         out.append({
             "file": f.name,
@@ -3650,7 +3655,7 @@ def list_projects() -> list[dict]:
     for f in files:
         try:
             d = json.loads(f.read_text(encoding="utf-8-sig"))
-        except Exception:
+        except (OSError, ValueError):   # 单个坏档不该让整个项目列表报错
             continue
         out.append({
             "id": f.stem,
@@ -3721,9 +3726,8 @@ def cover_source(canvas: dict) -> str:
 
 def cover_url(pid: str, canvas: dict) -> str:
     cv = canvas.get("cover")
-    if isinstance(cv, dict) and cv.get("file"):
-        if (DATA / "covers" / f"{pid}.img").exists():
-            return f"/api/projects/{pid}/cover?v={cv['file']}"
+    if isinstance(cv, dict) and cv.get("file") and (DATA / "covers" / f"{pid}.img").exists():
+        return f"/api/projects/{pid}/cover?v={cv['file']}"
     src = cover_source(canvas)
     if not src:
         return ""

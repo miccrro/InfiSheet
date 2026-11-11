@@ -169,7 +169,6 @@ def main() -> int:
         shutil.copy2(_f, lib_seed / _f.name)
     port = free_port()
     base = f"http://127.0.0.1:{port}"
-    log_path = tmp / "server.log"      # 服务进程自己继承控制台输出，这里只留路径给报错提示
     proc = subprocess.Popen(
         [sys.executable, "-u", str(SERVER), "--port", str(port),
          "--no-browser", "--data", str(tmp / "data")],
@@ -278,7 +277,8 @@ def main() -> int:
                 {"id": 1, "type": "CLIPTextEncode", "inputs": [{"name": "clip", "link": 1}],
                  "outputs": [{"name": "CONDITIONING", "links": [2]}], "widgets_values": ["一只淋雨的猫"]},
                 {"id": 2, "type": "CLIPLoader", "inputs": [],
-                 "outputs": [{"name": "CLIP", "links": [1]}], "widgets_values": ["qwen3vl_4b_fp8_scaled.safetensors", "krea2", "default"]},
+                 "outputs": [{"name": "CLIP", "links": [1]}],
+                 "widgets_values": ["qwen3vl_4b_fp8_scaled.safetensors", "krea2", "default"]},
                 {"id": 3, "type": "EmptyLatentImage", "inputs": [],
                  "outputs": [{"name": "LATENT", "links": [3]}], "widgets_values": [512, 512, 1]},
             ],
@@ -309,7 +309,8 @@ def main() -> int:
         status2, canvas = jget(base, "/api/canvas")
         name_now = ((canvas or {}).get("canvas") or {}).get("name")
         c.check("旧 bootAt 写入被写保护拦下",
-                (res or {}).get("stale") is True and name_now == "自测画布", f"stale={(res or {}).get('stale')} name={name_now}")
+                (res or {}).get("stale") is True and name_now == "自测画布",
+                f"stale={(res or {}).get('stale')} name={name_now}")
         c.check("快照落在 --data 指定目录",
                 (tmp / "data" / "canvas.json").is_file(), str(tmp / "data" / "canvas.json"))
 
@@ -358,10 +359,10 @@ def main() -> int:
             boundary = "----canvas-selftest-boundary"
             payload = b"".join([
                 (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; '
-                 f'filename="selftest-upload.png"\r\nContent-Type: image/png\r\n\r\n').encode("utf-8"),
+                 f'filename="selftest-upload.png"\r\nContent-Type: image/png\r\n\r\n').encode(),
                 png,
                 (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="overwrite"'
-                 f'\r\n\r\ntrue\r\n--{boundary}--\r\n').encode("utf-8"),
+                 f'\r\n\r\ntrue\r\n--{boundary}--\r\n').encode(),
             ])
             status, _, raw = http_raw("POST", base + "/api/upload", payload,
                                       f"multipart/form-data; boundary={boundary}")

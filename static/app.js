@@ -2142,7 +2142,7 @@
 
   // 光标前的 `@xxx` → 打开引用菜单。不能要求 `@` 前面是空格——中文文案里大家就是「文案@」接着打；
   // 只排除紧跟 `[` 的情况（那是胶囊的 `@[名字]` token，不是新起的引用）
-  const AT_RE = /@([^\s@\[]{0,20})$/;
+  const AT_RE = /@([^\s@[]{0,20})$/;
 
   function detectAtMention(el, n) {
     const sides = promptSides(el);
@@ -3951,7 +3951,6 @@
     const comfyT = box.querySelector('.asset-comfy-t');
     const comfyBtn = box.querySelector('.asset-comfy-btn');
     const hintEl = box.querySelector('.asset-hint');
-    const hintT = box.querySelector('.asset-hint-t');
     const restoreBtn = box.querySelector('.asset-restore');
     const pickBtn = box.querySelector('.asset-pick');
 
@@ -5468,7 +5467,6 @@
       t.onclick = () => setTab(t.dataset.set);
     });
     // 背景：色板 / 自定义颜色 / 纹理
-    const bgNow = loadCanvasBg();
     const swWrap = box.querySelector('#setBgSwatches');
     const markBg = () => {
       const cur = loadCanvasBg();
@@ -11803,7 +11801,10 @@
     return { nw, nh, ox, oy };
   }
 
-  // 兼容「给比例 / 百分比」的老口径：返回 [nw, nh]
+  // 兼容「给比例 / 百分比」的老口径：返回 [nw, nh]。
+  // 前端已经不再调用它（比例档现在直接走 outpaintFrame），但 e2e 的比例档用例
+  // 通过 pickFn 取这个名字做对照，删掉会把那条用例打挂，所以留着。
+  // eslint-disable-next-line no-unused-vars
   function outpaintSize(w, h, ratio, padPct) {
     const f = outpaintFrame(w, h, outpaintPad(w, h, ratio, padPct));
     return [f.nw, f.nh];
@@ -13236,7 +13237,6 @@
         </div>
       </div>`;
     document.body.appendChild(mask);
-    const box = mask.querySelector('.crop-box');
     const img = mask.querySelector('img');
     const stageEl = mask.querySelector('.crop-stage');
     const dimEl = mask.querySelector('.crop-dim');

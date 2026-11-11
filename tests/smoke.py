@@ -192,7 +192,6 @@ def main() -> int:
     for f in FIXTURE_WF.glob("*.json"):
         shutil.copy2(f, lib_dir / f.name)
 
-    import random
     import socket
     import subprocess
 
@@ -542,7 +541,7 @@ def main() -> int:
             check("缩略图：900px 宽缩到 320（JPEG，按宽度等比）",
                   status == 200 and dim and dim[0] == 320 and dim[1] == 213,
                   f"HTTP {status} {len(raw)}B {dim}")
-            check("缩略图比原图小（原图 %d B）" % len(big), len(raw) < len(big), f"{len(raw)}B")
+            check(f"缩略图比原图小（原图 {len(big)} B）", len(raw) < len(big), f"{len(raw)}B")
         else:
             skip("缩略图缩放", "这台机器的 Python 没装 PIL，服务端只回原图")
         # 这张只为缩略图而建，删掉——下面「改存放路径」那条断言的是「目录已经搬空」

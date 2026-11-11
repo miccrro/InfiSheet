@@ -38,12 +38,12 @@ import re
 import subprocess
 import sys
 import threading
-import zlib
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from pathlib import Path
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -898,10 +898,9 @@ def build_gen_graph(graph: dict, slots: list, dims: dict, batch: int, prompt: st
         elif "height" in name:
             if not sized:
                 set_val(s["key"], dims["height"])
-        elif "batch" in name:
-            if not (sized and target == str(s.get("node"))):
-                set_val(s["key"], batch)
-                batched = True
+        elif "batch" in name and not (sized and target == str(s.get("node"))):
+            set_val(s["key"], batch)
+            batched = True
     return {
         "graph": out, "sized": sized, "pruned": refs["pruned"],
         "batch": {"value": batch, "applied": batched},
@@ -966,15 +965,15 @@ def collect_refs(canvas: dict, node: dict) -> list:
         out.append({"node": n, "via": via})
 
     links = canvas.get("links") or []
-    into = [find_node(canvas, l.get("from")) for l in links
-            if l.get("to") == node.get("id") and l.get("toKey") == "in"]
+    into = [find_node(canvas, link.get("from")) for link in links
+            if link.get("to") == node.get("id") and link.get("toKey") == "in"]
     for n in into:
         if n and n.get("type") == "image":
             push(n, "link")
     for t in [n for n in into if n and n.get("type") == "text"]:
-        for l in links:
-            if l.get("to") == t.get("id") and l.get("toKey") == "in":
-                push(find_node(canvas, l.get("from")), "text")
+        for link in links:
+            if link.get("to") == t.get("id") and link.get("toKey") == "in":
+                push(find_node(canvas, link.get("from")), "text")
     for nid in ((node.get("gen") or {}).get("extras") or []):
         push(find_node(canvas, nid), "at")
     return out
@@ -1055,9 +1054,9 @@ def upload_bytes(data: bytes, filename: str) -> dict:
     boundary = "----infisheet" + uuid.uuid4().hex
     ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; "
-            f"filename=\"{filename}\"\r\nContent-Type: {ctype}\r\n\r\n").encode("utf-8")
+            f"filename=\"{filename}\"\r\nContent-Type: {ctype}\r\n\r\n").encode()
     tail = (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"overwrite\"\r\n\r\n"
-            f"true\r\n--{boundary}--\r\n").encode("utf-8")
+            f"true\r\n--{boundary}--\r\n").encode()
     status, _, raw = E().comfy_request(
         "POST", "/upload/image", head + data + tail,
         content_type=f"multipart/form-data; boundary={boundary}", timeout=120)
@@ -1065,8 +1064,8 @@ def upload_bytes(data: bytes, filename: str) -> dict:
         raise ToolError(f"上传到 ComfyUI 失败（{status}）：{raw[:200].decode('utf-8', 'replace')}")
     try:
         return json.loads(raw.decode("utf-8"))
-    except Exception:  # noqa: BLE001
-        raise ToolError("ComfyUI 上传接口返回的不是 JSON")
+    except ValueError:      # 含 JSONDecodeError / UnicodeDecodeError
+        raise ToolError("ComfyUI 上传接口返回的不是 JSON") from None
 
 
 def image_bytes(node: dict) -> bytes:
@@ -1380,8 +1379,9 @@ def _t_get_canvas(args):
                 bits.append(f"{g.get('batch')} 张")
             if g.get("style"):
                 bits.append("风格 " + str((g.get("style") or {}).get("cn") or ""))
+            prompt_note = f" · 提示词：{str(g.get('prompt') or '')[:40]}" if g.get("prompt") else ""
             lines.append(f"- {n['id']} 图片「{n.get('title')}」· {' / '.join(b for b in bits if b)}"
-                         f" · {len(gal)} 张图" + (f" · 提示词：{str(g.get('prompt') or '')[:40]}" if g.get("prompt") else ""))
+                         f" · {len(gal)} 张图{prompt_note}")
         elif t == "wf":
             lines.append(f"- {n['id']} 工作流「{n.get('title')}」· {n.get('nodeCount') or '?'} 节点"
                          f" · {len(n.get('artifacts') or [])} 个产物")
@@ -1403,8 +1403,8 @@ def _t_get_canvas(args):
         out_nodes.append(item)
     if links:
         lines.append("连线：")
-        for l in links:
-            lines.append(f"- {l.get('from')} → {l.get('to')} ({l.get('toKey') or 'in'})")
+        for link in links:
+            lines.append(f"- {link.get('from')} → {link.get('to')} ({link.get('toKey') or 'in'})")
     return {"text": "\n".join(lines),
             "data": {"id": pid, "name": canvas.get("name"), "rev": int(canvas.get("rev") or 0),
                      "nodes": out_nodes, "links": links, "groups": canvas.get("groups") or []}}
@@ -1449,7 +1449,9 @@ def _t_list_workflows(_args):
     return {"text": "\n".join(lines), "data": {"library": lib}}
 
 
-@tool("search_styles", "在 397 个 Krea2 风格预设里检索。返回的风格名可以直接传给 add_image_node / set_generation 的 style 参数。",
+@tool("search_styles",
+      "在 397 个 Krea2 风格预设里检索。返回的风格名可以直接传给 add_image_node / "
+      "set_generation 的 style 参数。",
       {"query": {"type": "string", "description": "中英文关键词，如 动漫 / 胶片 / 油画"},
        "limit": {"type": "integer", "description": "最多返回几条，默认 12"}}, [])
 def _t_search_styles(args):
@@ -1694,7 +1696,8 @@ def _t_delete_nodes(args):
     def apply(c):
         before = len(c["nodes"])
         c["nodes"] = [n for n in c["nodes"] if n.get("id") not in ids]
-        c["links"] = [l for l in c["links"] if l.get("from") not in ids and l.get("to") not in ids]
+        c["links"] = [link for link in c["links"]
+                      if link.get("from") not in ids and link.get("to") not in ids]
         for g in c.get("groups") or []:
             g["nodeIds"] = [x for x in (g.get("nodeIds") or []) if x not in ids]
         return before - len(c["nodes"])
@@ -1735,8 +1738,9 @@ def _t_connect_nodes(args):
         elif b.get("type") == "out":
             if a.get("type") != "wf":
                 raise ToolError("输出节点只能接工作流节点")
-        dup = next((l for l in c["links"] if l.get("from") == a["id"] and l.get("to") == b["id"]
-                    and l.get("toKey") == key), None)
+        dup = next((link for link in c["links"]
+                    if link.get("from") == a["id"] and link.get("to") == b["id"]
+                    and link.get("toKey") == key), None)
         if dup:
             return dup
         link = {"id": next_id(c, "l"), "from": a["id"], "to": b["id"], "toKey": key}
@@ -1755,8 +1759,8 @@ def _t_disconnect_nodes(args):
     pid, _ = resolve_project(args)
 
     def apply(c):
-        keep = [l for l in c["links"]
-                if not (l.get("from") == args["from"] and l.get("to") == args["to"])]
+        keep = [link for link in c["links"]
+                if not (link.get("from") == args["from"] and link.get("to") == args["to"])]
         removed = len(c["links"]) - len(keep)
         c["links"] = keep
         return removed
@@ -1994,7 +1998,7 @@ def _find_pid_owner(prompt_id: str) -> tuple:
     for f in projects_dir().glob("*.json"):     # 表丢了（老任务 / 手删了文件）再扫画布兜底
         d = _read_json(f) or {}
         for n in d.get("nodes") or []:
-            if str(((n.get("gen") or {}).get("pid") or "")) == prompt_id:
+            if str((n.get("gen") or {}).get("pid") or "") == prompt_id:
                 return f.stem, str(n.get("id") or "")
     return None, ""
 
