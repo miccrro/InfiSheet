@@ -3294,6 +3294,8 @@
     g.error = null;         // 上一轮的失败详情不能留到这一轮（否则状态行一直是红的）
     // 「阶段」跟着流程往下走：失败时要说得清是卡在载入、分析、构建还是提交，
     // 否则用户拿到一句 `工作流为空` 不知道是自己少选了东西还是文件坏了。
+    // 这个默认值不是废话：异常发生在下面第一次赋值之前时，末尾的 catch 会读它（拼进「xxx 失败」）。
+    // eslint-disable-next-line no-useless-assignment -- 正常路径用不到，异常路径要用
     let stage = '载入工作流';
     // 没选工作流就不出图。除了那句话，顺手把左下角那颗菜单**打开**——
     // 只丢一句「先选一个工作流」，用户还得自己找按钮在哪，等于让他多点两次。
@@ -3849,7 +3851,7 @@
     const keys = (items || []).filter((it) => it && it.filename)
       .map((it) => `${it.type || 'output'}:${it.subfolder || ''}/${it.filename}`);
     if (!keys.length) return 0;
-    let res = null;
+    let res;
     try {
       res = await postJson('/api/assets/lib', {
         op: 'import', nameMode: 'time', items: keys.map((k) => ({ key: k })),
@@ -4751,7 +4753,7 @@
     if (box) box.classList.remove('hidden');
     if (txt) txt.textContent = '正在关闭…';
     state.serverDown = true;      // 先把轮询停掉，否则接下来那几发 fetch 会把控制台刷红
-    let r = null;
+    let r;
     try { r = await postJson('/api/shutdown', {}); } catch { r = null; }
     if (!r || r.ok === false) {
       state.serverDown = false;
@@ -5012,7 +5014,7 @@
       const f = inp.files && inp.files[0];
       inp.remove();
       if (!f) return;
-      let url = '';
+      let url;
       try {
         url = await squareIconDataURL(f, 96);
       } catch (err) {
@@ -5122,7 +5124,7 @@
   //
   // 查到之后直接写回那份库文件——它就是用户自己的东西。
   async function checkWfItem(o) {
-    let graph = null;
+    let graph;
     try {
       graph = await loadGraphById(o.id);
     } catch (err) {
@@ -5130,7 +5132,7 @@
       return;
     }
     if (!graph || !Object.keys(graph).length) { flash(`读不到「${o.label}」：文件可能已经不在了`); return; }
-    let res = null;
+    let res;
     try { res = await postJson('/api/residue', { graph }); } catch (err) { flash(`检查失败：${err.message}`); return; }
     if (!res || !res.ok) { flash((res && res.error) || '检查失败'); return; }
     const list = res.residue || [];
@@ -5204,7 +5206,7 @@
     inp.onchange = async () => {
       const f = inp.files && inp.files[0];
       if (!f) return;
-      let data = null;
+      let data;
       try { data = JSON.parse(await f.text()); } catch { flash('不是有效的 JSON 文件'); return; }
       if (data && data.version === 2 && Array.isArray(data.nodes)
         && data.nodes.some((nd) => nd && ['text', 'image', 'wf', 'out'].includes(nd.type))) {
@@ -7080,7 +7082,7 @@
   }
 
   async function addWorkflowFromFile(file, x, y) {
-    let data = null;
+    let data;
     try { data = JSON.parse(await file.text()); } catch { flash('不是有效的 JSON 文件'); return null; }
     let graph = extractApiGraph(data);
     if (!graph && !(data && Array.isArray(data.nodes))) {
@@ -9259,7 +9261,7 @@
     ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
     document.body.appendChild(ta);
     ta.select();
-    let ok = false;
+    let ok;
     try { ok = document.execCommand('copy'); } catch { ok = false; }
     ta.remove();
     return ok;
@@ -10396,7 +10398,7 @@
     if (!confirm(`删除选中的 ${ids.length} 个项目？存档会从本机移除，无法恢复。`)) return;
     let failed = 0;
     for (const id of ids) {
-      let res = null;
+      let res;
       try {
         res = await api('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' });
       } catch { res = null; }
@@ -13497,7 +13499,8 @@
     }
     if (!restored) {
       const server = await api('/api/canvas');
-      if (server.canvas) restored = load(server.canvas);
+      // 最后一档兜底：之后不再读 restored，所以只取 load() 的副作用（把画布装进 state）
+      if (server.canvas) load(server.canvas);
     }
     if (state.projectId) { try { localStorage.setItem('infisheet-project', state.projectId); } catch { /* noop */ } }
     applyView(); renderAll();
