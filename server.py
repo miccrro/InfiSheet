@@ -598,10 +598,18 @@ def update_check(force: bool = False) -> dict:
         with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
             info = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            out.update({"ok": False, "error": "仓库还没有发布过版本"})
-        elif exc.code == 403:
+        if exc.code == 403:
+            # 匿名 API 每小时只有 60 次，很容易被别人/自己用完（共用出口 IP 更明显）。
+            # 这时退到网页那条路：/releases/latest 会 302 到 /releases/tag/vX.Y.Z，
+            # 从跳转后的地址里抠 tag —— 这条路不占 API 配额，拿不到更新说明但够判断版本。
+            tag = latest_tag_via_redirect()
+            if tag:
+                out.update(latest_payload(cur, tag))
+                _UPDATE_CACHE.update({"at": now, "data": out})
+                return out
             out.update({"ok": False, "error": "GitHub 限流了，过一会儿再试"})
+        elif exc.code == 404:
+            out.update({"ok": False, "error": "仓库还没有发布过版本"})
         else:
             out.update({"ok": False, "error": f"GitHub 返回 {exc.code}"})
         return out
@@ -624,6 +632,28 @@ def update_check(force: bool = False) -> dict:
     })
     _UPDATE_CACHE.update({"at": now, "data": out})     # 只缓存成功的那次，失败下次重试
     return out
+
+
+def latest_payload(cur: str, tag: str) -> dict:
+    """只有 tag 时的结果（API 限流的退路用）：版本够判断，说明和附件留空。"""
+    latest = str(tag or "").lstrip("vV").strip()
+    return {"latest": latest,
+            "hasUpdate": version_key(latest) > version_key(cur),
+            "url": f"https://github.com/{UPDATE_REPO}/releases/tag/{tag}",
+            "notes": "", "publishedAt": "", "zip": ""}
+
+
+def latest_tag_via_redirect() -> str:
+    """不占 API 配额地拿最新 tag：`/releases/latest` 会 302 到 `/releases/tag/vX.Y.Z`。"""
+    try:
+        req = urllib.request.Request(f"https://github.com/{UPDATE_REPO}/releases/latest",
+                                     headers={"User-Agent": f"InfiSheet/{app_version()}"})
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+            final = resp.geturl() or ""          # urllib 自动跟 302，这里拿跳转后的地址
+    except Exception:  # noqa: BLE001
+        return ""
+    found = re.search(r"/releases/tag/([^/?#]+)", final)
+    return found.group(1) if found else ""
 
 
 
