@@ -3304,17 +3304,25 @@
       bail();
       return;
     }
-    // 扩图：先把边框烘成像素 + 遮罩，再走后面那条完全不懂扩图的生成流程。
+    // 扩图：先把边框烘成一份**临时源图**（撑大的画布 + 平移后的遮罩），原节点一个字节都不动。
     // 必须排在「取参考图 / 算遮罩」前面——它换的正是这两样东西。
+    // 结果落点不用在这里操心：节点上已经有图，出图那条路（hadImage）本来就会另起节点。
+    let bake = null;
     if (outpaintOn(n)) {
       try {
-        await bakeOutpaint(n);
+        bake = await bakeOutpaint(n);
       } catch (err) {
         flash(`扩图准备失败：${err.message}`);
         bail();
         return;
       }
+    } else if (keepJob && keepJob.opBake) {
+      // 自动重试：边框在上一次提交成功后已经收起了，这里沿用那次烘好的画布。
+      // 不接这一手的话，重试会按原图重跑一遍——扩出来的部分静默丢掉，出图看着「根本没扩」。
+      bake = keepJob.opBake;
     }
+    // 这一轮真正喂给模型的「节点自己的图」：扩图时是撑大的画布，否则就是节点上那张
+    const srcURL = bake ? bake.url : n.dataURL;
     // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
     const inLinks = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
       .map((l) => getNode(l.from)).filter(Boolean);
@@ -3342,8 +3350,9 @@
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
       } catch { /* 这张传不上去就跳过，别把整次生成拖垮 */ }
     }
-    // 节点自己的图也当参考图（图就摆在这个节点上，没有连线的那种）
-    if (!picked.length && n.dataURL) {
+    // 节点自己的图也当参考图（图就摆在这个节点上，没有连线的那种）。
+    // 扩图时跳过：节点上是**原图**，这一轮要喂的是撑大的画布（见下面 bake 那一段）。
+    if (!bake && !picked.length && n.dataURL) {
       try {
         const name = await ensureUploaded(n);
         if (name) picked.push({ node: n, name, label: labelOf(n) });
@@ -3358,8 +3367,9 @@
     //             裁出涂到的范围单独跑一次，出图再缩放贴回原位（见 stitchPatch）。
     // 第二条是为了「换个工作流就得重涂一遍」这件事不再发生——以前这种流一涂遮罩就被
     // 静默换成 Krea2 局部重绘，用户看到的就是「我选的流一点生成就跳走」。
-    const mdoc = maskDocOf(n);
-    const needMask = !!(mdoc && mdoc.strokes.length && n.dataURL);
+    // 遮罩文档跟着**源图**走：扩图时是「平移过的旧笔画 + 四条新带子」，不是节点上那份
+    const mdoc = bake ? bake.doc : maskDocOf(n);
+    const needMask = !!(mdoc && mdoc.strokes.length && srcURL);
     if (!reconcileWorkflow(n, needMask)) { bail(); return; }
     const wfNow = wfOptions().find((o) => o.id === g.wf);
     const cropMode = needMask && !(wfNow && wfNow.alphaMask);
@@ -3367,17 +3377,30 @@
     if (needMask) {
       try {
         if (cropMode) {
-          const img = await loadImageEl(n.dataURL);
+          const img = await loadImageEl(srcURL);
           cropRect = cropRectFor(mdoc, img.naturalWidth || img.width, img.naturalHeight || img.height);
           if (!cropRect) throw new Error('涂的范围算不出来（遮罩是空的？）');
           const name = await uploadCropImage(img, cropRect, n.id);
           if (name) picked.unshift({ node: n, name, label: labelOf(n) });
         } else {
-          const name = await uploadMaskedImage(n, mdoc);
+          const name = await uploadMaskedImage(n, mdoc, srcURL);
           if (name) picked.unshift({ node: n, name, label: labelOf(n) });
         }
       } catch (err) {
         flash(`遮罩${cropMode ? '裁切' : '上传'}失败：${err.message}`);
+        bail();
+        return;
+      }
+    }
+    // 扩图：撑出来的画布必须进模型。吃遮罩那条路上面已经 unshift 过（同一张图带 alpha），
+    // 只吃图的工作流没有遮罩可写，这里补一张普通上传——它是「补画外」的唯一依据，
+    // 不能因为节点上还连着别的参考图就漏掉（节点自己的图那条路扩图时是跳过的）。
+    if (bake && !needMask) {
+      try {
+        const name = await uploadImageData(bake.url, `${n.id}-outpaint.png`);
+        if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+      } catch (err) {
+        flash(`扩图源图上传失败：${err.message}`);
         bail();
         return;
       }
@@ -3397,13 +3420,15 @@
       if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
       // 智能画幅：出图前按「这次真正要喂进去的图」重算一次。
       // 只在选中时算一次是不够的——换过图 / 涂过遮罩之后，尺寸和比例早就不是当初那个了。
-      if (g.aspectAuto) {
+      // 扩图时尺寸由边框说了算，别让「智能」按原图重算一遍把它顶掉
+      if (g.aspectAuto && !bake) {
         const s = autoSizeFor(n);
         if (s) { g.aspect = s.aspect; g.autoW = s.w; g.autoH = s.h; }
       }
       // 裁切重绘时尺寸必须跟着**裁剪框**走：模型只看到那一小块，给它整图尺寸等于让它
       // 按原图比例重算一张小图，贴回去要缩两次、细节全糊。对齐 16 由 cropRectFor 保证。
-      const dims = cropRect ? { width: cropRect.w, height: cropRect.h } : dimsOf(g);
+      const dims = cropRect ? { width: cropRect.w, height: cropRect.h }
+        : bake ? { width: bake.w, height: bake.h } : dimsOf(g);
       // 工作流能吃几张图（Qwen 编辑流是 images.image_1..16）就用几张；一张都不吃就退回纯文本，
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
       const cap = refCapacity(a);
@@ -3413,9 +3438,31 @@
       stage = '构建参数';
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
         { mode: g.seedMode, value: g.seed }, a.autogrow);
+      // 结果节点继承的参数在**提交这一刻**定格：扩图会在提交成功后把边框收起、尺寸档还回去，
+      // 等结果回来再读 g.size，新节点继承到的就是原图那套尺寸了。
+      const inheritSnap = {
+        prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
+        wf: g.wf || '',
+        style: g.style ? { ...g.style } : null,
+        seed: built.seed ? built.seed.value : null,
+        aspect: g.aspect, aspectAuto: !!g.aspectAuto,
+        autoW: g.autoW, autoH: g.autoH, autoScale: g.autoScale,
+        size: g.size, custom: g.custom ? { ...g.custom } : null,
+        batch: Number(g.batch) || 1,
+      };
       stage = '提交任务';
       const res = await postJson('/api/run', { graph: built.graph });
       if (!res.ok) throw new Error(JSON.stringify(res.error || {}).slice(0, 180));
+      // 扩图这一轮已经把「撑大的画布 + 遮罩」烘进请求了：边框到此收工，尺寸档还给用户。
+      // 原图 / 原遮罩全程没动过，结果会作为新节点落在它右边（hadImage 那条路）。
+      // 提交失败时**不收起**——用户还能接着调边框重试，不用重新拖一遍。
+      if (bake) {
+        closeOutpaint(n);
+        // 烘好的画布挂在任务记录上：自动重试复用同一条任务，重试时直接拿它，
+        // 不会因为边框已经收起就退回「按原图生成」
+        if (g.job) g.job.opBake = bake;
+        flash(`已按 ${bake.w} × ${bake.h} 扩图，结果落到新节点，原图保留`);
+      }
       // 取消发生在「提交请求已经发出」这段缝里：图确实进了 ComfyUI 队列，得再撤一次，
       // 否则用户点了取消，画布上过一会儿还是冒出一张图。
       if (g.job && g.job.phase === 'canceled') {
@@ -3498,12 +3545,14 @@
               return;
             }
             g.retried = 0;
+            if (g.job) delete g.job.opBake;   // 这一轮到此为止，别再让后续重试沿用旧画布
             setGenError(n, err, '', detail);
             finishJob(g.job, 'error', c.title);
             refreshGenPanel(n);
             return;
           }
           g.retried = 0;
+          if (g.job) delete g.job.opBake;
           const imgs = arts.filter((x) => x.kind === 'image');
           if (!imgs.length) {
             clearProgress(n);
@@ -3526,18 +3575,9 @@
           // 也不能因为贴图这一步把整次生成丢掉。
           if (cropRect) {
             batchItems = await Promise.all(batchItems.map(
-              (it) => storeStitched(n, it, cropRect, mdoc).catch(() => it)));
+              (it) => storeStitched(n, it, cropRect, mdoc, srcURL).catch(() => it)));
           }
-          const born = hadImage ? spawnResultNodes(n, batchItems, {
-            prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
-            wf: g.wf || '',
-            style: g.style ? { ...g.style } : null,
-            seed: built.seed ? built.seed.value : null,
-            aspect: g.aspect, aspectAuto: !!g.aspectAuto,
-            autoW: g.autoW, autoH: g.autoH, autoScale: g.autoScale,
-            size: g.size, custom: g.custom ? { ...g.custom } : null,
-            batch: Number(g.batch) || 1,
-          }) : [];
+          const born = hadImage ? spawnResultNodes(n, batchItems, inheritSnap) : [];
           if (!hadImage) {
             g.gallery = batchItems.slice();
             g.idx = 0;
@@ -7053,8 +7093,9 @@
   // 不走 ensureUploaded 的缓存（n.uploaded）——同一张图换个遮罩就是另一个文件，
   // 复用它会把上一次的遮罩带进去。文件名固定成 <节点id>-mask.png + overwrite，
   // 不按时间戳堆一堆垃圾；ComfyUI 每次请求都重新读文件，不按文件名缓存。
-  async function uploadMaskedImage(n, doc) {
-    const cv = await bakeMaskCanvas(n, doc);
+  // url 可覆盖源图：扩图时源图是**烘出来的临时画布**，不在节点上。
+  async function uploadMaskedImage(n, doc, url) {
+    const cv = await bakeMaskCanvas(n, doc, url);
     const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
     if (!blob) throw new Error('遮罩编码失败');
     const fd = new FormData();
@@ -7564,20 +7605,56 @@
       extras: [],
       gallery: [], idx: 0, runs: [],
     });
-    const stepX = 380 + 40;
+    // 落点：默认贴原节点右边一个 GAP。右边被占**不再整步往右跳**（一撞就飞出去一大截），
+    // 改成顺着这一列往下让，间距照样是 GAP。
+    const GAP = 40;
+    const NW = 380;   // 新图片节点的宽（nodeWidth 的默认值）
+    const NH = 420;   // 高度只能估：图还没解码，真实高度竖图能到 760
     const y0 = Math.round(src.y);
-    // 这一行已经有节点（上一批的产物）就继续往右让，别叠上去。
+    const baseX = Math.round(src.x + nodeWidth(src) + GAP);
     // 高度取实测值：竖图能到 760px，按固定值估会把「其实不挡路」的节点也算成障碍。
     const hOf = (o) => {
       const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(o.id)}"]`);
-      return (el && el.offsetHeight) || 420;
+      return (el && el.offsetHeight) || NH;
     };
-    const busy = (x) => state.nodes.some((o) => o !== src
-      && x < o.x + nodeWidth(o) && x + 380 > o.x
-      && y0 < o.y + hOf(o) && y0 + 420 > o.y);
-    let x0 = Math.round(src.x + nodeWidth(src) + 60);
-    for (let guard = 0; guard < 60 && busy(x0); guard++) x0 += stepX;
-    const born = items.map((it, i) => addImageNode(x0 + i * stepX, y0, {
+    // 撞不撞：只看真的压上去（x、y 两个方向都重叠）。留 GAP 当余量会把
+    // 「挨得近但没压上」的邻居也算成障碍，右边一整排 30px 间距的节点就全被判成挡路，
+    // 结果一生成就往下载。
+    const clash = (x, y, taken) => state.nodes.some((o) => o !== src
+      && x < o.x + nodeWidth(o) && x + NW > o.x
+      && y < o.y + hOf(o) && y + NH > o.y)
+      || taken.some((t) => x < t.x + NW && x + NW > t.x
+        && y < t.y + NH && y + NH > t.y);
+    const fits = (spots) => {
+      const taken = [];
+      for (const s of spots) {
+        if (clash(s[0], s[1], taken)) return false;
+        taken.push({ x: s[0], y: s[1] });
+      }
+      return true;
+    };
+    // 先试一行横排；右侧被占就整组改成竖排（同一列往下），两种情况间距都是 GAP
+    let spots = null;
+    const row = items.map((_, i) => [baseX + i * (NW + GAP), y0]);
+    if (fits(row)) spots = row;
+    else {
+      let cy = y0;
+      for (let guard = 0; guard < 80 && !spots; guard++) {
+        const col = items.map((_, i) => [baseX, cy + i * (NH + GAP)]);
+        if (fits(col)) { spots = col; break; }
+        // 起点推到挡路节点的下面；推不动就收手，别死循环
+        const next = state.nodes.reduce((m, o) => {
+          if (o === src) return m;
+          const ox = baseX < o.x + nodeWidth(o) && baseX + NW > o.x;
+          const oy = cy < o.y + hOf(o) && cy + NH > o.y;
+          return ox && oy ? Math.max(m, o.y + hOf(o) + GAP) : m;
+        }, cy);
+        if (next <= cy) break;
+        cy = next;
+      }
+      if (!spots) spots = row;   // 实在找不到空位，仍旧用原来那一行
+    }
+    const born = items.map((it, i) => addImageNode(spots[i][0], spots[i][1], {
       // uploaded 由调用方给：裁切重绘贴回去的整图已经传进 ComfyUI 的 input/ 了，
       // 记上名字，下次拿它当参考图时不必再传一遍（普通产物没有这一项，仍为 null）
       dataURL: it.url, filename: it.filename || '', uploaded: it.uploaded || null,
@@ -11822,7 +11899,17 @@
     if (outpaintOn(n)) { closeOutpaint(n); return; }
     const im = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
     const w = im && im.naturalWidth, h = im && im.naturalHeight;
-    if (!w || !h) { flash('这张图还没加载完，稍等一下再试'); return; }
+    if (!w || !h) {
+      // 图刚被重渲染过（生成完 / 换图后节点整个重建）时 naturalWidth 还是 0。
+      // 这时候丢一句「还没加载完」等于让用户再点一次——等这张图 load 完自己重来一遍。
+      if (im && !im.complete) {
+        im.addEventListener('load', () => toggleOutpaint(n), { once: true });
+        im.addEventListener('error', () => flash('这张图加载失败，没法扩图'), { once: true });
+        return;
+      }
+      flash('这张图还没加载完，稍等一下再试');
+      return;
+    }
     // 纯图片节点（加载图片进来的那种）没有生成面板，参数条就没地方挂。
     // 扩图本来就得靠生成面板跑局部重绘，顺手把面板打开——和标题上那颗「生成」药丸一个效果。
     if (n.plain) { delete n.plain; }
@@ -11887,17 +11974,20 @@
       : { ...s, pts: (s.pts || []).map(([x, y]) => [x + dx, y + dy]) });
   }
 
-  // 把边框烘成像素 + 遮罩。放在生成的最前面：图、遮罩、尺寸档三样一起变成
-  // 「扩完之后」的样子，后面那条生成流程完全不用知道扩图这回事。
+  // 把边框烘成像素 + 遮罩，**不碰节点本身**：返回这一轮要喂给模型的临时源图
+  // `{ url, doc, w, h }`，原图 / 原遮罩 / 尺寸档一律不动。
+  // 早先是就地改图（n.dataURL 换成撑大的画布 + commit），原图当场被顶掉，
+  // 想对比「扩前 / 扩后」只能靠撤销；现在结果作为新节点落在右边，两张并排留着。
+  // 返回 null = 这一轮没什么可扩的（边框没拖 / 尺寸没变），照常按原图生成。
   async function bakeOutpaint(n) {
     const op = outpaintOf(n);
-    if (!op || !n.dataURL || !n.gen) return false;
-    if (!op.l && !op.t && !op.r && !op.b) { closeOutpaint(n); return false; }
+    if (!op || !n.dataURL || !n.gen) return null;
+    if (!op.l && !op.t && !op.r && !op.b) { closeOutpaint(n); return null; }
     const img = await loadImageEl(n.dataURL);
     const W = img.naturalWidth, H = img.naturalHeight;
-    if (!W || !H) { closeOutpaint(n); return false; }
+    if (!W || !H) { closeOutpaint(n); return null; }
     const f = outpaintFrame(W, H, op);
-    if (f.nw <= W && f.nh <= H) { closeOutpaint(n); return false; }
+    if (f.nw <= W && f.nh <= H) { closeOutpaint(n); return null; }
     const cv = document.createElement('canvas');
     cv.width = f.nw;
     cv.height = f.nh;
@@ -11916,25 +12006,7 @@
       outpaintBands(W, H, f.nw, f.nh, f.ox, f.oy)
         .forEach((r) => strokes.push({ tool: 'rect', rect: r }));
     }
-    const doc = { w: f.nw, h: f.nh, strokes };
-    // 换图：上传缓存必须清掉，否则 ensureUploaded 会把扩图前那个文件当成参考图，
-    // 遮罩又按新尺寸烘进旧图，两头错位。
-    n.dataURL = cv.toDataURL('image/png');
-    n.uploaded = null;
-    n.subfolder = '';
-    n.filename = null;
-    n.masks = {};
-    delete n.gen.outpaint;
-    delete n.gen.opPromptSet;
-    delete n.gen.opBackup;
-    n.gen.size = 'custom';
-    n.gen.custom = { w: f.nw, h: f.nh };
-    putMaskDoc(n, doc);        // 按新身份写回（node:<id>），覆盖率也一起算好
-    rerenderNode(n.id, true);
-    queueSave();
-    commit();                  // 撑画布是一次真正的改动，撤销要能退回去
-    flash(`已扩到 ${f.nw} × ${f.nh}，正在让模型补画外内容`);
-    return true;
+    return { url: cv.toDataURL('image/png'), doc: { w: f.nw, h: f.nh, strokes }, w: f.nw, h: f.nh };
   }
 
   // 边框的事件（拖锚点、比例档、完成）挂在 window 上，节点一重建就得摘掉，
@@ -12627,8 +12699,8 @@
   // 把遮罩烘进原图的 alpha 通道：涂过的地方 alpha=0（透明），其余 255。
   // 实测 ComfyUI 的 LoadImage 是 mask = 1 - alpha，所以「透明 = 重绘」。
   // 好处：图和遮罩是同一个文件，不存在两个文件配对错位的可能。
-  async function bakeMaskCanvas(n, doc) {
-    const img = await loadImageEl(n.dataURL);
+  async function bakeMaskCanvas(n, doc, url) {
+    const img = await loadImageEl(url || n.dataURL);
     const cv = document.createElement('canvas');
     cv.width = img.naturalWidth;
     cv.height = img.naturalHeight;
@@ -12778,8 +12850,8 @@
 
   // 贴好的整图得有能长期访问的地址：传进 ComfyUI 的 input/，用 /api/view?…&type=input 显示。
   // 直接把 dataURL 写进节点也行，但存档会瞬间涨几百 KB 到几 MB（localStorage 只有 5MB 配额）。
-  async function storeStitched(n, item, rect, doc) {
-    const cv = await stitchPatch(n.dataURL, item.url, rect, doc);
+  async function storeStitched(n, item, rect, doc, baseURL) {
+    const cv = await stitchPatch(baseURL || n.dataURL, item.url, rect, doc);
     const dataURL = cv.toDataURL('image/png');
     try {
       const blob = await (await fetch(dataURL)).blob();
