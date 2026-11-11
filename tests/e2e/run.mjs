@@ -5584,27 +5584,46 @@ try {
 
   // 生成这条路会把图丢给 ComfyUI：e2e 不碰真机（会把用户的显卡占住），
   // 只把 /api/run 挡掉——要验的「烘焙」发生在发请求之前。
+  // 请求体顺手存下来：扩图**不再就地改节点**，撑大的画布只存在于这一份提交里，
+  // 不看请求体就没法证明「送进去的是 32×16、不是 16×16」。
   await page.evaluate(`(() => {
+    window.__runBodies = [];
     window.__realFetch = window.fetch;
-    window.fetch = (u, o) => (String(u).includes('/api/run')
-      ? Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 }))
-      : window.__realFetch(u, o));
+    window.fetch = (u, o) => {
+      const url = String(u);
+      if (url.includes('/api/run')) {
+        try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 }));
+      }
+      // 轮询也一起挡掉：真去查这个假 pid 会判「任务丢失」→ 触发自动重试 →
+      // 重试时扩图框正开着、pad 还是 0，bakeOutpaint 会把框收掉（no-op 分支），
+      // 后面的用例就全乱了。这里直接回「跑完了、没有产物」。
+      if (url.includes('/api/job')) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, status: 'done', artifacts: [] }), { status: 200 }));
+      }
+      return window.__realFetch(u, o);
+    };
   })()`);
   await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
   await page.waitFor(`!document.querySelector('.node.selected .op-sel')`, 8000).catch(() => null);
   await new Promise((r) => setTimeout(r, 800));
-  const outRes = await page.evaluate(`(() => {
+  const outRes = await page.evaluate(`(async () => {
     const el = document.querySelector('.node.selected');
     const im = el.querySelector('.thumb img');
-    let corner = null;
-    if (im && im.naturalWidth) {
-      const cv = document.createElement('canvas');
-      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
-      cv.getContext('2d').drawImage(im, 0, 0);
-      const d = cv.getContext('2d').getImageData(1, 1, 1, 1).data;
-      corner = [d[0], d[1], d[2], d[3]];
-    }
-    window.fetch = window.__realFetch;
+    // 这一轮真正提交上去的图：只有请求体里看得到（节点上留的是原图）。
+    // 尺寸不能从图里读 width/height 插槽——krea2 局部重绘**没有**这两个插槽，
+    // 画布多大完全由送进去的那张图决定。所以按文件名把上传的图拉回来量。
+    const bodies = window.__runBodies || [];
+    const g = bodies[bodies.length - 1] || {};
+    const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
+      .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
+    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
+      const img = new Image();
+      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => res({ name, w: 0, h: 0 });
+      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
+    })));
+    // 这里**不**把 fetch 还回去：轮询还在跑，还回去就会查到真服务端、判任务丢失、触发自动重试
     return {
       n: document.querySelectorAll('#nodes .node').length,
       title: ((el.querySelector('.n-name') || {}).textContent || ''),
@@ -5612,43 +5631,48 @@ try {
       pill: ((el.querySelector('.n-mask') || {}).textContent || ''),
       opt: ((el.querySelector('.go-sum') || {}).textContent || ''),
       w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
-      corner, frameGone: !el.querySelector('.op-sel'),
+      frameGone: !el.querySelector('.op-sel'),
       wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
       prompt: (el.querySelector('.gen-prompt') || {}).textContent || '',
+      sent,
     };
   })()`);
-  check('点生成 → 先按边框把画布撑大：四边透明、遮罩药丸出现、边框收起、走局部重绘',
-    outRes.n === toolBase + 2 && outRes.w > outRes.h
-      && outRes.w % 16 === 0 && outRes.h % 16 === 0
-      && outRes.corner && outRes.corner[3] === 0 && /遮罩/.test(outRes.pill)
+  check('点生成 → 原图原地不动（不覆盖、不塞遮罩），边框收起，走局部重绘',
+    outRes.n === toolBase + 2 && outRes.w === 16 && outRes.h === 16 && !outRes.pill
       && outRes.frameGone && /局部重绘/.test(outRes.wf),
     JSON.stringify(outRes));
-  // 这次修的 bug 就在这一条：图和面板必须是同一个尺寸
-  check('面板里的尺寸档和图片尺寸一致（以前停在 1:1 · 1K，生成出来尺寸就错了）',
-    outRes.opt.startsWith(`${outRes.w}×${outRes.h} · `) && outRes.dim === `${outRes.w} × ${outRes.h}`,
+  // 这是这次改动的核心：撑大的画布不再写回节点，只作为**这一轮的源图**提交上去。
+  // 16×16 按 16:9 扩 → 32×16（和上面 outpaintSize 的用例同一套算法）。
+  check('送进模型的是撑大的画布（上传的那张图 32×16，不是节点上的 16×16）',
+    outRes.sent.length >= 1 && outRes.sent.every((s) => s.w === 32 && s.h === 16),
+    JSON.stringify(outRes.sent));
+  check('面板里的尺寸档和图片尺寸一致（扩完收起来，面板还回原图那套）',
+    /^1:1 · 1K( · \d+张)?$/.test(outRes.opt) && outRes.dim === '16 × 16',
     JSON.stringify({ opt: outRes.opt, dim: outRes.dim, img: [outRes.w, outRes.h] }));
   check('在参数条里写的提示词跟着进了正式提示词框（生成读的就是这一份）',
     outRes.prompt.includes(OP_PROMPT_E2E),
     JSON.stringify({ prompt: outRes.prompt.slice(0, 40) }));
 
-  // 这一跑是假的（/api/run 被挡掉了），但节点会一直 busy 到轮询超时为止。
+  // 这一跑是假的（/api/run 和轮询都被挡掉了），节点会 busy 到轮询回来为止。
   // 必须等它落地：后面还有好几处「点生成」，busy 没清掉就会被静默吞掉（真踩过）。
   await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
     return !!b && !b.disabled; })()`, 15000).catch(() => null);
+  // 任务已经结束（job 被挡成 done），这时才把 fetch 还回去：早还一次，轮询就会查到
+  // 真服务端 → 判「任务丢失」→ 自动重试，重试会在开着的扩图框上再跑一遍
+  await page.evaluate(`window.fetch = window.__realFetch`);
 
-  // 扩图是**就地**改这张图的（这正是「集成到节点上」的意思）：撤销一次回到扩图前，
-  // 后面的遮罩用例还得从「这张图没涂过」开始
-  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
-  await new Promise((r) => setTimeout(r, 500));
-  const undone = await page.evaluate(`(() => {
+  // 扩图**不再就地改图**（撑大的画布只进这一次提交，结果落到新节点），
+  // 所以这里不需要撤销：后面那些遮罩用例要的「这张图没涂过」本来就是现状。
+  // 反过来，这里要是还按老路子撤销一次，就会退到别的操作上，把后面的节点计数全带歪。
+  const afterRun = await page.evaluate(`(() => {
     const el = document.querySelector('.node.selected');
     const im = el.querySelector('.thumb img');
     return { w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
              pill: !!el.querySelector('.n-mask'), opt: (el.querySelector('.go-sum') || {}).textContent || '' };
   })()`);
-  check('撤销一次回到扩图前：图和尺寸档都还回去，遮罩也没了',
-    undone.w === 16 && undone.h === 16 && !undone.pill && /1:1 · 1K/.test(undone.opt),
-    JSON.stringify(undone));
+  check('生成后原图、尺寸档都还在原位（扩图不再就地改图，不用撤销）',
+    afterRun.w === 16 && afterRun.h === 16 && !afterRun.pill && /1:1 · 1K/.test(afterRun.opt),
+    JSON.stringify(afterRun));
 
   // ---- 扩图的工作流由用户说了算 ----
   // 早先扩图面板列的是**全部**工作流，但生成时 reconcileWorkflow 只认「吃遮罩」的，
@@ -5656,9 +5680,34 @@ try {
   // 「虽然可以选择工作流，但一旦点击生成就跳转到默认的工作流」。
   // 现在：下拉只列吃图的（前缀标出「遮罩 / 整图」两条路），选了谁就用谁。
   await page.evaluate(`document.querySelector('#imgTools [data-tool="outpaint"]').click()`);
-  await new Promise((r) => setTimeout(r, 900));
-  const wfMenuBtn = await page.center('.node.selected .op-bar [data-of="wf"]');
-  await page.clickAt(wfMenuBtn.x, wfMenuBtn.y, { settle: 400 });
+  // 图刚重渲染完可能还没解码：实现里会等一次 load 自己重来，这里给足时间
+  await page.waitFor(`!!document.querySelector('.node.selected .op-bar')`, 5000).catch(() => null);
+  const opReopen = await page.evaluate(`(() => {
+    const sel = document.querySelector('.node.selected');
+    const bar = document.querySelector('.op-bar');
+    const panel = sel && sel.querySelector('.gen-panel');
+    const badge = document.getElementById('queueBadge');
+    return {
+      selected: sel ? sel.dataset.id : null,
+      hasSel: !!document.querySelector('.op-sel'),
+      barInSel: !!(sel && sel.querySelector('.op-bar')),
+      barAnywhere: !!bar,
+      panel: panel ? getComputedStyle(panel).display : 'none',
+      toolsHidden: document.getElementById('imgTools').classList.contains('hidden'),
+      toolOn: (document.querySelector('#imgTools [data-tool="outpaint"]') || {}).classList
+        ? document.querySelector('#imgTools [data-tool="outpaint"]').classList.contains('on') : null,
+      flash: badge && !badge.classList.contains('hidden') ? badge.textContent : '',
+    };
+  })()`);
+  check('生成后原图还在，再点「扩图」照样能打开（能接着改、接着扩）',
+    opReopen.hasSel && opReopen.barInSel, JSON.stringify(opReopen));
+  const wfMenuPos = await page.evaluate(`(() => {
+    const b = document.querySelector('.node.selected .op-bar [data-of="wf"]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return [r.left + r.width / 2, r.top + r.height / 2];
+  })()`);
+  if (wfMenuPos) await page.clickAt(wfMenuPos[0], wfMenuPos[1], { settle: 400 });
   const opWfMenu = await page.evaluate(`(() => ({
     title: (document.querySelector('.popmenu .popmenu-title') || {}).textContent || '',
     items: [...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()),
@@ -5674,26 +5723,46 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   const opPick = await page.evaluate(`(() => {
     const b = document.querySelector('.node.selected .op-bar [data-of="wf"]');
-    return b ? b.textContent.trim() : '';
+    const badge = document.getElementById('queueBadge');
+    return {
+      pick: b ? b.textContent.trim() : '',
+      sel: document.querySelectorAll('.node.selected').length,
+      panels: document.querySelectorAll('.gen-panel').length,
+      bars: document.querySelectorAll('.op-bar').length,
+      sels: document.querySelectorAll('.op-sel').length,
+      imgW: (() => { const im = document.querySelector('.node.selected .thumb img');
+        return im ? im.naturalWidth : 0; })(),
+      flash: badge && !badge.classList.contains('hidden') ? badge.textContent : '',
+    };
   })()`);
   check('选了「整图」那条，参数条上立刻显示它（不是还写着局部重绘）',
-    !!opPick && !/局部重绘/.test(opPick), opPick);
+    !!opPick.pick && !/局部重绘/.test(opPick.pick), JSON.stringify(opPick));
 
-  await page.evaluate(`document.querySelector('.node.selected .op-bar [data-of="size"]').click()`);
+  await page.evaluate(`(() => {
+    const b = document.querySelector('.op-bar [data-of="size"]');
+    if (b) b.click();
+  })()`);
   // 等菜单里真的出现那一项再点：固定 350ms 在慢机器上偶尔会点空，
   // 后面那条「点生成后还是选的工作流」就会因为尺寸没改而假红。
   await page.waitFor(`[...document.querySelectorAll('.popmenu button')]
-    .some((b) => b.textContent.trim() === '16:9')`, 4000);
-  await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
-    .find((b) => b.textContent.trim() === '16:9').click()`);
+    .some((b) => b.textContent.trim() === '16:9')`, 4000).catch(() => null);
+  await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.popmenu button')]
+      .find((x) => x.textContent.trim() === '16:9');
+    if (b) b.click();
+  })()`);
   await new Promise((r) => setTimeout(r, 500));
   // 这次让提交**直接失败**（不是返回假 prompt_id）：烘焙在提交之前就做完了，
   // 断言要看的全在那一步；而失败会让节点立刻退出 busy——
   // 留一个假任务在轮询里，后面「遮罩清掉后自动换工作流」那条用例点生成会被 busy 吞掉。
   await page.evaluate(`(() => {
+    window.__runBodies = [];
     window.__realFetch = window.fetch;
     window.fetch = (u, o) => (String(u).includes('/api/run')
-      ? Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }))
+      ? (() => {
+        try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }));
+      })()
       : window.__realFetch(u, o));
   })()`);
   // 前面几条用例可能留着一个假任务在轮询：busy 期间点生成会被直接吞掉，
@@ -5701,40 +5770,63 @@ try {
   await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
     return !!b && !b.disabled; })()`, 15000).catch(() => null);
   await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
-  await page.waitFor(`!document.querySelector('.node.selected .op-sel')`, 8000).catch(() => null);
-  await new Promise((r) => setTimeout(r, 800));
-  const opKeep = await page.evaluate(`(() => {
+  // 提交失败时边框**故意留着**（能接着调、不用重新拖），所以这里不再等它消失，
+  // 只等这一轮跑完（busy 落地）
+  await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
+    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+  await new Promise((r) => setTimeout(r, 400));
+  const opKeep = await page.evaluate(`(async () => {
     const el = document.querySelector('.node.selected');
     const im = el.querySelector('.thumb img');
-    const cv = document.createElement('canvas');
-    let corner = null;
-    if (im && im.naturalWidth) {
-      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
-      cv.getContext('2d').drawImage(im, 0, 0);
-      const d = cv.getContext('2d').getImageData(1, 1, 1, 1).data;
-      corner = [d[0], d[1], d[2], d[3]];
-    }
+    const bodies = window.__runBodies || [];
+    const g = bodies[bodies.length - 1] || {};
+    const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
+      .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
+    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
+      const img = new Image();
+      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => res({ name, w: 0, h: 0 });
+      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
+    })));
     window.fetch = window.__realFetch;
     return {
       wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
       pill: (el.querySelector('.n-mask') || {}).textContent || '',
       w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
-      corner,
+      frameOpen: !!el.querySelector('.op-sel'),
+      sent,
     };
   })()`);
-  check('点生成后用的还是选的那个工作流（不再被换成局部重绘），也不硬塞一个遮罩',
-    opKeep.wf === opPick && !/遮罩/.test(opKeep.pill)
-      && opKeep.w > opKeep.h && opKeep.corner && opKeep.corner[3] === 0,
-    JSON.stringify({ picked: opPick, ...opKeep }));
+  check('点生成后用的还是选的那个工作流（不再被换成局部重绘），也不给节点硬塞遮罩',
+    opKeep.wf === opPick.pick && !/遮罩/.test(opKeep.pill)
+      && opKeep.w === 16 && opKeep.h === 16,
+    JSON.stringify({ picked: opPick.pick, ...opKeep }));
+  // 只吃图的工作流没有遮罩可写：撑大的画布靠「透明边」进模型。
+  // 这条以前漏过——节点自己的图只在 picked 为空时才塞，一有别的参考图就把它丢了。
+  check('整图流也把撑大的画布送进模型（上传的那张图 32×16，不是节点上的 16×16）',
+    opKeep.sent.length >= 1 && opKeep.sent.every((s) => s.w === 32 && s.h === 16),
+    JSON.stringify(opKeep.sent));
+  check('提交失败时边框不收起（用户能接着调边框重试，不用重新拖一遍）',
+    opKeep.frameOpen === true, JSON.stringify({ frameOpen: opKeep.frameOpen }));
 
-  // 这一跑同样被挡掉了，等 busy 落地再收尾（后面还有好几处「点生成」）
-  await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
-    return !!b && !b.disabled; })()`, 15000).catch(() => null);
-  // 选工作流 + 烘焙各压了一条撤销记录，退两次才回到「开扩图之前」
-  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
-  await new Promise((r) => setTimeout(r, 350));
-  await page.key('z', { code: 'KeyZ', keyCode: 90, modifiers: 2 });
-  await new Promise((r) => setTimeout(r, 500));
+  // 收尾：用「取消」把还留着的边框收起来。
+  // 别再用撤销——扩图本身已经不压撤销记录了，退两次会退到更早的操作上（节点计数就歪了）。
+  await page.evaluate(`(() => {
+    const b = document.querySelector('.node.selected .op-bar [data-of="cancel"]');
+    if (b) b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const opCanceled = await page.evaluate(`(() => {
+    const el = document.querySelector('.node.selected');
+    const im = el.querySelector('.thumb img');
+    return { frameGone: !el.querySelector('.op-sel'),
+             w: im ? im.naturalWidth : 0, h: im ? im.naturalHeight : 0,
+             opt: (el.querySelector('.go-sum') || {}).textContent || '' };
+  })()`);
+  check('「取消」收起边框：原图和尺寸档都不动',
+    opCanceled.frameGone && opCanceled.w === 16 && opCanceled.h === 16
+      && /1:1 · 1K/.test(opCanceled.opt),
+    JSON.stringify(opCanceled));
 
   await selectImg();
   await new Promise((r) => setTimeout(r, 250));
