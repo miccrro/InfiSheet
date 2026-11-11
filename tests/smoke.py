@@ -223,6 +223,20 @@ def main() -> int:
             f"comfy={health.get('comfy')}",
         )
 
+        # 更新入口：版本号本地读、不联网；检查更新要打 GitHub，所以只断言「有结论、不 500」，
+        # 不把测试绑在「当前这台机器有没有外网」上。
+        pkg_ver = json.loads((ROOT / "package.json").read_text(encoding="utf-8")).get("version")
+        status, raw = request(base, "/api/version")
+        ver = json.loads(raw or b"{}")
+        check("/api/version 报的版本和 package.json 一致（更新检查拿它比）",
+              status == 200 and ver.get("version") == pkg_ver, f"{ver.get('version')} vs {pkg_ver}")
+        status, raw = request(base, "/api/update/check")
+        upd = json.loads(raw or b"{}")
+        check("/api/update/check 没网/没发版也只是一句话（不 500，仍回 current）",
+              status == 200 and upd.get("current") == pkg_ver
+              and (upd.get("ok") is True or bool(upd.get("error"))),
+              f"ok={upd.get('ok')} latest={upd.get('latest')} err={upd.get('error')}")
+
         for path, must in [
             ("/", "icons.js"),
             ("/app.js", "buildGenPanel"),

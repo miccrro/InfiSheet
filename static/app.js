@@ -5437,6 +5437,16 @@
               <div class="set-actions">
                 <button type="button" id="setHelp">教程与快捷键…</button>
               </div>
+              <div class="set-sep"></div>
+              <!-- 关于 / 检查更新：只读地看一眼 GitHub 最新 release，不下载、不动本地文件。
+                   放在「高级」最后一格——这是个一年点两三次的动作，不该占常驻位置。 -->
+              <div class="set-group">关于</div>
+              <p class="set-tip">InfiSheet <b id="setAppVer">…</b> · 本地服务 ${location.host}</p>
+              <div class="set-actions">
+                <button type="button" id="setCheckUpdate">检查更新</button>
+                <button type="button" id="setUpdateGo" class="hidden">去下载</button>
+              </div>
+              <p class="set-tip" id="setUpdateHint">只查有没有新版本，不会动本地文件。</p>
             </div>
           </div>
         </div>
@@ -5540,6 +5550,40 @@
     box.querySelector('#setExport').onclick = () => { closeSettingsSheet(); exportCanvas(); };
     box.querySelector('#setImport').onclick = () => { closeSettingsSheet(); importCanvas(); };
     box.querySelector('#setHistory').onclick = () => { closeSettingsSheet(); openCanvasHistory(); };
+    // ---- 关于 / 检查更新 ----
+    // 版本号本地读（/api/version，不联网），点按钮才去打 GitHub。断网、仓库没发版
+    // 都只是把原因写在提示里，不弹错误框——用户点它是想看一句话，不是想处理异常。
+    const updBtn = box.querySelector('#setCheckUpdate');
+    const updGo = box.querySelector('#setUpdateGo');
+    const updHint = box.querySelector('#setUpdateHint');
+    const verEl = box.querySelector('#setAppVer');
+    api('/api/version').then((r) => {
+      if (verEl && r && r.ok) verEl.textContent = r.version;
+    }).catch(() => { if (verEl) verEl.textContent = '—'; });
+    updBtn.onclick = async () => {
+      updBtn.disabled = true;
+      updGo.classList.add('hidden');
+      updHint.textContent = '正在问 GitHub…';
+      try {
+        const r = await api('/api/update/check?force=1');
+        if (verEl && r.current) verEl.textContent = r.current;
+        if (!r.ok) {
+          updHint.textContent = `没查到：${r.error || '未知原因'}`;
+          return;
+        }
+        if (r.hasUpdate) {
+          updHint.textContent = `有新版本 ${r.latest}（当前 ${r.current}）`;
+          updGo.classList.remove('hidden');
+          updGo.onclick = () => window.open(r.url, '_blank', 'noopener');
+        } else {
+          updHint.textContent = `已是最新（${r.current}）`;
+        }
+      } catch (err) {
+        updHint.textContent = `检查失败：${err.message}`;
+      } finally {
+        updBtn.disabled = false;
+      }
+    };
     const shut = box.querySelector('#setShutdown');
     if (shut) {
       shut.onclick = () => {
