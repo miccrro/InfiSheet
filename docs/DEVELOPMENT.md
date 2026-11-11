@@ -60,8 +60,11 @@ python server.py --host 0.0.0.0 --yes-i-know             # 明知会暴露、仍
 ## 常用脚本
 
 ```bash
-npm install          # 只装开发依赖（prettier），产品不需要
+npm install          # 只装开发依赖（eslint / prettier），产品不需要
+npm run hooks        # 装提交前钩子（每人一次）：只查本次改到的文件，1~3 秒
 npm run dev          # 8788 + 不自动开浏览器
+npm run lint         # eslint + ruff（规则集与理由见 docs/CODE-STANDARDS.md）
+npm run fix          # 能自动修的自动修，剩下的必须人看
 npm run check        # 所有 js 语法检查 + py_compile（不装 linter 也能跑）
 npm test             # 冒烟：静态/接口/项目 CRUD/防穿越 + 启动守卫/访问令牌/数据目录（不需要 ComfyUI）
 npm run test:api     # 完整接口回归：会真的往 ComfyUI 丢一个 64×64 任务
@@ -125,7 +128,10 @@ data/                  # 运行时生成，不进版本库（projects/ 画布、
 ## 提交前
 
 ```bash
-npm run check && npm test && npm run test:e2e
+npm run lint && npm test && npm run test:e2e
 ```
 
 CI（`.github/workflows/ci.yml`）跑的就是这三步；`npm run test:api` 因为要 ComfyUI，只在本地手动跑。
+
+装了 `npm run hooks` 之后，`git commit` 会自动查本次改到的文件（语法 + eslint/ruff），
+规则与评审清单见 [`CODE-STANDARDS.md`](CODE-STANDARDS.md)。
