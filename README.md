@@ -15,11 +15,27 @@
 
 按系统双击对应入口，或命令行启动：
 
-| 系统 | 入口 |
+| 系统 | 入口 | 带图标的版本 |
+|---|---|---|
+| Windows | `启动.bat` | `InfiSheet.lnk`（或双击 `创建快捷方式.vbs` 在桌面生成一个） |
+| macOS | `启动.command`（首次右键 → 打开） | `InfiSheet.app`（双击即可，图标是 InfiSheet） |
+| Linux | `./start.sh` | `InfiSheet.desktop`（`Icon=` 指向 `static/icon-512.png`） |
+
+`.bat` / `.command` / `.sh` 本身带不了图标——图标由系统按文件类型决定。想让它显示成 InfiSheet，
+就得有上面右列那个"外壳"。三个外壳都由 `python tools/icons.py` 从 `static/icon.svg` 生成
+（光栅化用本机 Chrome，不额外装依赖）：
+
+| 产物 | 用途 |
 |---|---|
-| Windows | `启动.bat` |
-| macOS | `启动.command`（首次右键 → 打开） |
-| Linux | `./start.sh` |
+| `static/icon.ico` | Windows 图标，16/24/32/48/64/128/256 七档 |
+| `static/icon.icns` | macOS 图标 |
+| `static/icon-512.png` / `icon-256.png` | Linux 桌面、文档、商店页 |
+| `InfiSheet.app/` | macOS 应用包，靠 `$0` 反推项目根，整个目录可以随便搬 |
+| `InfiSheet.desktop` | Linux 桌面入口，`%k` 定位项目根；`Icon=` 在非 Linux 上生成时是相对路径 |
+| `InfiSheet.lnk` | Windows 快捷方式，**存的是绝对路径**，所以不进版本库（见下） |
+
+Windows 上别直接拿别人给的 `.lnk`：里面写死了路径，换台机器就失效。发 `创建快捷方式.vbs` 更稳——
+它按脚本自己的位置算路径，双击在桌面生成一份指向当前目录的快捷方式。
 
 **macOS 打不开的话，基本是这两件事之一：**
 
@@ -339,6 +355,9 @@ infisheet/
 ├── 启动.bat               # Windows 一键启动
 ├── 启动.command           # macOS 一键启动（首次右键 → 打开）
 ├── start.sh               # Linux / 任何有 bash 的环境
+├── InfiSheet.app/         # macOS 应用包：双击启动，图标是 InfiSheet（tools/icons.py 生成）
+├── InfiSheet.desktop      # Linux 桌面入口（同上）
+├── 创建快捷方式.vbs       # Windows：双击在桌面生成带图标的快捷方式（按自身位置算路径）
 ├── Dockerfile             # 容器镜像（数据挂 /data）
 ├── docker-compose.yml     # 8788 + ./data + host.docker.internal 指向宿主机 ComfyUI
 ├── package.json           # 只有开发脚本与开发依赖，产品运行不需要

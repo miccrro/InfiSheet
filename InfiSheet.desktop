@@ -1,0 +1,17 @@
+# InfiSheet 桌面入口。
+# Exec 里的 %k 是 .desktop 自己的位置，靠它把工作目录定回项目根，所以整个目录能随便搬。
+# Icon 在非 Linux 上生成时只能写相对路径，个别桌面环境不认 —— 那种情况在项目根跑一次
+#   python tools/icons.py
+# 就会换成绝对路径。
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=InfiSheet
+GenericName=Infinite Canvas
+Comment=本地 ComfyUI 的无限画布
+Exec=bash -c 'cd "$(dirname "$1")" && exec ./start.sh' infisheet %k
+Icon=static/icon-512.png
+Terminal=true
+Categories=Graphics;Development;
+Keywords=comfyui;canvas;image;
+StartupNotify=false
