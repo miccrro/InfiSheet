@@ -92,6 +92,28 @@ COMFY_SOURCE = "环境变量 COMFY_URL" if os.environ.get("COMFY_URL") else "默
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 
+# ---- 版本与更新 ----
+# 版本号的真源是 package.json（打包脚本会一起带上），读不到才退回这里的字面量。
+# 更新检查只做「看一眼」：拉 GitHub 最新 release 的 tag 跟它比，不下载、不改本地文件。
+UPDATE_REPO = "miccrro/InfiSheet"
+UPDATE_PAGE = f"https://github.com/{UPDATE_REPO}/releases"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+UPDATE_TTL = 600          # 匿名 GitHub API 每小时只给 60 次，10 分钟内复用上一次结果
+UPDATE_TIMEOUT = 8
+_UPDATE_CACHE: dict = {"at": 0.0, "data": None}
+
+
+def app_version() -> str:
+    try:
+        pkg = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        ver = str(pkg.get("version") or "").strip()
+        if ver:
+            return ver
+    except Exception:  # noqa: BLE001
+        pass
+    return "1.2.0"
+
+
 
 def settings_file() -> Path:
     return DATA / "settings.json"
@@ -548,6 +570,61 @@ def comfy_reachable(timeout: float = 3) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def version_key(raw) -> tuple:
+    """v1.2.10 比 v1.2.9 新——按数字段比，字符串比会得出反的结论。缺的段当 0。"""
+    nums = re.findall(r"\d+", str(raw or ""))
+    return tuple(int(x) for x in nums[:4]) or (0,)
+
+
+def update_check(force: bool = False) -> dict:
+    """问 GitHub 要最新 release，和本地版本比。
+
+    断网、仓库还没发版、GitHub 限流都**不算异常**：把原因写进 error 让界面如实说一句。
+    这个按钮的用途是「看一眼有没有新版」，不该因为没网就弹错误框。
+    """
+    now = time.time()
+    if not force and _UPDATE_CACHE["data"] and now - _UPDATE_CACHE["at"] < UPDATE_TTL:
+        return _UPDATE_CACHE["data"]
+    cur = app_version()
+    out = {"ok": True, "current": cur, "latest": "", "hasUpdate": False,
+           "url": UPDATE_PAGE, "notes": "", "publishedAt": "", "zip": ""}
+    try:
+        req = urllib.request.Request(UPDATE_API, headers={
+            "User-Agent": f"InfiSheet/{cur}",      # GitHub API 不带 UA 会直接 403
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            out.update({"ok": False, "error": "仓库还没有发布过版本"})
+        elif exc.code == 403:
+            out.update({"ok": False, "error": "GitHub 限流了，过一会儿再试"})
+        else:
+            out.update({"ok": False, "error": f"GitHub 返回 {exc.code}"})
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out.update({"ok": False, "error": f"连不上 GitHub（{type(exc).__name__}）"})
+        return out
+    latest = str(info.get("tag_name") or "").lstrip("vV").strip()
+    if not latest:
+        out.update({"ok": False, "error": "发布信息里没有版本号"})
+        return out
+    zip_url = next((a.get("browser_download_url") for a in (info.get("assets") or [])
+                    if str(a.get("name") or "").endswith(".zip")), "")
+    out.update({
+        "latest": latest,
+        "hasUpdate": version_key(latest) > version_key(cur),
+        "url": info.get("html_url") or UPDATE_PAGE,
+        "notes": str(info.get("body") or "")[:1200],
+        "publishedAt": info.get("published_at") or "",
+        "zip": zip_url or "",
+    })
+    _UPDATE_CACHE.update({"at": now, "data": out})     # 只缓存成功的那次，失败下次重试
+    return out
+
 
 
 def object_info(node_type: str):
@@ -2786,6 +2863,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/comfy":
             # 当前连的是哪台 ComfyUI、能不能连上。设置面板打开时先读这个。
             return self.json_out(comfy_state())
+
+        if path == "/api/version":
+            # 纯本地读，不联网：设置里「关于」那一行要立刻显示版本号。
+            # 更新检查是另一条（/api/update/check），要打 GitHub，只在点按钮时才走。
+            return self.json_out({"ok": True, "version": app_version(),
+                                  "repo": UPDATE_REPO, "page": UPDATE_PAGE})
+
+        if path == "/api/update/check":
+            force = (query.get("force") or [""])[0] in ("1", "true", "yes")
+            try:
+                return self.json_out(update_check(force=force))
+            except Exception as exc:  # noqa: BLE001
+                return self.json_out({"ok": False, "current": app_version(),
+                                      "error": f"{type(exc).__name__}: {exc}"})
 
         if path == "/api/mcp/setup":
             # 「怎么把 AI 接进来」全在这里：端点、stdio 命令、三个客户端的配置文件路径与片段
