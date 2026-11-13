@@ -5816,13 +5816,36 @@ try {
   // 留一个假任务在轮询里，后面「遮罩清掉后自动换工作流」那条用例点生成会被 busy 吞掉。
   await page.evaluate(`(() => {
     window.__runBodies = [];
+    window.__uploadedImageDims = {};
     window.__realFetch = window.fetch;
-    window.fetch = (u, o) => (String(u).includes('/api/run')
-      ? (() => {
+    window.fetch = async (u, o) => {
+      const url = String(u);
+      if (url.includes('/api/upload')) {
+        const file = o && o.body && o.body.get('image');
+        const bitmap = file ? await createImageBitmap(file) : null;
+        const name = file && file.name || 'e2e-outpaint-full.png';
+        if (bitmap) {
+          window.__uploadedImageDims[name] = { w: bitmap.width, h: bitmap.height };
+          bitmap.close();
+        }
+        return new Response(JSON.stringify({ ok: true, image: name, subfolder: '', type: 'input' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/analyze')) {
+        const body = JSON.parse(o.body);
+        const slots = Object.entries(body.graph || {}).flatMap(([node, nd]) => {
+          if (!nd || nd.class_type !== 'LoadImage' || !nd.inputs || !('image' in nd.inputs)) return [];
+          return [{ key: String(node) + '.image', node, input: 'image', kind: 'image', class_type: nd.class_type }];
+        });
+        return new Response(JSON.stringify({ ok: true, slots, autogrow: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/run')) {
         try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
         return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }));
-      })()
-      : window.__realFetch(u, o));
+      }
+      return window.__realFetch(u, o);
+    };
   })()`);
   // 前面几条用例可能留着一个假任务在轮询：busy 期间点生成会被直接吞掉，
   // 于是「烘焙没做、尺寸没变」被误报成「工作流被换掉了」。等按钮能点再点。
@@ -5841,12 +5864,7 @@ try {
     const g = bodies[bodies.length - 1] || {};
     const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
       .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
-    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
-      const img = new Image();
-      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
-      img.onerror = () => res({ name, w: 0, h: 0 });
-      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
-    })));
+    const sent = sentLoads.map((name) => ({ name, ...(window.__uploadedImageDims[name] || { w: 0, h: 0 }) }));
     window.fetch = window.__realFetch;
     return {
       wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
