@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import re
 import shutil
 import socket
@@ -268,7 +267,7 @@ def main() -> int:
     base = f"http://127.0.0.1:{port}"
     try:
         if not wait_http(base + "/api/projects"):
-            print("FAIL  服务没起来（端口 %s）" % port)
+            print(f"FAIL  服务没起来（端口 {port}）")
             return 1
 
         c = Client(base)
@@ -526,8 +525,9 @@ def main() -> int:
 
             out2, data2 = c.tool("get_canvas")
             row = next((n for n in (data2.get("nodes") or []) if n.get("id") == rid), {})
-            check("画布上这个节点已经有图（浏览器打开就能看到）",
-                  (row.get("gen") or {}).get("images", 0) >= 1 and str(row.get("dataURL") or "").startswith("/api/view"),
+            has_img = (row.get("gen") or {}).get("images", 0) >= 1
+            is_view = str(row.get("dataURL") or "").startswith("/api/view")
+            check("画布上这个节点已经有图（浏览器打开就能看到）", has_img and is_view,
                   f"{row.get('gen', {}).get('images')} 张")
 
             out3, data3 = c.tool("list_runs", {"node": rid})

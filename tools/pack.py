@@ -38,6 +38,9 @@ INCLUDE_FILES = [
     ".gitignore",
     ".editorconfig",
     ".prettierrc",
+    # 质量门禁的配置：别人解压后 `npm install && npm run lint` 就能对上同一套规则
+    "eslint.config.mjs",
+    "pyproject.toml",
 ]
 INCLUDE_DIRS = ["static", "presets", "docs", "tools", "tests", ".github"]
 EXCLUDE_PARTS = {"node_modules", ".tmp", "__pycache__", "data", "dist", ".git", "shots"}
@@ -61,7 +64,7 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
     version = "dev"
     try:
         version = json.loads((ROOT / "package.json").read_text(encoding="utf-8")).get("version", "dev")
-    except Exception:
+    except (OSError, ValueError):   # 没 package.json / 里面不是 JSON：用 dev 兜底
         pass
 
     written: list[Path] = []

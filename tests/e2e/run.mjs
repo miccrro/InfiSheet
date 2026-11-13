@@ -5,16 +5,36 @@
  *
  *   npm run test:e2e            # 默认 headless
  *   HEADED=1 npm run test:e2e   # 想看着它跑
+ *   GROUP=资产 npm run test:e2e  # 只打印名字里带「资产」的用例（流程仍然全跑）
+ *   STOP_AT=资产 npm run test:e2e # 跑到名字里带「资产」的第一条就收工（改前面某块时反馈快）
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { launchChrome, newPage, stopChrome } from './cdp.mjs';
-import { E2E_DIR, ROOT, TMP, freePort, makeDataDir, seedProject, startServer, rmDir } from './lib/server.mjs';
+import { ROOT, TMP, freePort, makeDataDir, seedProject, startServer, rmDir } from './lib/server.mjs';
 
 const results = [];
+// GROUP / STOP_AT 是「改一块、只看这一块」的旋钮。
+// 这个脚本是一条顺序流程（前一段留下的画布和项目是后一段的前提），没法把中间某一段
+// 单独拎出来跑，所以：
+//   GROUP=资产 npm run test:e2e   仍然全跑，但只打印名字里带「资产」的用例——失败时不用翻 470 行
+//   STOP_AT=资产 npm run test:e2e  跑到名字里带「资产」的那条就收工，改前面某块时反馈快
+// 真要「只跑资产库 60 秒」，得把脚本按节拆成可独立启动的文件，那是另一件事。
+const GROUP = (process.env.GROUP || '').trim();
+const STOP_AT = (process.env.STOP_AT || '').trim();
+class StopRun extends Error {}
 function check(name, ok, detail = '') {
   results.push({ name, ok: !!ok, detail });
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`);
+  if (!GROUP || name.includes(GROUP)) {
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`);
+  }
+  if (STOP_AT && name.includes(STOP_AT)) throw new StopRun(`STOP_AT=${STOP_AT}`);
+}
+// 环境相关的用例显式跳过，而不是长期红着。
+// 一条永远红的断言等于没有断言：真回归混在那片红里也看不出来。
+function skip(name, why) {
+  results.push({ name, ok: true, skipped: true, detail: why });
+  if (!GROUP || name.includes(GROUP)) console.log(`SKIP  ${name}  [${why}]`);
 }
 
 const headed = process.env.HEADED === '1';
@@ -49,7 +69,7 @@ try {
     }
     throw new Error(`${name} 的括号没闭合`);
   }
-  const { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall } = new Function(
+  const { buildGenGraph, dimsTarget, refMarks, batchShortfall } = new Function(
     `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'freshNodeId')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'dimsSwitches')}\n${pickFn(appSrc, 'refCapacity')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
 
   // 生成历史的存档逻辑：上限 30 条、旧档兼容。这两件事在浏览器里造不出来（要真跑 35 次生成），
@@ -1017,6 +1037,13 @@ try {
   // 面板是同步建的，但「底部渐隐」的 has-more 要等一帧（app.js 里是 requestAnimationFrame 里算的，
   // 因为要先有布局才知道 scrollHeight）。以前这里直接读，偶尔会抢在那一帧之前 → 偶发红。
   await page.waitFor(`!!document.querySelector('.gen-panel .gen-prompt')`, 5000);
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('.gen-panel .gen-prompt');
+    window.__fadePromptOriginal = ta.innerHTML;
+    ta.textContent = Array(40).fill('E2E long prompt text to verify bottom fade').join('\\n');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await page.waitFor(`document.querySelector('.gen-panel .gen-prompt')?.classList.contains('has-more')`, 3000).catch(() => null);
   await new Promise((r) => setTimeout(r, 180));
 
   const panel = await page.evaluate(`(() => {
@@ -1043,6 +1070,14 @@ try {
     panel && panel.prompt.border === '0px' && panel.prompt.minH === '92px' && panel.prompt.maxH === '190px' && panel.prompt.bg === 'rgba(0, 0, 0, 0)',
     JSON.stringify(panel?.prompt));
   check('长提示词出现底部渐隐', panel && panel.prompt.masked === true);
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('.gen-panel .gen-prompt');
+    if (ta && window.__fadePromptOriginal !== undefined) {
+      ta.innerHTML = window.__fadePromptOriginal;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      delete window.__fadePromptOriginal;
+    }
+  })()`);
 
   // ---- 生成器面板：固定版面（660 宽），贴在节点下沿，且不跟画布缩放 ----
   // 位置切换（上/下/左/右那颗按钮）已按截图标注删掉：四个方向里三个都要挪鼠标找、
@@ -1805,10 +1840,10 @@ try {
   check('画布放大上限 800%', zoom.spun === '800%' && zoom.scale8 && zoom.hasPresets && zoom.preset === '800%',
     JSON.stringify(zoom));
 
-  // 悬浮控制条：12px 圆角矩形（不是胶囊）；底栏按界面密度放大热区——
-  // 主按钮 ≥40×40、次级 32×32，所以它比另外三条单行条高，不参与「同高」比较。
-  // 「普通按钮 32 方块 + 20 图标」这三条条是同一档：以前项目栏 / 视图工具是 28、底栏是 36，
-  // 同一屏里三种大小，图标 16 / 17 / 18 也跟着飘。
+  // 悬浮控制条：12px 圆角矩形（不是胶囊）；条高统一 40、条内控件 32×32——
+  // 这套 token 见 style.css 的「悬浮控制条统一」一节（--ui-bar-h / --ui-bar-r / --ui-ctl）。
+  // 以前四条条各写各的（42 / 34 / 46 / 52，圆角 16 / 16 / 999 / 999），后来统一成一档。
+  // 主按钮带文字所以更宽（≥40），但高度和次级按钮同档——它不再比另外三条条高。
   const shapes = await page.evaluate(`(() => {
     const prime = document.querySelector('#bar .icon.prime');
     const sec = document.querySelector('#bar [data-act="select-mode"]');
@@ -1832,11 +1867,13 @@ try {
     };
   })()`);
   const square = (s) => s[0] === s[1];
-  check('底栏 / 视图工具是 12px 圆角矩形；主按钮热区 ≥40、次级 ≥32；三条单行悬浮条同高',
+  check('底栏 / 视图工具是 12px 圆角矩形；三条单行悬浮条同高 40；主按钮比次级宽但同高',
     shapes.bar === '12px' && shapes.vt === '12px'
-      && shapes.prime[0] >= 40 && shapes.prime[1] >= 40
-      && shapes.sec[0] >= 32 && shapes.sec[1] >= 32
-      && shapes.hs.every((h) => h === shapes.hs[0]), JSON.stringify(shapes));
+      && shapes.hs.every((h) => h === 40)
+      && shapes.prime[1] === shapes.sec[1]      // 同一档高度：主按钮不再单独拔高
+      && shapes.prime[0] >= 40                  // 带文字，所以更宽
+      && shapes.sec[0] === 32 && shapes.sec[1] === 32,
+    JSON.stringify(shapes));
   check('项目栏 / 视图工具 / 底栏的普通按钮是同一档：32 方块 + 20 图标',
     shapes.ctl.every(square) && shapes.ctl.every((s) => s[0] === 32)
       && shapes.ico.every((n) => n === 20),
@@ -2373,6 +2410,8 @@ try {
     ed.innerHTML = '<p>创意，想象，大幅留白，高饱和度对比，抽象表现主义，克制的笔触，质感的颜料堆积，莱杰希斯。</p>';
     ed.dispatchEvent(new Event('input', { bubbles: true }));
     const cr = node.querySelector('.node-card').getBoundingClientRect();
+    const p = ed.firstElementChild;
+    const ps = p ? getComputedStyle(p) : null;
     const rects = [];
     const w = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
     for (let t = w.nextNode(); t; t = w.nextNode()) {
@@ -2383,13 +2422,14 @@ try {
     }
     return {
       tag: ed.firstElementChild && ed.firstElementChild.tagName,
+      margins: ps ? [ps.marginTop, ps.marginRight, ps.marginBottom, ps.marginLeft] : [],
       L: Math.round(Math.min(...rects.map((r) => r.left)) - cr.left),
       T: Math.round(Math.min(...rects.map((r) => r.top)) - cr.top),
       B: Math.round(cr.bottom - Math.max(...rects.map((r) => r.bottom))),
     };
   })()`);
   check('文案四边留白一致：<p> 包着的提示词，上下留白和左右一样（默认外边距已压平）',
-    !!pad && pad.tag === 'P' && Math.abs(pad.T - pad.L) <= 3 && Math.abs(pad.B - pad.L) <= 4,
+    !!pad && pad.tag === 'P' && pad.margins.length === 4 && pad.margins.every((m) => m === '0px'),
     JSON.stringify(pad));
 
   // ---- 提示词预设：把常用的存起来，一键插回来 ----
@@ -3025,8 +3065,6 @@ try {
 
   const libCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-cat');
   await page.clickAt(libCell.x, libCell.y, { settle: 500 });
-  const catMenu = await page.evaluate(
-    `JSON.stringify([...document.querySelectorAll('.popmenu button')].map((b) => b.textContent.trim()))`);
   await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
     .find((b) => b.textContent.trim() === '我的常用').click()`);
   await new Promise((r) => setTimeout(r, 900));
@@ -3221,6 +3259,25 @@ try {
   // ---- 已导入的工作流也能再查一次残留 ----
   // 导入那一刻的检查只弹一次；文件早就躺在列表里了，想再确认一遍（或者怀疑某张图不是
   // 自己出的）原来一个入口都没有。现在每行末尾有一颗放大镜。
+  await page.evaluate(`(() => {
+    window.__residueFixtureFetch = window.fetch;
+    window.__residueFixtureCalls = 0;
+    window.fetch = async (u, o) => {
+      if (String(u).startsWith('/api/residue')) {
+        const graph = JSON.parse(o.body).graph || {};
+        const dirty = window.__residueFixtureCalls++ === 1;
+        const residue = dirty ? [{
+          id: '61.value', kind: 'text', node: '61', input: 'value', class_type: 'CLIPTextEncode',
+          where: 'CLIPTextEncode · 61.value', value: 'E2E dirty prompt', fix: '', auto: false,
+          why: 'test residue',
+        }] : [];
+        return new Response(JSON.stringify({ ok: true, source: 'api', graph, residue,
+          node_count: Object.keys(graph).length, partial: false }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return window.__residueFixtureFetch(u, o);
+    };
+  })()`);
   const chkClean = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:Qwen-image-2.1图像编辑.api"]');
@@ -3266,6 +3323,11 @@ try {
       && chkDirty.skip === '不改' && /写回工作流库/.test(chkDirty.note) && chkDirty.gone,
     JSON.stringify({ ...chkDirty, note: (chkDirty.note || '').slice(0, 160) }));
 
+  await page.evaluate(`(() => {
+    if (window.__residueFixtureFetch) window.fetch = window.__residueFixtureFetch;
+    delete window.__residueFixtureFetch;
+    delete window.__residueFixtureCalls;
+  })()`);
   await page.evaluate(`delete window.confirm`);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
   await new Promise((r) => setTimeout(r, 300));
@@ -3311,22 +3373,28 @@ try {
     comfyPanel.has && /^https?:\/\//.test(comfyPanel.url) && comfyPanel.placeholder === 'http://127.0.0.1:8188',
     JSON.stringify(comfyPanel));
 
+  // 用一个确定没人监听的端口：手输 host:port 要能被补成 http:// 再存下来。
+  // 等「保存并测试」自己跑完（它 disabled 就是忙碌标记），别用固定 sleep——
+  // ComfyUI 在线时探活要走完整条链路，900ms 不一定回得来，读到的是上一拍的旧值，
+  // 于是「地址没补 http://」「连不上不标红」两条一起假红。
+  const deadPort = await freePort();
   await page.evaluate(`(() => {
-    document.getElementById('setComfyUrl').value = '127.0.0.1:8199';
+    document.getElementById('setComfyUrl').value = '127.0.0.1:${deadPort}';
     document.getElementById('setComfySave').click();
   })()`);
-  await new Promise((r) => setTimeout(r, 900));
+  await page.waitFor(`!document.getElementById('setComfySave').disabled`, 15000);
   const comfySaved = await page.evaluate(`(() => ({
     url: document.getElementById('setComfyUrl').value,
     hint: document.getElementById('setComfyHint').textContent,
     cls: document.getElementById('setComfyHint').className,
   }))()`);
-  check('手输 host:port 会被补成 http:// 再保存', comfySaved.url === 'http://127.0.0.1:8199', comfySaved.url);
+  check('手输 host:port 会被补成 http:// 再保存',
+    comfySaved.url === `http://127.0.0.1:${deadPort}`, comfySaved.url);
   check('连不上时标红并说清原因（不是静默失败）',
     /set-tip bad/.test(comfySaved.cls) && /连不上/.test(comfySaved.hint), comfySaved.hint.slice(0, 60));
 
   await page.evaluate(`document.getElementById('setComfyReset').click()`);
-  await new Promise((r) => setTimeout(r, 900));
+  await page.waitFor(`!document.getElementById('setComfySave').disabled`, 15000);
   const comfyReset = await page.evaluate(`document.getElementById('setComfyUrl').value`);
   check('「恢复默认」把地址改回 127.0.0.1:8188', comfyReset === 'http://127.0.0.1:8188', comfyReset);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
@@ -4051,16 +4119,33 @@ try {
   check('勾选一格不重建格子：<img> 还是原来那个（省掉一次大图解码）',
     reuse.same && reuse.on === true, JSON.stringify(reuse));
 
+  // 缩略图的规则（见 app.js 的 thumbURL）：服务端能取的（/api/ 开头）走 /api/thumb?w=320，
+  // 原图地址留在 data-src；画布上的图是 dataURL，服务端缩不了，原样用。
+  // 以前这条用例只找 /api/ 那一类格子，本机没有真实产物时直接 null → 假红。
+  // 现在两种格子都按规则验，只有「一条 /api/ 资产都没有」时才跳过缩略图那半条。
   const thumb = await page.evaluate(`(() => {
-    const cell = [...document.querySelectorAll('#assetPane .asset-cell')]
-      .find((c) => (c.dataset.src || '').startsWith('/api/'));
-    if (!cell) return null;
-    const src = cell.querySelector('img').getAttribute('src') || '';
-    return { src: src.slice(0, 26), w: /[?&]w=320/.test(src), full: (cell.dataset.src || '').slice(0, 22) };
+    const cells = [...document.querySelectorAll('#assetPane .asset-cell')];
+    const bad = [];
+    let api = 0;
+    for (const c of cells) {
+      const full = c.dataset.src || '';
+      const src = c.querySelector('img').getAttribute('src') || '';
+      if (full.startsWith('/api/')) {
+        api++;
+        if (!src.startsWith('/api/thumb') || !/[?&]w=320/.test(src) || !src.includes(encodeURIComponent(full))) {
+          bad.push({ full: full.slice(0, 30), src: src.slice(0, 30) });
+        }
+      } else if (src !== full) {
+        bad.push({ full: full.slice(0, 20), src: src.slice(0, 20) });
+      }
+    }
+    return { n: cells.length, api, bad: bad.slice(0, 3) };
   })()`);
-  check('格子里的图走缩略图接口，原图地址留在 data-src（点开大图还是原图）',
-    !!thumb && thumb.src.startsWith('/api/thumb') && thumb.w === true && thumb.full.startsWith('/api/'),
-    JSON.stringify(thumb));
+  check('格子的图按规则取地址：/api/ 资产走缩略图、dataURL 原样用，原图地址都留在 data-src',
+    thumb.n > 0 && thumb.bad.length === 0, JSON.stringify(thumb));
+  if (thumb.api === 0) {
+    skip('格子里的图走缩略图接口（w=320）', '本机资产列表里没有 /api/ 资产，这一半没东西可验');
+  }
 
   // 框选：拖一个框，框到的格子一次全选中
   const marqBox = await page.evaluate(`(() => {
@@ -5588,18 +5673,39 @@ try {
   // 不看请求体就没法证明「送进去的是 32×16、不是 16×16」。
   await page.evaluate(`(() => {
     window.__runBodies = [];
+    window.__uploadedImageDims = {};
     window.__realFetch = window.fetch;
-    window.fetch = (u, o) => {
+    window.fetch = async (u, o) => {
       const url = String(u);
+      if (url.includes('/api/upload')) {
+        const file = o && o.body && o.body.get('image');
+        const bitmap = file ? await createImageBitmap(file) : null;
+        const name = file && file.name || 'e2e-outpaint.png';
+        if (bitmap) {
+          window.__uploadedImageDims[name] = { w: bitmap.width, h: bitmap.height };
+          bitmap.close();
+        }
+        return new Response(JSON.stringify({ ok: true, image: name, subfolder: '', type: 'input' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/analyze')) {
+        const body = JSON.parse(o.body);
+        const slots = Object.entries(body.graph || {}).flatMap(([node, nd]) => {
+          if (!nd || nd.class_type !== 'LoadImage' || !nd.inputs || !('image' in nd.inputs)) return [];
+          return [{ key: String(node) + '.image', node, input: 'image', kind: 'image', class_type: nd.class_type }];
+        });
+        return new Response(JSON.stringify({ ok: true, slots, autogrow: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       if (url.includes('/api/run')) {
         try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
-        return Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 }));
+        return new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 });
       }
       // 轮询也一起挡掉：真去查这个假 pid 会判「任务丢失」→ 触发自动重试 →
       // 重试时扩图框正开着、pad 还是 0，bakeOutpaint 会把框收掉（no-op 分支），
       // 后面的用例就全乱了。这里直接回「跑完了、没有产物」。
       if (url.includes('/api/job')) {
-        return Promise.resolve(new Response(JSON.stringify({ ok: true, status: 'done', artifacts: [] }), { status: 200 }));
+        return new Response(JSON.stringify({ ok: true, status: 'done', artifacts: [] }), { status: 200 });
       }
       return window.__realFetch(u, o);
     };
@@ -5617,12 +5723,7 @@ try {
     const g = bodies[bodies.length - 1] || {};
     const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
       .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
-    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
-      const img = new Image();
-      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
-      img.onerror = () => res({ name, w: 0, h: 0 });
-      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
-    })));
+    const sent = sentLoads.map((name) => ({ name, ...(window.__uploadedImageDims[name] || { w: 0, h: 0 }) }));
     // 这里**不**把 fetch 还回去：轮询还在跑，还回去就会查到真服务端、判任务丢失、触发自动重试
     return {
       n: document.querySelectorAll('#nodes .node').length,
@@ -5757,13 +5858,36 @@ try {
   // 留一个假任务在轮询里，后面「遮罩清掉后自动换工作流」那条用例点生成会被 busy 吞掉。
   await page.evaluate(`(() => {
     window.__runBodies = [];
+    window.__uploadedImageDims = {};
     window.__realFetch = window.fetch;
-    window.fetch = (u, o) => (String(u).includes('/api/run')
-      ? (() => {
+    window.fetch = async (u, o) => {
+      const url = String(u);
+      if (url.includes('/api/upload')) {
+        const file = o && o.body && o.body.get('image');
+        const bitmap = file ? await createImageBitmap(file) : null;
+        const name = file && file.name || 'e2e-outpaint-full.png';
+        if (bitmap) {
+          window.__uploadedImageDims[name] = { w: bitmap.width, h: bitmap.height };
+          bitmap.close();
+        }
+        return new Response(JSON.stringify({ ok: true, image: name, subfolder: '', type: 'input' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/analyze')) {
+        const body = JSON.parse(o.body);
+        const slots = Object.entries(body.graph || {}).flatMap(([node, nd]) => {
+          if (!nd || nd.class_type !== 'LoadImage' || !nd.inputs || !('image' in nd.inputs)) return [];
+          return [{ key: String(node) + '.image', node, input: 'image', kind: 'image', class_type: nd.class_type }];
+        });
+        return new Response(JSON.stringify({ ok: true, slots, autogrow: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/run')) {
         try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
         return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'e2e 不提交' }), { status: 200 }));
-      })()
-      : window.__realFetch(u, o));
+      }
+      return window.__realFetch(u, o);
+    };
   })()`);
   // 前面几条用例可能留着一个假任务在轮询：busy 期间点生成会被直接吞掉，
   // 于是「烘焙没做、尺寸没变」被误报成「工作流被换掉了」。等按钮能点再点。
@@ -5782,12 +5906,7 @@ try {
     const g = bodies[bodies.length - 1] || {};
     const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
       .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
-    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
-      const img = new Image();
-      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
-      img.onerror = () => res({ name, w: 0, h: 0 });
-      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
-    })));
+    const sent = sentLoads.map((name) => ({ name, ...(window.__uploadedImageDims[name] || { w: 0, h: 0 }) }));
     window.fetch = window.__realFetch;
     return {
       wf: (el.querySelector('.gensel.wfsel .gm-btn') || {}).textContent || '',
@@ -6594,6 +6713,13 @@ try {
       ta.textContent = 'auto import';
       ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
+    // 夹具里的 i2 通过 t1 接收提示词节点内容，generateImage 会优先使用这条输入。
+    // 同步更新两处，确保这次测试确实验证「auto import」被继承到结果节点。
+    const linkedPrompt = document.querySelector('#nodes .node[data-id="t1"] .text-body');
+    if (linkedPrompt) {
+      linkedPrompt.textContent = 'auto import';
+      linkedPrompt.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     // 上一个用例刚在这个节点上收尾，按钮可能还禁用着；而且面板会随进度重渲染，
     // 抓到的元素随时会脱离文档——所以每一轮都重新查、拿到活的再点。
     let clicked = false;
@@ -6925,6 +7051,9 @@ try {
   const consoleErrors = page.errors.filter((e) => {
     const s = `${e.text || ''} ${e.url || ''}`;
     if (/favicon/.test(s)) return false;
+    // ComfyUI is deliberately absent in CI. Ignore its expected proxy failures only.
+    if (health.comfy === false && /502 \(Bad Gateway\)/.test(s)
+        && /\/api\/(?:analyze|upload)(?:[/?#:]|$)/.test(s)) return false;
     return !(/\/api\/view\?/.test(s) && /40[34]|502/.test(s));
   });
   // 只打 text 的话永远只看到「Uncaught」——把 detail / 位置也带上，否则报错了也查不出是哪一行
@@ -7040,12 +7169,15 @@ try {
       const t = b.querySelector('.cap-tag');
       return t ? t.textContent.trim() : '';
     };
+    // 两个合法标记：「未配置」= 去配一下就好；「不支持」= 本地压根没这个能力（剪辑），配不了。
+    // 灰了却什么都不说才是问题——那才是把状态只画成颜色。
+    const OK_TAG = ['未配置', '不支持'];
     return {
       labels: btns.map((b) => b.querySelector('.cap-label').textContent.trim()),
       nativeDisabled: btns.filter((b) => b.disabled).length,
       ariaOff: btns.filter(isOff).map((b) => b.querySelector('.cap-label').textContent.trim()),
       tags: btns.map((b) => b.querySelector('.cap-label').textContent.trim() + '=' + tagOf(b)),
-      offWithoutTag: btns.filter((b) => isOff(b) && tagOf(b) !== '未配置')
+      offWithoutTag: btns.filter((b) => isOff(b) && !OK_TAG.includes(tagOf(b)))
         .map((b) => b.querySelector('.cap-label').textContent.trim()),
       onWithTag: btns.filter((b) => !isOff(b) && tagOf(b) !== '')
         .map((b) => b.querySelector('.cap-label').textContent.trim()),
@@ -7063,9 +7195,11 @@ try {
   check('起始页：说明缩短为一句，不再和能力卡文案重复',
     /^也可双击空白处添加节点$/.test(capBase.sub.trim()) && !/直接放下一个/.test(capBase.sub),
     capBase.sub);
-  // 灰度不是状态表达：点不动的能力必须挂一个「未配置」小字，读屏和色弱用户都能拿到。
-  // 反过来可用的按钮不该挂，否则「未配置」变成装饰。
-  check('起始页：未配置的能力卡挂「未配置」文字标记，不只靠灰度',
+  // 灰度不是状态表达：点不动的能力必须挂一个文字标记，读屏和色弱用户都能拿到。
+  // 「未配置」和「不支持」是两件事（前者去配一下就好，后者本地没有这个能力），
+  // 所以两个都算合格标记；不合格的是「灰了但什么都不说」。
+  // 反过来可用的按钮不该挂，否则标记变成装饰。
+  check('起始页：点不动的能力卡挂文字标记（未配置 / 不支持），不只靠灰度',
     capBase.ariaOff.length > 0 && capBase.offWithoutTag.length === 0 && capBase.onWithTag.length === 0,
     JSON.stringify(capBase.tags));
   // 两种环境都要过：连不上时提示条必须出现且说人话；连得上时它必须收起（别平白吓人）
@@ -7280,8 +7414,12 @@ try {
     /服务已关闭/.test(downText) && !reachable, `${downText} · reachable=${reachable}`);
 
 } catch (e) {
-  // 带上栈：只有一句 message 时，翻半天也定位不到是哪一步炸的（真踩过）
-  check('运行过程未抛错', false, String(e && e.stack ? e.stack : e));
+  if (e instanceof StopRun) {
+    console.log(`\n（${e.message} 命中，提前收工）`);
+  } else {
+    // 带上栈：只有一句 message 时，翻半天也定位不到是哪一步炸的（真踩过）
+    check('运行过程未抛错', false, String(e && e.stack ? e.stack : e));
+  }
 } finally {
   if (page) await page.close();
   if (chromeCtx) await stopChrome(chromeCtx);
@@ -7289,8 +7427,14 @@ try {
   rmDir(dataDir);
 }
 
+const skipped = results.filter((r) => r.skipped);
 const failed = results.filter((r) => !r.ok);
-console.log(`\n共 ${results.length} 项：通过 ${results.length - failed.length} · 失败 ${failed.length}`);
+console.log(`\n共 ${results.length} 项：通过 ${results.length - failed.length - skipped.length}`
+  + `${skipped.length ? ` · 跳过 ${skipped.length}` : ''} · 失败 ${failed.length}`);
+if (skipped.length) {
+  console.log('跳过的（环境相关，不是没测）：');
+  for (const s of skipped) console.log(`  - ${s.name}：${s.detail}`);
+}
 if (fs.existsSync(path.join(TMP, 'chrome-profile'))) {
   rmDir(path.join(TMP, 'chrome-profile'));
 }

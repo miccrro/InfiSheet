@@ -1,0 +1,61 @@
+#!/bin/sh
+# InfiSheet · 提交前检查（本地第一道门）
+#
+# 只查「这次改到的文件」，正常 1 秒内结束，不拖慢提交手感。
+# 装：npm run hooks        卸：git config --unset core.hooksPath
+# 跳过：git commit --no-verify（只在你清楚为什么跳过时用，CI 还会再拦一次）
+#
+# 设计取舍：这里只用「本来就一定有」的工具（node --check / py_compile），
+# eslint、ruff 装了才跑。否则新同事 clone 下来没装依赖就提交不了，人会直接
+# 把钩子删掉 —— 门禁一旦被绕过一次，之后就永远被绕过。
+set -e
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+files=$(git diff --cached --name-only --diff-filter=ACM)
+# 用 if 而不是 `[ -z ... ] && exit 0`：后者在 set -e 下的行为取决于 shell，
+# 某些实现会直接把整个脚本判成失败。
+if [ -z "$files" ]; then
+  exit 0
+fi
+
+# 文件名里有空格会断词。本仓库的路径没有空格，这里按空格切分是刻意的取舍：
+# 用 xargs -0 需要 git -z + 全程 null 分隔，为这点收益不值得把脚本写复杂。
+js=$(printf '%s\n' "$files" | grep -E '\.(js|mjs|cjs)$' || true)
+py=$(printf '%s\n' "$files" | grep -E '\.py$' || true)
+
+fail=0
+
+if [ -n "$js" ]; then
+  for f in $js; do
+    node --check "$f" || fail=1
+  done
+  if [ -x node_modules/.bin/eslint ]; then
+    # shellcheck disable=SC2086
+    node_modules/.bin/eslint --quiet $js || fail=1
+  else
+    echo "提示：没装 eslint（npm install），这次只查了语法。"
+  fi
+fi
+
+if [ -n "$py" ]; then
+  PY=${PYTHON:-python}
+  for f in $py; do
+    "$PY" -X utf8 -m py_compile "$f" || fail=1
+  done
+  if command -v ruff >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    ruff check --quiet $py || fail=1
+  else
+    echo "提示：没装 ruff（pip install ruff），这次只查了语法。"
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "提交被拦下：上面这些文件没过检查。"
+  echo "  能自动修的：npm run fix"
+  echo "  确实要跳过：git commit --no-verify"
+  exit 1
+fi
+exit 0

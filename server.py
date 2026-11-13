@@ -109,7 +109,7 @@ def app_version() -> str:
         ver = str(pkg.get("version") or "").strip()
         if ver:
             return ver
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— package.json 读不到就用内置默认版本号
         pass
     return "1.2.0"
 
@@ -123,7 +123,7 @@ def load_settings() -> dict:
     """运行期可改的设置（目前只有 ComfyUI 地址）。读坏了就当没有，不让一个坏文件挡住启动。"""
     try:
         data = json.loads(settings_file().read_text(encoding="utf-8-sig"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 设置文件坏了就当没配过，不让它挡住启动
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -213,7 +213,7 @@ def comfy_state(probe: bool = True) -> dict:
             "devices": stats.get("devices") or [],
             "ms": int((time.time() - t0) * 1000),
         })
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 探活失败要变成 reachable=false 返回，不能 500
         out["error"] = comfy_error_hint(exc)
     return out
 
@@ -380,7 +380,7 @@ def _ws_loop() -> None:
                     continue
                 try:
                     msg = json.loads(data.decode("utf-8"))
-                except Exception:
+                except ValueError:      # 半个帧 / 非 JSON：跳过这一条，别把整条连接带崩
                     continue
                 if msg.get("type") not in ("progress", "progress_state"):
                     continue
@@ -392,8 +392,8 @@ def _ws_loop() -> None:
                     for node_id, st in (d.get("nodes") or {}).items():
                         if isinstance(st, dict):
                             _progress_update(pid, node_id, st.get("value"), st.get("max"))
-        except Exception:
-            time.sleep(3)
+        except Exception:  # noqa: BLE001 — 进度流是「有就用、没有也不影响生成」的旁路，
+            time.sleep(3)  # 任何异常都只该让它歇一下重连，不能把线程打死
         finally:
             with _ws_lock:
                 if _ws_sock is sock:
@@ -401,7 +401,7 @@ def _ws_loop() -> None:
             if sock:
                 try:
                     sock.close()
-                except Exception:
+                except OSError:
                     pass
             time.sleep(1)
 
@@ -418,11 +418,11 @@ def _drop_progress_ws() -> None:
         return
     try:
         sock.shutdown(socket.SHUT_RDWR)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 关一个已经断掉的 socket 会抛，尽力而为
         pass
     try:
         sock.close()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 同上：close 也可能抛，尽力而为
         pass
 
 
@@ -471,7 +471,7 @@ def _log_entries() -> list:
         entries = data.get("entries") if isinstance(data, dict) else data
         if not isinstance(entries, list):
             entries = []
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— ComfyUI 老版本没有 /internal/logs，取不到就当空
         entries = []
     with _log_lock:
         _log_cache["at"] = now
@@ -568,7 +568,7 @@ def comfy_reachable(timeout: float = 3) -> bool:
     try:
         comfy_json("/system_stats", timeout=timeout)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 这里问的就是「通不通」，任何异常都等于不通
         return False
 
 
@@ -598,14 +598,22 @@ def update_check(force: bool = False) -> dict:
         with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
             info = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            out.update({"ok": False, "error": "仓库还没有发布过版本"})
-        elif exc.code == 403:
+        if exc.code == 403:
+            # 匿名 API 每小时只有 60 次，很容易被别人/自己用完（共用出口 IP 更明显）。
+            # 这时退到网页那条路：/releases/latest 会 302 到 /releases/tag/vX.Y.Z，
+            # 从跳转后的地址里抠 tag —— 这条路不占 API 配额，拿不到更新说明但够判断版本。
+            tag = latest_tag_via_redirect()
+            if tag:
+                out.update(latest_payload(cur, tag))
+                _UPDATE_CACHE.update({"at": now, "data": out})
+                return out
             out.update({"ok": False, "error": "GitHub 限流了，过一会儿再试"})
+        elif exc.code == 404:
+            out.update({"ok": False, "error": "仓库还没有发布过版本"})
         else:
             out.update({"ok": False, "error": f"GitHub 返回 {exc.code}"})
         return out
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 网络 / 解析都可能失败，转成 ok=false + 原因
         out.update({"ok": False, "error": f"连不上 GitHub（{type(exc).__name__}）"})
         return out
     latest = str(info.get("tag_name") or "").lstrip("vV").strip()
@@ -626,6 +634,28 @@ def update_check(force: bool = False) -> dict:
     return out
 
 
+def latest_payload(cur: str, tag: str) -> dict:
+    """只有 tag 时的结果（API 限流的退路用）：版本够判断，说明和附件留空。"""
+    latest = str(tag or "").lstrip("vV").strip()
+    return {"latest": latest,
+            "hasUpdate": version_key(latest) > version_key(cur),
+            "url": f"https://github.com/{UPDATE_REPO}/releases/tag/{tag}",
+            "notes": "", "publishedAt": "", "zip": ""}
+
+
+def latest_tag_via_redirect() -> str:
+    """不占 API 配额地拿最新 tag：`/releases/latest` 会 302 到 `/releases/tag/vX.Y.Z`。"""
+    try:
+        req = urllib.request.Request(f"https://github.com/{UPDATE_REPO}/releases/latest",
+                                     headers={"User-Agent": f"InfiSheet/{app_version()}"})
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+            final = resp.geturl() or ""          # urllib 自动跟 302，这里拿跳转后的地址
+    except Exception:  # noqa: BLE001 —— GitHub 不通或没有 release，都算拿不到 tag
+        return ""
+    found = re.search(r"/releases/tag/([^/?#]+)", final)
+    return found.group(1) if found else ""
+
+
 
 def object_info(node_type: str):
     """按节点类型取 object_info。
@@ -640,7 +670,7 @@ def object_info(node_type: str):
     quoted = urllib.parse.quote(node_type, safe="")
     try:
         info = comfy_json(f"/object_info/{quoted}", timeout=60)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— ComfyUI 没有这个节点类型时接口会报错，交给上层提示
         return None
     spec = info if node_type in info else {}
     with _oi_lock:
@@ -784,12 +814,12 @@ def flatten_ui(workflow: dict) -> dict:
 
     def instance_ctx(nodes, links, ctx, prefix, inst):
         out = {}
-        for l in links:
-            if str(l.get("target_id")) != str(inst.get("id")):
+        for link in links:
+            if str(link.get("target_id")) != str(inst.get("id")):
                 continue
-            ep = resolve(nodes, links, ctx, prefix, l.get("origin_id"), l.get("origin_slot"))
+            ep = resolve(nodes, links, ctx, prefix, link.get("origin_id"), link.get("origin_slot"))
             if ep:
-                out[int(l.get("target_slot") or 0)] = ep
+                out[int(link.get("target_slot") or 0)] = ep
         return out
 
     def instance_output(nodes, links, ctx, prefix, inst, slot):
@@ -798,10 +828,10 @@ def flatten_ui(workflow: dict) -> dict:
             return None
         gid = prefix + str(inst.get("id"))
         ictx = instance_ctx(nodes, links, ctx, prefix, inst)
-        for l in sub.get("links") or []:
-            if str(l.get("target_id")) == "-20" and int(l.get("target_slot") or 0) == slot:
+        for link in sub.get("links") or []:
+            if str(link.get("target_id")) == "-20" and int(link.get("target_slot") or 0) == slot:
                 return resolve(sub.get("nodes") or [], sub.get("links") or [], ictx, gid + "/",
-                               l.get("origin_id"), l.get("origin_slot"))
+                               link.get("origin_id"), link.get("origin_slot"))
         return None
 
     def emit(nodes, links, ctx, prefix):
@@ -820,23 +850,23 @@ def flatten_ui(workflow: dict) -> dict:
             copy["inputs"] = [dict(i) for i in (node.get("inputs") or [])]
             flat_nodes.append(copy)
             by_gid[copy["id"]] = copy
-        for l in links:
-            if str(l.get("target_id")) == "-20":
+        for link in links:
+            if str(link.get("target_id")) == "-20":
                 continue
-            target = find_node(nodes, l.get("target_id"))
+            target = find_node(nodes, link.get("target_id"))
             if target is not None and str(target.get("type")) in subdefs:
                 continue
-            src = resolve(nodes, links, ctx, prefix, l.get("origin_id"), l.get("origin_slot"))
+            src = resolve(nodes, links, ctx, prefix, link.get("origin_id"), link.get("origin_slot"))
             if not src:
                 continue
             lid = next_link_id()
             flat_links.append({"id": lid, "origin_id": src[0], "origin_slot": src[1],
-                               "target_id": prefix + str(l.get("target_id")),
-                               "target_slot": int(l.get("target_slot") or 0), "type": l.get("type")})
-            tnode = by_gid.get(prefix + str(l.get("target_id")))
+                               "target_id": prefix + str(link.get("target_id")),
+                               "target_slot": int(link.get("target_slot") or 0), "type": link.get("type")})
+            tnode = by_gid.get(prefix + str(link.get("target_id")))
             if tnode:
                 for inp in tnode.get("inputs") or []:
-                    if inp.get("link") == l.get("id"):
+                    if inp.get("link") == link.get("id"):
                         inp["link"] = lid
                         break
 
@@ -893,9 +923,9 @@ def ui_to_api(workflow: dict) -> dict:
             inputs[name] = values[vi]
             vi += 1
             # seed / noise_seed 后面跟着 control_after_generate（fixed / randomize ...），不是节点输入
-            if decl[0] == "INT" and str(name).lower() in ("seed", "noise_seed"):
-                if vi < len(values) and isinstance(values[vi], str) and values[vi] in SEED_CONTROL:
-                    vi += 1
+            if (decl[0] == "INT" and str(name).lower() in ("seed", "noise_seed")
+                    and vi < len(values) and isinstance(values[vi], str) and values[vi] in SEED_CONTROL):
+                vi += 1
         meta = {"title": node.get("title") or ntype}
         graph[nid] = {"class_type": ntype, "inputs": inputs, "_meta": meta}
     if not graph:
@@ -1196,7 +1226,7 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
                                 comfy=ASSET_CACHE["comfy"], error=ASSET_CACHE["error"])
     try:
         hist = comfy_json(f"/history?max_items={max(limit, 100)}", timeout=30)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— ComfyUI 挂了也要能列出本地资产
         ASSET_CACHE = {"at": now, "limit": limit, "items": [], "comfy": False, "error": str(exc)}
         return _assets_with_lib([], limit, cached=False, comfy=False, error=str(exc))
 
@@ -1225,7 +1255,7 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
     # history 的条目顺序就是执行顺序（旧→新）。倒过来遍历，资产列表最前面就是最新那张。
     entries = list(hist.items())
     entries.reverse()
-    for prompt_id, entry in entries:
+    for _prompt_id, entry in entries:
         if not isinstance(entry, dict):
             continue
         for art in collect_artifacts(entry):
@@ -1342,7 +1372,7 @@ def _lib_has_images(root: Path) -> bool:
     """目录里已经攒了图没有（两层：根 + 分组）。"""
     try:
         items, _ = scan_assets(root, [])
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 目录读不了就当没图，别让建库流程中断
         return False
     return bool(items)
 
@@ -1481,7 +1511,7 @@ def load_asset_lib() -> dict:
         raw = json.loads(f.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {"root": "", "comfyDir": "", "groups": [], "items": {}}
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 库文件坏了当空库，别让整个资产面板打不开
         try:
             f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
             print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空库开始")
@@ -1518,7 +1548,7 @@ THUMB_SRC_MAX = 48 * 1024 * 1024   # 超过 48MB 的源文件不缩，别为了�
 
 try:  # noqa: SIM105
     from PIL import Image as _PILImage
-except Exception:  # noqa: BLE001
+except Exception:  # noqa: BLE001 —— 没装 Pillow 就不做缩略图，这不是错误
     _PILImage = None
 
 
@@ -1532,7 +1562,7 @@ def thumb_width(raw) -> int:
 
 
 def thumb_cache_file(src: str, w: int) -> Path:
-    h = hashlib.sha1(f"{src}|{w}".encode("utf-8")).hexdigest()[:20]
+    h = hashlib.sha1(f"{src}|{w}".encode()).hexdigest()[:20]
     return DATA / THUMB_DIR / f"{h}-{w}.jpg"
 
 
@@ -1598,7 +1628,7 @@ def load_prompts() -> list[dict]:
         raw = json.loads(f.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 预设文件坏了当空列表
         try:
             f.replace(f.with_name(f"{f.name}.bad-{int(time.time())}"))
             print(f"[warn] {f.name} 读不出来，已留档为 {f.name}.bad-*，这次从空列表开始")
@@ -1655,12 +1685,13 @@ def prompts_apply(payload: dict) -> dict:
             raise ValueError("提示词是空的")
         if len(items) >= PROMPT_MAX:
             raise ValueError(f"预设最多 {PROMPT_MAX} 条，先删几条")
+        next_at = max(int(time.time() * 1000), max((x["at"] for x in items), default=0) + 1)
         item = {
             "id": uuid.uuid4().hex[:12],
             "name": str(payload.get("name") or "").strip()[:PROMPT_NAME_MAX] or text[:16],
             "text": text[:PROMPT_TEXT_MAX],
             "html": str(payload.get("html") or "")[:PROMPT_HTML_MAX],
-            "at": int(time.time() * 1000),
+            "at": next_at,
         }
         items.append(item)
         return {"ok": True, "items": save_prompts(items), "item": item}
@@ -1835,7 +1866,7 @@ def _trash_windows(files: list[Path]) -> tuple[bool, str]:
     try:
         import ctypes
         from ctypes import wintypes
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 非 Windows / 受限环境拿不到 API，走降级路径
         return False, f"回收站不可用：{exc}"
 
     class SHFILEOPSTRUCTW(ctypes.Structure):
@@ -1881,7 +1912,7 @@ def _trash_posix(files: list[Path]) -> tuple[bool, str]:
             subprocess.run(cmd, check=True, capture_output=True, timeout=20)
         except FileNotFoundError:
             return False, "系统里没有回收站命令（gio / osascript）"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 回收站命令失败要返回原因，不能抛给调用方
             return False, f"回收站失败：{str(exc)[:80]}"
     return True, ""
 
@@ -2212,7 +2243,7 @@ def asset_lib_apply(payload: dict) -> dict:
                 meta["imported"] = rel
                 ok += 1
                 saved.append({"key": key, "name": target.name, "rel": rel})
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 单张导入失败要记下来继续，不能中断整批
                 failed.append(f"{name}: {exc}")
         return done({"imported": ok, "failed": failed[:20], "group": gid, "saved": saved})
 
@@ -2375,13 +2406,13 @@ def auto_import_assets(keys: list[str]) -> dict:
     try:
         res = asset_lib_apply({"op": "import", "items": [{"key": k} for k in keys],
                                "nameMode": "time"})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 自动入库是尽力而为，失败只记录、不打扰生成
         return {"ok": False, "error": str(exc)[:200], "imported": 0, "saved": []}
     saved = res.get("saved") or []
     if saved:
         try:
             asset_lib_apply({"op": "hide", "keys": [s["key"] for s in saved], "hidden": True})
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 隐藏旧键失败不影响入库结果
             pass
     return {"ok": True, "imported": res.get("imported") or 0, "saved": saved,
             "failed": res.get("failed") or []}
@@ -2488,7 +2519,7 @@ def mcp_install(cid: str) -> dict:
     try:
         path = mcp_config_path(cid)
     except KeyError:
-        raise ValueError(f"不认识的客户端：{cid}")
+        raise ValueError(f"不认识的客户端：{cid}") from None
 
     data: dict = {}
     backup = None
@@ -2498,7 +2529,7 @@ def mcp_install(cid: str) -> dict:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"现有配置不是合法 JSON（第 {exc.lineno} 行），没有动它：{path}")
+                raise ValueError(f"现有配置不是合法 JSON（第 {exc.lineno} 行），没有动它：{path}") from exc
             if not isinstance(data, dict):
                 raise ValueError(f"现有配置的顶层不是对象，没有动它：{path}")
             backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
@@ -2537,7 +2568,7 @@ def _shutdown_soon(delay: float = 0.4) -> None:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 进程要退了，流刷不出来也没别的办法
             pass
         # 还有 ComfyUI 进度 ws 之类的后台线程，正常退出可能被它们拖着；
         # 这是「用户明确要求关掉」的场景，直接结束进程，别留半开的端口。
@@ -2547,6 +2578,10 @@ def _shutdown_soon(delay: float = 0.4) -> None:
 # --------------------------------------------------------------------------- #
 # HTTP 处理
 # --------------------------------------------------------------------------- #
+class RequestTooLarge(Exception):
+    pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InfiSheet/1.2"
     protocol_version = "HTTP/1.1"
@@ -2612,8 +2647,14 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send(401, form.encode("utf-8"), "text/html; charset=utf-8")
 
-    def read_body(self) -> bytes:
+    def read_body(self, limit: int = 64 * 1024 * 1024) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
+        if length < 0:
+            raise ValueError("Content-Length 无效")
+        if length > limit:
+            self._body_read = True
+            self.close_connection = True
+            raise RequestTooLarge(f"请求体超过 {limit // (1024 * 1024)} MB 上限")
         raw = self.rfile.read(length) if length else b""
         self._body_read = True
         return raw
@@ -2625,26 +2666,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
-        except Exception:
+        except (TypeError, ValueError):     # 头里是空的 / 不是数字，当没有 body
             length = 0
-        if length > 0:
+        if length > 64 * 1024 * 1024:
+            self.close_connection = True
+        elif length > 0:
             try:
-                self.rfile.read(min(length, 64 * 1024 * 1024))
-            except Exception:
+                self.rfile.read(length)
+            except OSError:                 # client disconnected before the body was drained
                 pass
         self._body_read = True
 
     def read_json(self, limit: int = 64 * 1024 * 1024):
-        raw = self.read_body()
+        raw = self.read_body(limit)
         if not raw:
             return None
-        if len(raw) > limit:
-            raise ValueError("请求体过大")
         return json.loads(raw.decode("utf-8"))
 
     def log_message(self, fmt, *args):  # 安静一点
         if os.environ.get("CANVAS_VERBOSE"):
-            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+            sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
 
     # ---------- MCP（Streamable HTTP + JSON-RPC 2.0） ----------
     def mcp_post(self):
@@ -2660,7 +2701,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = None
         try:
             payload = json.loads(raw.decode("utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 请求体不是 JSON 就按空处理，下面会报错回去
             resp = mcp_server.error_response(-32700, "JSON 解析失败")
         else:
             # 桥替客户端报个名（见 mcp_server.note_client）：必须在 handle 之前，
@@ -2670,11 +2711,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 mcp_server.note_client(self.headers.get("X-MCP-Client") or "",
                                        self.headers.get("X-MCP-Host") or "")
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 记客户端名失败不影响这次调用
                 pass
             try:
                 resp = mcp_server.handle(payload)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 工具执行出错要转成 JSON-RPC 错误回给客户端
                 resp = mcp_server.error_response(-32603, f"{type(exc).__name__}: {exc}")
         sid = self.headers.get("Mcp-Session-Id") or ""
         if isinstance(payload, dict) and payload.get("method") == "initialize" and not sid:
@@ -2740,7 +2781,7 @@ class Handler(BaseHTTPRequestHandler):
             mcp_server.note_heartbeat(self.headers.get("X-MCP-Client") or "",
                                       self.headers.get("X-MCP-Host") or "")
             lease = mcp_server.lease()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 心跳失败要如实回 500，不能让桥以为还活着
             return self.fail(f"{type(exc).__name__}: {exc}", 500)
         return self.json_out({"ok": True, "lease": lease})
 
@@ -2772,7 +2813,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_static(path)
         except ConnectionError as exc:
             return self.fail(str(exc), 502)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 兜底：任何异常都要回一个 JSON 错误，别让连接悬着
             return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
     def do_POST(self):
@@ -2782,9 +2823,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok():
                 return self._deny(parsed.path)
             return self.api_post(parsed.path)
+        except RequestTooLarge as exc:
+            return self.fail(str(exc), 413)
         except ConnectionError as exc:
             return self.fail(str(exc), 502)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 兜底：任何异常都要回一个 JSON 错误，别让连接悬着
             return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
     def do_PUT(self):
@@ -2793,7 +2836,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok():
                 return self._deny(urllib.parse.urlparse(self.path).path)
             return self.api_put(urllib.parse.urlparse(self.path).path)
-        except Exception as exc:  # noqa: BLE001
+        except RequestTooLarge as exc:
+            return self.fail(str(exc), 413)
+        except Exception as exc:  # noqa: BLE001 —— 兜底：任何异常都要回一个 JSON 错误，别让连接悬着
             return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
     def do_DELETE(self):
@@ -2802,7 +2847,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok():
                 return self._deny(urllib.parse.urlparse(self.path).path)
             return self.api_delete(urllib.parse.urlparse(self.path).path)
-        except Exception as exc:  # noqa: BLE001
+        except RequestTooLarge as exc:
+            return self.fail(str(exc), 413)
+        except Exception as exc:  # noqa: BLE001 —— 兜底：任何异常都要回一个 JSON 错误，别让连接悬着
             return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
     # ---------- 静态文件 ----------
@@ -2839,7 +2886,7 @@ class Handler(BaseHTTPRequestHandler):
             # 单独兜一层异常——MCP 状态取不到不该让整个 health 变 500（那只影响一个指示器）。
             try:
                 out["mcp"] = mcp_server.status()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— MCP 状态取不到不该让整个 health 变 500
                 out["mcp"] = {"connected": False}
             try:
                 stats = comfy_json("/system_stats", timeout=10)
@@ -2855,7 +2902,7 @@ class Handler(BaseHTTPRequestHandler):
                     "pending": len(queue.get("queue_pending") or []),
                     "devices": stats.get("devices"),
                 })
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— ComfyUI 队列取不到就只给空计数
                 # 顶栏直接显示这句话：别把 `<urlopen error [Errno 61]>` 丢给用户
                 out.update({"comfy": False, "error": comfy_error_hint(exc)})
             return self.json_out(out)
@@ -2874,7 +2921,7 @@ class Handler(BaseHTTPRequestHandler):
             force = (query.get("force") or [""])[0] in ("1", "true", "yes")
             try:
                 return self.json_out(update_check(force=force))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 检查更新失败要回 ok=false + 原因，不是 500
                 return self.json_out({"ok": False, "current": app_version(),
                                       "error": f"{type(exc).__name__}: {exc}"})
 
@@ -2882,7 +2929,7 @@ class Handler(BaseHTTPRequestHandler):
             # 「怎么把 AI 接进来」全在这里：端点、stdio 命令、三个客户端的配置文件路径与片段
             try:
                 return self.json_out(mcp_setup_payload())
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 配置片段拼不出来要回错误，不是 500
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         if path.startswith("/api/models/"):
@@ -3042,6 +3089,14 @@ class Handler(BaseHTTPRequestHandler):
             # 预设列表。写操作在 api_post 那边（同一个路径，按方法分）
             return self.json_out({"ok": True, "items": load_prompts()})
 
+        if path == "/api/edit-image":
+            # 编辑产物（旋转 / 调色 / 裁剪）。文件名就是内容哈希，内容永不改 → 长缓存
+            blob = edit_image_bytes((query.get("h") or [""])[0])
+            if blob is None:
+                return self.fail("这张图不在了（可能被清理过）", 404)
+            return self._send(200, blob, "image/png",
+                              {"Cache-Control": "public, max-age=31536000, immutable"})
+
         if path == "/api/assets":
             try:
                 limit = int((query.get("limit") or ["400"])[0] or 400)
@@ -3056,7 +3111,7 @@ class Handler(BaseHTTPRequestHandler):
             # 前端 boot 里问一次，needsSetup 为 false 就完全不打扰。
             try:
                 return self.json_out({"ok": True, **setup_state()})
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 引导状态读不到就当不需要引导
                 # 引导挂了不能挡住画布：如实说「不用设了」，让用户先能用起来
                 return self.json_out({"ok": False, "needsSetup": False,
                                       "error": f"{type(exc).__name__}: {exc}"})
@@ -3118,7 +3173,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_out(prompts_apply(payload))
             except ValueError as exc:
                 return self.fail(str(exc), 400)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 兜底：未预期的异常转成 500 文案
+                return self.fail(f"{type(exc).__name__}: {exc}", 500)
+
+        # 编辑产物落盘：前端把画布上的 dataURL 发上来，换一个能长期访问的地址
+        if path == "/api/edit-image":
+            payload = self.read_json() or {}
+            try:
+                return self.json_out({"ok": True, "url": store_edit_image(payload.get("data"))})
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001 —— 兜底：写盘失败要说清是哪种错
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         # 资产库的分组 / 归属 / 移除。一个入口靠 op 分发，见 asset_lib_apply()
@@ -3128,7 +3193,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_out(asset_lib_apply(payload))
             except ValueError as exc:
                 return self.fail(str(exc), 400)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 兜底：未预期的异常转成 500 文案
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         if path == "/api/setup":
@@ -3137,7 +3202,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_out(setup_apply(payload))
             except ValueError as exc:
                 return self.fail(str(exc), 400)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 兜底：未预期的异常转成 500 文案
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         if path == "/api/mcp/install":
@@ -3147,7 +3212,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_out(mcp_install(str(payload.get("client") or "")))
             except ValueError as exc:
                 return self.fail(str(exc), 400)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 兜底：未预期的异常转成 500 文案
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
         # 工作流的「标题 / 分类 / 图标」——分类是用户自己的组织方式，随时可改，不用重新导入
@@ -3242,7 +3307,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail("缺少 prompt_id", 400)
             try:
                 queue = comfy_json("/queue", timeout=15)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 —— 队列读不到，取消照样往下走（ComfyUI 那边会忽略）
                 return self.fail(f"连不上 ComfyUI：{exc}", 502)
             running = [item[1] for item in queue.get("queue_running") or [] if len(item) > 1]
             pending = [item[1] for item in queue.get("queue_pending") or [] if len(item) > 1]
@@ -3275,7 +3340,7 @@ class Handler(BaseHTTPRequestHandler):
             status, _, raw = comfy_request("POST", "/prompt", body)
             try:
                 data = json.loads(raw.decode("utf-8"))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— ComfyUI 回了非 JSON，按空处理再报错
                 data = {"raw": raw.decode("utf-8", "replace")}
             if status != 200:
                 return self.json_out({"ok": False, "status": status, "error": data}, 200)
@@ -3337,33 +3402,35 @@ class Handler(BaseHTTPRequestHandler):
             # 重命名 / 改封面都只动项目文件里的一个字段，不该让前端把整份画布再 POST 一遍
             # （那份画布可能是几 MB 的 base64，而且容易把另一个标签页的新改动盖掉）。
             if sub in ("rename", "cover"):
-                f = DATA / "projects" / f"{pid}.json"
-                if not f.exists():
+                if not (DATA / "projects" / f"{pid}.json").is_file():
                     return self.fail("项目不存在", 404)
                 payload = self.read_json() or {}
-                try:
-                    canvas = json.loads(f.read_text(encoding="utf-8-sig"))
-                except Exception:  # noqa: BLE001
-                    return self.fail("项目文件读不出来", 500)
-                now = int(time.time() * 1000)
-                if sub == "rename":
-                    name = str(payload.get("name") or "").strip()[:40] or "未命名画布"
-                    canvas["name"] = name
-                else:
+                cover = None
+                if sub == "cover":
                     src = str(payload.get("src") or "")
-                    if not src:
-                        canvas.pop("cover", None)          # 空 = 回到「最近生成」
-                    elif src.startswith("data:"):
+                    if src.startswith("data:"):
                         url = store_cover(pid, src)
                         if not url:
-                            return self.fail("封面图读不出来", 400)
-                        canvas["cover"] = {"file": url.rsplit("v=", 1)[-1], "at": now}
+                            return self.fail("封面图片无效或太大", 400)
+                        cover = {"file": url.rsplit("v=", 1)[-1]}
+                    elif src:
+                        cover = {"src": src}
+
+                def update(canvas):
+                    now = int(time.time() * 1000)
+                    if sub == "rename":
+                        canvas["name"] = str(payload.get("name") or "").strip()[:40] or "未命名项目"
+                    elif cover is None:
+                        canvas.pop("cover", None)
                     else:
-                        canvas["cover"] = {"src": src, "at": now}
-                canvas["rev"] = int(canvas.get("rev") or 0) + 1
-                canvas["lastWriter"] = "canvas"
-                canvas["savedAt"] = now
-                f.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
+                        canvas["cover"] = {**cover, "at": now}
+
+                try:
+                    canvas = update_project_canvas(pid, update)
+                except (OSError, ValueError) as exc:
+                    return self.fail(f"项目文件不可读：{exc}", 500)
+                if canvas is None:
+                    return self.fail("项目不存在", 404)
                 return self.json_out({"ok": True, "id": pid, "rev": canvas["rev"],
                                       "name": canvas.get("name"),
                                       "cover": cover_url(pid, canvas)})
@@ -3373,30 +3440,16 @@ class Handler(BaseHTTPRequestHandler):
             canvas = payload.get("canvas")
             if not isinstance(canvas, dict):
                 return self.fail("canvas 必须是对象", 400)
-            path = DATA / "projects" / f"{pid}.json"
-            prev = {}
-            if path.exists():
-                try:
-                    prev = json.loads(path.read_text(encoding="utf-8-sig"))
-                except Exception:  # noqa: BLE001
-                    prev = {}
-            prev_rev = int((prev or {}).get("rev") or 0)
             base = payload.get("baseRev")
             try:
                 base = int(base) if base is not None else None
             except (TypeError, ValueError):
                 base = None
-            # 版本对不上就别盖：画布刚被别的会话（MCP 桥 / 另一个标签页）改过。
-            # 前端拿到 stale 会去读最新一版，而不是把自己手里那份旧状态写回去。
-            if base is not None and base < prev_rev:
-                return self.json_out({"ok": True, "stale": True, "rev": prev_rev,
-                                      "lastWriter": (prev or {}).get("lastWriter") or ""})
-            canvas["rev"] = prev_rev + 1
-            canvas["lastWriter"] = "canvas"
-            canvas["savedAt"] = int(time.time() * 1000)
-            projects_dir()
-            path.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
-            return self.json_out({"ok": True, "id": pid, "rev": canvas["rev"]})
+            saved = save_project_canvas(pid, canvas, base_rev=base, writer="canvas")
+            if saved.get("conflict"):
+                return self.json_out({"ok": True, "stale": True, "rev": saved["rev"],
+                                      "lastWriter": saved.get("lastWriter") or ""})
+            return self.json_out({"ok": True, "id": pid, "rev": saved["rev"]})
         if path == "/api/canvas":
             payload = self.read_json() or {}
             canvas = payload.get("canvas")
@@ -3409,7 +3462,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(canvas, dict) and target.exists():
                 try:
                     current = json.loads(target.read_text(encoding="utf-8-sig"))
-                except Exception:
+                except (OSError, ValueError):   # 读不到 / 坏了：当作没有旧档，照常保存
                     current = None
                 if isinstance(current, dict):
                     incoming_boot = canvas.get("bootAt") or 0
@@ -3459,7 +3512,7 @@ class Handler(BaseHTTPRequestHandler):
         if f.is_file():
             try:
                 old = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 旧存档坏了就当没有，直接覆盖
                 old = {}
         data = {**old, "name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "graph": graph}
         title = str(payload.get("title") or "").strip()[:40]
@@ -3513,14 +3566,19 @@ def history_dir() -> Path:
 
 
 def archive_canvas(target: Path) -> None:
-    """覆盖 canvas.json 前，把旧版本归档一份（内容相同或离上次归档太近则跳过）。"""
+    """覆盖 canvas.json 前，把旧版本归档一份（内容相同或离上次归档太近则跳过）。
+
+    归档是「顺带做的事」：读不到、读坏了、删不掉都只跳过，不能影响这次保存本身。
+    所以这里一律只捕 OSError / ValueError —— 抓 Exception 会把真正的编程错误
+    （比如 Path 拼错导致 TypeError）也一起吞掉，出问题时完全查不出来。
+    """
     try:
         raw = target.read_bytes()
-    except Exception:
+    except OSError:
         return
     try:
         json.loads(raw.decode("utf-8-sig"))
-    except Exception:
+    except ValueError:      # 含 UnicodeDecodeError：旧档坏了就别再往 history 里塞
         return
     hd = history_dir()
     files = sorted(hd.glob("*.json"))
@@ -3528,13 +3586,13 @@ def archive_canvas(target: Path) -> None:
         try:
             if time.time() - files[-1].stat().st_mtime < HISTORY_MIN_GAP:
                 return
-        except Exception:
+        except OSError:
             pass
         # 和最近一份内容一致就不重复归档
         try:
             if files[-1].read_bytes() == raw:
                 return
-        except Exception:
+        except OSError:
             pass
     name = time.strftime("%Y%m%d-%H%M%S") + ".json"
     (hd / name).write_bytes(raw)
@@ -3542,7 +3600,7 @@ def archive_canvas(target: Path) -> None:
     for old in files[:-HISTORY_LIMIT]:
         try:
             old.unlink()
-        except Exception:
+        except OSError:
             pass
 
 
@@ -3554,7 +3612,7 @@ def list_canvas_history() -> list[dict]:
     for f in sorted(hd.glob("*.json"), reverse=True):
         try:
             d = json.loads(f.read_text(encoding="utf-8-sig"))
-        except Exception:
+        except (OSError, ValueError):   # 单个坏档不该让整张历史列表报错
             continue
         out.append({
             "file": f.name,
@@ -3583,6 +3641,53 @@ def projects_dir() -> Path:
     return d
 
 
+# Browser and MCP share this process; serialize project compare-and-replace writes.
+_PROJECT_WRITE_LOCK = threading.RLock()
+
+
+def _write_project_locked(path: Path, canvas: dict, writer: str) -> None:
+    canvas["rev"] = int(canvas.get("rev") or 0) + 1
+    canvas["lastWriter"] = writer
+    canvas["savedAt"] = int(time.time() * 1000)
+    tmp = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def save_project_canvas(pid: str, canvas: dict, base_rev=None, writer: str = "canvas") -> dict:
+    if not PROJECT_ID_RE.fullmatch(pid or ""):
+        raise ValueError("项目 id 不合法")
+    path = projects_dir() / f"{pid}.json"
+    with _PROJECT_WRITE_LOCK:
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+        except (OSError, ValueError):
+            prev = {}
+        prev_rev = int((prev or {}).get("rev") or 0)
+        if base_rev is not None and int(base_rev) != prev_rev:
+            return {"ok": False, "conflict": True, "rev": prev_rev,
+                    "lastWriter": (prev or {}).get("lastWriter") or ""}
+        canvas["rev"] = prev_rev
+        _write_project_locked(path, canvas, writer)
+        return {"ok": True, "conflict": False, "rev": canvas["rev"]}
+
+
+def update_project_canvas(pid: str, update, writer: str = "canvas") -> dict | None:
+    if not PROJECT_ID_RE.fullmatch(pid or ""):
+        raise ValueError("项目 id 不合法")
+    path = projects_dir() / f"{pid}.json"
+    with _PROJECT_WRITE_LOCK:
+        if not path.exists():
+            return None
+        canvas = json.loads(path.read_text(encoding="utf-8-sig"))
+        update(canvas)
+        _write_project_locked(path, canvas, writer)
+        return canvas
+
+
 def ensure_legacy_project() -> None:
     """老版本只有一个 canvas.json：把它变成 legacy 项目——**只做一次**。
 
@@ -3599,14 +3704,14 @@ def ensure_legacy_project() -> None:
     if not any(pd.glob("*.json")) and legacy.exists():
         try:
             data = json.loads(legacy.read_text(encoding="utf-8-sig"))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 老存档坏了就不迁，别把启动搞崩
             data = None
         if data is not None:
             (pd / "legacy.json").write_text(
                 json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     try:
         mark.write_text("1", encoding="utf-8")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 标记写不进去，下次启动再试
         pass                                     # 写不了标记就下次再试，不影响本次结果
 
 
@@ -3620,7 +3725,7 @@ def list_projects() -> list[dict]:
     for f in files:
         try:
             d = json.loads(f.read_text(encoding="utf-8-sig"))
-        except Exception:
+        except (OSError, ValueError):   # 单个坏档不该让整个项目列表报错
             continue
         out.append({
             "id": f.stem,
@@ -3691,9 +3796,8 @@ def cover_source(canvas: dict) -> str:
 
 def cover_url(pid: str, canvas: dict) -> str:
     cv = canvas.get("cover")
-    if isinstance(cv, dict) and cv.get("file"):
-        if (DATA / "covers" / f"{pid}.img").exists():
-            return f"/api/projects/{pid}/cover?v={cv['file']}"
+    if isinstance(cv, dict) and cv.get("file") and (DATA / "covers" / f"{pid}.img").exists():
+        return f"/api/projects/{pid}/cover?v={cv['file']}"
     src = cover_source(canvas)
     if not src:
         return ""
@@ -3710,12 +3814,12 @@ def store_cover(pid: str, data_url: str) -> str:
     if fresh:
         try:
             fresh = mark.read_text(encoding="utf-8").strip() == h
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 标记文件读不了就当封面不新鲜，重新生成
             fresh = False
     if not fresh:
         try:
             blob = base64.b64decode(data_url.split(",", 1)[1])
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 半截 base64 就当作没有封面
             return ""
         if not blob or len(blob) > 24 * 1024 * 1024:
             return ""
@@ -3745,8 +3849,55 @@ def drop_cover(pid: str) -> None:
         try:
             if f.exists():
                 f.unlink()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 删不掉就算了，少一张封面不影响打开项目
             pass
+
+
+# ---------------- 编辑产物（旋转 / 调色 / 裁剪）落盘 ----------------
+# 这几类编辑以前直接把 data:image/png 写进节点：一张就是几百 KB 到几 MB，
+# 存档（localStorage 5MB 配额）和撤销栈（40 份快照）各乘一遍。
+# 现在只把地址写进节点，字节落在 data/edits/。
+# 文件名取内容的 sha1：同一张图反复保存不会多出文件，地址也可以长期缓存。
+EDIT_MAX_BYTES = 40 * 1024 * 1024
+
+
+def edits_dir() -> Path:
+    d = DATA / "edits"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def store_edit_image(data_url) -> str:
+    """把 data: 图落成 edits/<sha1>.png，回一个内容不变的地址。"""
+    text = str(data_url or "")
+    if not text.startswith("data:image/"):
+        raise ValueError("只收 data:image/ 开头的图")
+    try:
+        blob = base64.b64decode(text.split(",", 1)[1])
+    except Exception as exc:  # noqa: BLE001 —— 半截 base64 要给一句人话，不能 500
+        raise ValueError("图片数据不完整，请重试") from exc
+    if not blob:
+        raise ValueError("图片是空的")
+    if len(blob) > EDIT_MAX_BYTES:
+        raise ValueError("图片超过 40MB，没法保存")
+    h = hashlib.sha1(blob).hexdigest()[:20]
+    f = edits_dir() / f"{h}.png"
+    if not f.is_file():
+        # 先写临时文件再换名：中途失败不会在目录里留下半张坏图
+        tmp = f.with_name(f.name + f".{uuid.uuid4().hex[:6]}.tmp")
+        tmp.write_bytes(blob)
+        os.replace(tmp, f)
+    return f"/api/edit-image?h={h}"
+
+
+def edit_image_bytes(name: str):
+    """按哈希取回编辑产物；名字不合法或文件不在都返回 None。"""
+    if not re.fullmatch(r"[0-9a-f]{20}", str(name or "")):
+        return None
+    f = DATA / "edits" / f"{name}.png"
+    if not f.is_file():
+        return None
+    return f.read_bytes()
 
 def safe_library_path(name: str):
     name = (name or "").strip()
@@ -3891,7 +4042,7 @@ def load_categories() -> list[dict]:
             out.append({"id": cid, "name": name})
         if out:
             return out
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 分类文件坏了跳过，别让整个工作流列表打不开
         pass
     return [dict(c) for c in DEFAULT_CATEGORIES]
 
@@ -3940,7 +4091,7 @@ def load_wf_defaults() -> dict[str, str]:
     """读默认表。只认 CATEGORY_ORDER 里的键，值必须是字符串 id。"""
     try:
         raw = json.loads(wf_defaults_file().read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 默认表坏了就当没配，回落到自动挑一个
         return {}
     items = raw.get("defaults") if isinstance(raw, dict) else None
     if not isinstance(items, dict):
@@ -3992,7 +4143,7 @@ def list_library() -> list[dict]:
     for f in sorted(LIBRARY.glob("*.json")):
         try:
             g = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 单个工作流文件坏了跳过，其余照常列出
             continue
         cat = graph_category(g.get("graph") or {}, g)
         meta = wf_meta_of(g, cat)
@@ -4068,7 +4219,7 @@ def resolve_workflow_id(spec: str, kinds: list[str] | None = None) -> dict:
     def pack(it: dict, matched: str) -> dict:
         try:
             data = json.loads((LIBRARY / it["file"]).read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 工作流文件读不出来，这条就不出现在列表里
             return {"ok": False, "error": f"读不出工作流文件：{it['file']}", "requested": spec}
         return {"ok": True, "id": "lib:" + it["name"], "graph": data.get("graph") or {},
                 "label": it["title"], "requested": spec, "matched": matched}
@@ -4160,7 +4311,7 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
         return None, "工作流不存在"
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 元数据文件坏了当不存在，回「工作流不存在」
         return None, "工作流文件读不出来"
     if not isinstance(data, dict):
         return None, "工作流文件格式不对"
@@ -4331,6 +4482,7 @@ def main():
         root=ROOT, static=STATIC, data=DATA, library=LIBRARY,
         comfy_json=comfy_json, comfy_request=comfy_request,
         analyze_graph=analyze_graph, list_library=list_library,
+        save_project_canvas=save_project_canvas,
         graph_category=graph_category, job_status=job_status,
         auto_import_assets=auto_import_assets,
         client_id=PROGRESS_CLIENT, mcp_lease=args.mcp_lease,

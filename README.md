@@ -112,6 +112,11 @@ npm run pack       # 打 zip 到 dist/
 细节见 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)（环境、脚本、加图标、加接口、提交前检查）
 和 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（服务端路由、前端分区、快照 schema、CSS 分层、已知债）。
 
+改代码前先看 [`docs/CODE-STANDARDS.md`](docs/CODE-STANDARDS.md)：三道质量门（编辑器 / 提交钩子 / CI）、
+代码组织约定、异常处理规矩、**Code Review 清单**、新人两周上手路径。
+最近一次代码审查（含函数长度分布、上期 P0 现状、两周改进计划）见
+[`docs/REVIEW-2026-11-12.md`](docs/REVIEW-2026-11-12.md)。
+
 后续计划：[`docs/GEN-ITERATION.md`](docs/GEN-ITERATION.md)（图片生成的迭代方案）·
 [`docs/LLM-NODE-EVAL.md`](docs/LLM-NODE-EVAL.md)（LLM 节点可行性评估）·
 [`docs/ROADMAP.md`](docs/ROADMAP.md)（工程侧）· [`docs/FEATURES.md`](docs/FEATURES.md)（其他新功能）。
