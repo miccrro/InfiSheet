@@ -3967,8 +3967,12 @@ try {
       prompt: (box.querySelector('.lbi-prompt') || {}).textContent,
     };
   })()`);
-  check('用提示词节点出的图，大图详情里显示那段词（不再写「没有关联的提示词」）',
-    !lbText.hidden && lbText.prompt === '来自提示词节点：雨夜巷口，霓虹反光'
+  // 详情里的提示词 = 上游文本节点那段 + 面板那段（面板不再「有上游就作废」），
+  // 两段用空行隔开，顺序是上游在前
+  check('用提示词节点 + 面板的图，大图详情里两段词都在（不再写「没有关联的提示词」）',
+    !lbText.hidden
+      && (lbText.prompt || '').startsWith('来自提示词节点：雨夜巷口，霓虹反光')
+      && (lbText.prompt || '').includes('多图')
       && lbText.rows.some((r) => /^提示词来自\s*文本节点/.test(r)),
     JSON.stringify(lbText));
   await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
@@ -6780,6 +6784,9 @@ try {
       nodes: document.querySelectorAll('#nodes .node').length,
       links: document.querySelectorAll('#links .link-line').length,
       src: (document.querySelector('#nodes .node[data-id="i2"] .thumb img') || { getAttribute: () => '' }).getAttribute('src') || '',
+      // 产物节点的标题已经改成「模型 · 提示词摘要」，不再固定叫「图片（生成）」，
+      // 所以下面找「这次新落下的那个」只能靠 id 差集，不能靠标题
+      ids: [...document.querySelectorAll('#nodes .node')].map((el) => el.dataset.id),
     });
     const before = shot();
     for (let k = 0; k < 40; k++) {
@@ -6824,8 +6831,9 @@ try {
   // 不用回头翻原节点。以前这一步是空的（新节点 gen 只有默认工作流）。
   const bornInfo = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const beforeIds = ${JSON.stringify(autoImp.before.ids || [])};
     const node = [...document.querySelectorAll('#nodes .node')]
-      .find((el) => ((el.querySelector('.n-name') || {}).textContent || '') === '图片（生成）');
+      .find((el) => !beforeIds.includes(el.dataset.id));
     if (!node) return { found: false };
     const zoom = node.querySelector('.img-zoom');
     if (!zoom) return { found: true, zoom: false };

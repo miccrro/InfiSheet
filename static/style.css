@@ -1866,6 +1866,40 @@ body.resizing .node-resize { opacity: 1; }
 #appSettings .wf-star.off { opacity: 0.35; cursor: default; }
 #appSettings .wf-star.off:hover { color: var(--faint); background: transparent; }
 
+/* 「按分类默认」那张小表：一行一个能力分类 = 它管哪件事 + 当前是哪一份。
+   以前这里是一整行灰字，用户设了「图生图 / 编辑」的默认，却以为新建节点也会用上，
+   结果新节点还是空的。把「管哪件事」摆出来，再看不懂就是设计的问题了。 */
+#appSettings .wf-def-head { display: block; margin-bottom: 5px; }
+#appSettings .wf-def-grid { display: grid; gap: 2px; }
+#appSettings .wf-def-row {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; padding: 2px 4px; border-radius: 6px;
+}
+/* 正在只看这一类：整行提亮，和上面那颗芯片的选中态对得上 */
+#appSettings .wf-def-row.only { background: rgba(255, 255, 255, 0.06); }
+#appSettings .wf-def-cat { color: var(--text); font-size: 11.5px; }
+#appSettings .wf-def-use { color: var(--faint); font-size: 11px; }
+#appSettings .wf-def {
+  max-width: 260px; padding: 2px 9px; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--text);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+#appSettings .wf-def:hover { border-color: #fff; color: #fff; }
+/* 未设：虚线边框 + 暗色。形状上就和「已设」分得开，不靠颜色单独表达。 */
+#appSettings .wf-def.miss { border-style: dashed; color: var(--faint); }
+#appSettings .wf-def.miss:hover { border-color: var(--accent); color: var(--accent); }
+#appSettings .wf-def.on { border-color: rgba(110, 168, 254, 0.45); color: var(--accent); }
+
+/* 「只看某一类」的过滤条：挑默认时眼前只有候选，看完一键回到全部 */
+#appSettings .wf-list .tip.wf-only { display: flex; align-items: center; gap: 6px; }
+#appSettings .wf-only-x {
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--text);
+  font: inherit; font-size: 10.5px; cursor: pointer;
+}
+#appSettings .wf-only-x:hover { border-color: #fff; color: #fff; }
+
 #appSettings .wf-cats { display: flex; flex-wrap: wrap; gap: 5px; }
 #appSettings .wf-chip {
   display: inline-flex; align-items: center; gap: 5px;

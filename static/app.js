@@ -281,7 +281,10 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // 焦点在输入控件 / 富文本里时，全局快捷键（Delete、空格平移、F 适配…）都要放行
   const FIELD_SEL = 'input, textarea, select, [contenteditable="true"]';
-  const isFieldTarget = (t) => !!(t && typeof t.matches === 'function' && t.matches(FIELD_SEL));
+  // 用 closest 而不是 matches：富文本里的事件目标常常是里面的 <p> / <b> / <span>，
+  // 只认目标本身的话，光标停在加粗段落里滚轮就被当成画布缩放（长提示词滚不动），
+  // 空格平移也会把空格吃掉。往上找到那个 contenteditable 容器才算数。
+  const isFieldTarget = (t) => !!(t && typeof t.closest === 'function' && t.closest(FIELD_SEL));
   // 只读的提示词框不是「正在打字」：它平时就是一块字，点一下不该把 Delete / 空格平移吃掉。
   // 滚轮那条仍然用 isFieldTarget（长提示词要能自己滚），两者不能混。
   const isTypingTarget = (t) => isFieldTarget(t) && !(t.tagName === 'TEXTAREA' && t.readOnly);
@@ -506,13 +509,21 @@
       const syncEmpty = () => ta.classList.toggle('is-empty', !richToText(ta).length);
       const autoGrow = () => {
         // 手动拉过高度就听用户的：再按内容算高度，一打字框就弹回去
-        if (n.h) { ta.style.height = `${n.h}px`; ta.style.overflowY = 'auto'; return; }
-        ta.style.height = 'auto';
-        // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
-        // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
-        const floor = ta.classList.contains('is-empty') ? 88 : 0;
-        ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
-        ta.style.overflowY = 'hidden';
+        if (n.h) {
+          ta.style.height = `${n.h}px`;
+        } else {
+          ta.style.height = 'auto';
+          // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
+          // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
+          const floor = ta.classList.contains('is-empty') ? 88 : 0;
+          ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
+        }
+        // 只有「真被截断」并且「正在编辑」时才给滚动条：
+        // 只读时滚轮要留给画布缩放（这块字占着节点一大片，抢滚轮等于画布滚不动），
+        // 编辑时才是「我在改这段长提示词」，得能滚。
+        // 以前这里一律 hidden，超过 420px 的内容既看不见也滚不动。
+        const clipped = ta.scrollHeight > ta.clientHeight + 2;
+        ta.style.overflowY = clipped && ta.isContentEditable ? 'auto' : 'hidden';
       };
       const absorb = () => {
         n.html = ta.innerHTML;
@@ -532,6 +543,8 @@
         ta.contentEditable = on ? 'true' : 'false';
         el.classList.toggle('editing', on);
         ta.title = on ? '' : '双击编辑提示词';
+        // 进出编辑态都要重算一次滚动条：编辑时被截断才给，退出时收起
+        autoGrow();
         if (!on) return;
         ta.focus();
         const r = document.createRange();
@@ -879,6 +892,17 @@
     txt2img: '文生图', img2img: '图生图 / 编辑', upscale: '高清放大',
     video: '视频', audio: '音频', other: '其他',
   };
+  // 每个能力分类的默认**到底管哪件事**。用户设了默认却发现没生效，十次有九次是
+  // 「设的那一类不是新建节点用的那一类」——新建图片节点只认文生图。所以这层对应关系
+  // 得写在设置面板上，而不是让用户自己推。
+  const CAT_USES = {
+    txt2img: '新建图片节点',
+    img2img: '抠图 / 擦除 / 去字',
+    upscale: '高清放大',
+    video: '视频生成',
+    audio: '音频生成',
+    other: '手动选择',
+  };
 
   // ---- 分类：用户自己的那一套 ----
   // CAT_ORDER / CAT_LABEL 是**能力**分类（服务端扫图推断，决定高清 / 扩图该挑谁），
@@ -1172,8 +1196,9 @@
     return null;
   }
 
-  // 送进模型的第一张图决定画幅：节点自己的图优先，其次连线进来的参考图
-  // （和 genOne 里 picked 的取图顺序一致，否则「面板写的比例」和「实际喂进去的图」会对不上）
+  // 智能档的画幅：节点自己的图优先，其次连线进来的参考图。
+  // 注意「参考图」只算连线 / @ 引用那几张——节点自己的图不再自动喂进模型，
+  // 但「按它的尺寸出图」仍然成立：用户眼前就是这张图，智能档要的就是它的比例。
   // 返回实际像素 + 吸附后的比例：智能档要的是「原图多大就出多大」，只给比例是不够的。
   function autoSizeFor(n) {
     let src = n.dataURL ? imageSizeOf(n) : null;
@@ -1708,8 +1733,33 @@
     return out;
   }
 
-  // @[名字] 是给人看的引用标记，进 ComfyUI 之前必须处理掉，否则会当成提示词的一部分发给模型。
-  // 但**不能直接删**：「把 @[甲] 的人物放进 @[乙] 的场景」删完会变成「把 的人物放进 的场景」，
+  /* ---------------- 提示词：多个文本节点串起来 ---------------- */
+  // 提示词可以从**多个**文本节点来，两种连法都算：
+  //   * 链式：A → B → 图片（B 是 A 的下游，A 先拼）
+  //   * 直连：A、B 各自连到图片（按画布上从左到右排）
+  // 以前只取第一个直连的文本节点，链式上游那段根本没进模型，多连的那几个也被静默丢掉。
+  // seen 在递归前就打上：两条路都能走到同一个节点时只算一次，也顺手挡住环。
+  // 返回 [{ text, node }]：node 是给「提示词来自 文本节点「X」」那种说明用的。
+  function promptSegmentsOf(n) {
+    const out = [];
+    const seen = new Set();
+    const textsInto = (id) => state.links
+      .filter((l) => l.to === id && l.toKey === 'in')
+      .map((l) => getNode(l.from))
+      .filter((x) => x && x.type === 'text')
+      .sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    const walk = (node) => {
+      if (!node || node.type !== 'text' || seen.has(node.id)) return;
+      seen.add(node.id);
+      textsInto(node.id).forEach(walk);          // 更上游的先来
+      const v = String(node.value || '').trim();
+      if (v) out.push({ text: v, node });
+    };
+    textsInto(n.id).forEach(walk);
+    return out;
+  }
+
+  // @[名字] 是给人看的引用标记，进 ComfyUI 之前必须处理掉，否则会当成提示词的一部分发给模型。  // 但**不能直接删**：「把 @[甲] 的人物放进 @[乙] 的场景」删完会变成「把 的人物放进 的场景」，
   // 模型既不知道在说哪张图，连句子都不通顺了——这就是「@ 的图片识别不准」。
   // 正确做法是换成工作流里那套指代：图1 / 图2（和 images.image_1、image_2 一一对应）。
   // refs: [{ label }]，顺序就是它们被绑进工作流的顺序（第 1 张 = 图1）。
@@ -3041,8 +3091,8 @@
     panel.appendChild(chips);
 
     // 大输入框
-    const upstreamText = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from)).find((x) => x && x.type === 'text');
+    // 面板里要不要提「上游还有提示词」：链式串上来的也算（见 promptSegmentsOf）
+    const hasUpstreamText = promptSegmentsOf(n).length > 0;
     // 参考图缩略图：连线进来的 / @ 引用的，都摆在提示词上方（对齐参考图里那排缩略图）
     buildRefsStrip(n, panel);
     // 提示词用 contenteditable：`@[名字]` 要渲染成内联缩略图胶囊，textarea 做不到。
@@ -3053,8 +3103,8 @@
     ta.spellcheck = false;
     ta.setAttribute('role', 'textbox');
     ta.setAttribute('aria-multiline', 'true');
-    ta.dataset.ph = upstreamText
-      ? '（提示词来自左侧文本节点，这里再写内容不会覆盖它）'
+    ta.dataset.ph = hasUpstreamText
+      ? '（左侧文本节点会拼在前面，这里写的接在它后面）'
       : '可直接文字生图，或上传图片后输入指令对图片进行编辑，如：将背景改为雪夜；输入 @ 可引用画布上的图片';
     fillPrompt(ta, g.prompt || '', n);
     // 提示词超出可视高度时给底部加渐隐：否则最后一行被硬切一半，很像「排版坏了」
@@ -3403,11 +3453,11 @@
     }
     // 这一轮真正喂给模型的「节点自己的图」：扩图时是撑大的画布，否则就是节点上那张
     const srcURL = bake ? bake.url : n.dataURL;
-    // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
-    const inLinks = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from)).filter(Boolean);
-    const textIn = inLinks.find((x) => x.type === 'text');
-    const rawPrompt = (textIn ? (textIn.value || '') : g.prompt) || '';
+    // 提示词：所有上游文本节点（链式 + 直连）按顺序拼起来，面板里写的那段接在最后。
+    // 面板不再「有上游就整个作废」——那样在面板里补一句永远不生效，用户只会觉得白写了。
+    const segs = promptSegmentsOf(n).map((s) => s.text);
+    const panelPrompt = String(g.prompt || '').trim();
+    const rawPrompt = [...segs, panelPrompt].filter(Boolean).join('\n\n');
     // 风格：把模板套在提示词外层（Style: … Subject: 你的词）。这里必须 await ——
     // 风格提示词不在节点上、而是要按需从 styles/ 读，读不到就照常生成（不能因为风格库挂了就不出图）。
     let styleEntry = null;
@@ -3417,7 +3467,7 @@
     }
     const promptText = styleEntry ? applyStylePrompt(rawPrompt, styleEntry) : rawPrompt;
     // 只选了风格、没写提示词也能出图（模板本身就是完整的提示词）
-    if (!promptText.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); bail(); return; }
+    if (!promptText.trim()) { flash('先写提示词：面板里写，或连一个文本节点过来'); bail(); return; }
     // 参考图全上传（能传几张算几张）。以前只传第一张：用户 @ 了两张，第二张根本进不去，
     // 提示词里还留着指代——「@ 的图识别不准」有一半是这里。
     const refs = refsOf(n);
@@ -3430,14 +3480,10 @@
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
       } catch { /* 这张传不上去就跳过，别把整次生成拖垮 */ }
     }
-    // 节点自己的图也当参考图（图就摆在这个节点上，没有连线的那种）。
-    // 扩图时跳过：节点上是**原图**，这一轮要喂的是撑大的画布（见下面 bake 那一段）。
-    if (!bake && !picked.length && n.dataURL) {
-      try {
-        const name = await ensureUploaded(n);
-        if (name) picked.push({ node: n, name, label: labelOf(n) });
-      } catch { /* 纯文生图 */ }
-    }
+    // 节点自己的图**不**当参考图。以前这里会把摆在节点上的图（上一次的结果、拖进来的图）
+    // 自动塞进 picked，于是「没连线、选的是文生图」也会把这张图喂进去：出图跟着原图走，
+    // 用户以为自己点的是文生图。想图生图就连一条线过来——连线是唯一明确的意图表达。
+    // （遮罩、扩图两条路各自 unshift 自己的源图，不受这里影响）
     // 遮罩：涂过就必须让这张图进模型，否则等于白涂。它永远是 unshift 进 picked 的第一张——
     // 工作流的第一个 image 插槽拿到它，提示词里的「图1」指的就是它。
     // 落地方式有两条，由**工作流能力**决定（不看用户选的是哪张）：
@@ -4906,6 +4952,8 @@
   // 谁被默认选中，就意味着用户没选过也照样出图，而他根本不知道用的是哪个模板。
   // 用哪个工作流一律在节点的生成面板里当场选。
   let setWfQuery = '';
+  // 顶部芯片点了某个能力分类 → 列表只列这一类（挑默认时不用自己认哪份是文生图）
+  let setWfOnly = '';
   function renderSetWorkflows(box) {
     const listEl = box.querySelector('#setWfList');
     const catsEl = box.querySelector('#setCats');
@@ -4914,24 +4962,73 @@
     const opts = wfOptions();
     const cats = wfCategories();
 
-    // ---- 一行说明：每个能力分类当前用的是哪一份 ----
+    // ---- 每个能力分类当前用的是哪一份 ----
+    // 「未设」不能只是一段灰字：用户设了别的分类的默认，却以为这一份也该生效，
+    // 结果新建节点还是空的（真机反馈）。所以这里一行一个分类，写清「它管的是哪件事」，
+    // 值那颗芯片可点——点一下就只看该分类的候选，挑 ☆ 时不用自己认哪份是文生图。
     if (defEl) {
       const cats = CAT_ORDER.filter((c) => opts.some((o) => o.category === c));
+      defEl.innerHTML = '';
       if (!opts.length) {
         defEl.textContent = '还没有可用的工作流，点上面的「导入工作流…」加一个。';
       } else {
-        const parts = cats.map((c) => {
+        const head = document.createElement('span');
+        head.className = 'wf-def-head';
+        head.textContent = '按分类默认（点行里的 ☆ 换；新建节点按用途预选）';
+        defEl.appendChild(head);
+        const grid = document.createElement('div');
+        grid.className = 'wf-def-grid';
+        cats.forEach((c) => {
           const hit = opts.find((o) => o.id === wfDefaultId(c));
-          return `${CAT_LABEL[c] || c}：${hit ? hit.label : '未设'}`;
+          const use = CAT_USES[c] || '新建节点';
+          const row = document.createElement('div');
+          row.className = 'wf-def-row' + (setWfOnly === c ? ' only' : '');
+
+          const nm = document.createElement('span');
+          nm.className = 'wf-def-cat';
+          nm.textContent = CAT_LABEL[c] || c;
+
+          const useEl = document.createElement('span');
+          useEl.className = 'wf-def-use';
+          useEl.textContent = use;
+
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'wf-def' + (hit ? ' on' : ' miss');
+          btn.textContent = hit ? hit.label : '未设 · 点这里选';
+          btn.title = hit
+            ? `「${CAT_LABEL[c] || c}」的默认是「${hit.label}」，${use}会用它。点一下只看这一类`
+            : `「${CAT_LABEL[c] || c}」还没设默认：${use}不会自动带工作流。点一下看这一类有哪些候选`;
+          btn.onclick = () => {
+            setWfOnly = setWfOnly === c ? '' : c;
+            renderSetWorkflows(box);
+            flash(setWfOnly
+              ? `只看「${CAT_LABEL[c] || c}」：点行里的 ☆ 设为「${use}」的默认`
+              : '已显示全部工作流');
+          };
+
+          row.append(nm, useEl, btn);
+          grid.appendChild(row);
         });
-        defEl.textContent = `按分类默认 · ${parts.join(' · ')}（点行里的 ☆ 换；新建节点按用途预选）`;
+        defEl.appendChild(grid);
       }
     }
 
     // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 加到画布 / 删除 ----
     const q = setWfQuery.trim().toLowerCase();
-    const hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
+    let hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
+    // 顶部点了某个分类的「未设」→ 只列这一类。挑默认时眼前只有候选，不用在
+    // 十几份工作流里自己认哪份是文生图。
+    if (setWfOnly) hits = hits.filter((o) => o.category === setWfOnly);
     listEl.innerHTML = '';
+    if (setWfOnly) {
+      // 过滤条先摆上：哪怕这一类一份都没有，也要留着「显示全部」的出口
+      const bar = document.createElement('p');
+      bar.className = 'tip wf-only';
+      bar.innerHTML = `只看「${esc(CAT_LABEL[setWfOnly] || setWfOnly)}」· <button type="button" class="wf-only-x">显示全部</button>`;
+      bar.querySelector('.wf-only-x').onclick = () => { setWfOnly = ''; renderSetWorkflows(box); };
+      listEl.appendChild(bar);
+    }
     if (!opts.length) {
       const p = document.createElement('p');
       p.className = 'tip';
@@ -4940,7 +5037,9 @@
     } else if (!hits.length) {
       const p = document.createElement('p');
       p.className = 'tip';
-      p.textContent = `没有匹配「${setWfQuery.trim()}」的工作流。`;
+      p.textContent = setWfQuery.trim()
+        ? `没有匹配「${setWfQuery.trim()}」的工作流。`
+        : `这一分类下没有工作流。`;
       listEl.appendChild(p);
     }
     hits.forEach((o) => {
@@ -5434,6 +5533,7 @@
   //   工作流（库 + 分类）/ 运行记录 / 外观 / 连接 / 高级
   function openSettingsSheet(focus) {
     closeSettingsSheet();
+    setWfOnly = '';          // 上次「只看某一类」的过滤不带到下一次打开
     const box = document.createElement('div');
     box.id = 'appSettings';
     box.innerHTML = `
@@ -5463,7 +5563,7 @@
                 <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
               </div>
-              <p class="set-tip" id="setWfDefault"></p>
+              <div class="set-tip" id="setWfDefault"></div>
               <div class="wf-list" id="setWfList"></div>
               <div class="set-group">分类</div>
               <div class="wf-cats" id="setCats"></div>
@@ -8298,19 +8398,23 @@
       };
     });
   }
-  // 这个节点「真正会用」的提示词。连了文本节点的时候，实际送进工作流的是文本节点里的字
-  // （面板里写的不生效，那句 placeholder 早就提示过了），可详情以前只读 gen.prompt ——
-  // 于是「用提示词节点出的图」在大图详情里永远是「（没有关联的提示词）」。
+  // 这个节点「真正会用」的提示词：上游文本节点（链式 + 直连）按顺序拼起来，
+  // 面板里写的那段接在最后——和 genOne 里 rawPrompt 的拼法完全一致。
+  // 以前只读第一个文本节点，面板那段被当成「不生效」，详情里也就只显示半截。
   // 注意别反过来把值写回 gen.prompt：那样拆掉连线后，面板里会凭空多出一段没写过的词。
   function promptOf(n) {
     const g = (n && n.gen) || {};
-    const textIn = state.links
-      .filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from))
-      .find((x) => x && x.type === 'text' && String(x.value || '').trim());
-    if (textIn) return { text: String(textIn.value || '').trim(), from: `文本节点「${textIn.title || '提示词'}」` };
+    const segs = promptSegmentsOf(n);
     const own = String(g.prompt || '').trim();
-    if (own) return { text: own, from: '' };
+    if (segs.length || own) {
+      const src = segs.length
+        ? `文本节点${segs.length > 1 ? `等 ${segs.length} 个` : `「${segs[0].node.title || '提示词'}」`}`
+        : '';
+      return {
+        text: [...segs.map((s) => s.text), own].filter(Boolean).join('\n\n'),
+        from: [src, own ? '面板' : ''].filter(Boolean).join(' + '),
+      };
+    }
     // 面板空、连线也没了（文本节点被删掉或断开）：退回最近一次生成用的那段。
     // 图确实是那段词出出来的，比摆一句「没有关联的提示词」有用。
     const last = String(((g.runs || [])[0] || {}).prompt || '').trim();
@@ -9209,6 +9313,139 @@
     return n;
   }
 
+  // 「复制图片」在剪贴板里长什么样，各家浏览器不一样：
+  //   截图 / 资源管理器里复制的文件 → files 里有 image/png，最省事
+  //   网页上右键「复制图片」       → 常常只有 text/html，<img src="..."> 藏在里面
+  // 后者要把 src 抠出来：data: / blob: 本地就能读，http(s): 得让服务端代抓
+  // （画布上的 JS 读不到跨域图片的像素，fetch 只会拿到一个打不开的不透明响应）。
+  function firstImgSrc(html) {
+    const text = String(html || '');
+    if (!text) return '';
+    try {
+      for (const img of new DOMParser().parseFromString(text, 'text/html').querySelectorAll('img')) {
+        // 有的编辑器只给 srcset 不给 src，退一步取第一项
+        const s = (img.getAttribute('src') || '').trim()
+          || (img.getAttribute('srcset') || '').split(',')[0].trim().split(' ')[0];
+        if (s) return s;
+      }
+    } catch { /* DOMParser 挂了就走下面的正则 */ }
+    const m = text.match(/<img[^>]+src\s*=\s*["']([^"']+)["']/i);
+    return m ? m[1].trim() : '';
+  }
+
+  // 文件名要喂给 ComfyUI 的 upload/image：URL 里那些 %xx / 空格先收拾干净
+  function nameFromUrl(src) {
+    let base = '';
+    try {
+      base = decodeURIComponent(new URL(src, location.href).pathname.split('/').pop() || '');
+    } catch { /* 地址本身不合法：base 留空，下面会兜成 pasted */ }
+    base = base.replace(/[^\w.\-\u4e00-\u9fa5]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!base || base.startsWith('.')) base = 'pasted';
+    if (!/\.[a-z0-9]{2,5}$/i.test(base)) base += '.png';
+    return base.slice(0, 80);
+  }
+
+  async function fileFromClipboardUrl(src) {
+    const name = nameFromUrl(src);
+    if (/^data:image\//i.test(src) || /^blob:/i.test(src)) {
+      const blob = await (await fetch(src)).blob();
+      return new File([blob], name, { type: blob.type || 'image/png' });
+    }
+    if (!/^https?:\/\//i.test(src)) return null;      // 认不出的协议就当没有
+    const res = await fetch('/api/fetch-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: src }),
+    });
+    if (!res.ok) {
+      let msg = `取图失败（HTTP ${res.status}）`;
+      try { const d = await res.json(); if (d && d.error) msg = d.error; } catch { /* 不是 JSON 就用状态码 */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    return new File([blob], name, { type: blob.type || 'image/png' });
+  }
+
+  // ---- 从系统剪贴板粘贴 ----
+  // Ctrl+V 以前只认「画布内复制的节点」：剪贴板里是张图或一段字时，内部快照是空的，
+  // 直接提示「剪贴板是空的」——用户看到的就是「读不到剪贴板」。
+  // 改听 paste 事件：ev.clipboardData 直接带内容，不弹剪贴板权限，比 clipboard.read() 稳。
+  //
+  // 画布内复制的节点只在内存里，系统剪贴板可能还留着上一次的东西。不打个记号的话，
+  // 「复制节点 → Ctrl+V」会被剪贴板里的旧文字抢走，变成一个文本节点。所以复制时往
+  // 剪贴板写一个标记，粘贴时先认它。
+  const CANVAS_COPY_MARK = 'InfiSheet 节点 ×';
+
+  document.addEventListener('copy', (ev) => {
+    if (isFieldTarget(ev.target)) return;            // 富文本里复制文字，别抢
+    // 页面上真有一段文字被选中（比如大图里的提示词），那是「复制这段字」，别抢
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    if (!state.selected.size || !clipboard || !clipboard.nodes.length) return;
+    try {
+      ev.clipboardData.setData('text/plain', CANVAS_COPY_MARK + clipboard.nodes.length);
+      ev.clipboardData.setData('application/x-infisheet-nodes', String(clipboard.nodes.length));
+      ev.preventDefault();                            // 别把 DOM 里选中的东西也塞进去
+    } catch { /* 不让写就算了，粘贴那边还有内部快照兜底 */ }
+  });
+  //   图片 → 一张一个图片节点，落点跟着鼠标，顺手传进 ComfyUI 的 input/
+  //   纯文字 → 一个提示词节点
+  //   都没有 → 退回画布内复制的节点（粘贴快照）
+  document.addEventListener('paste', (ev) => {
+    // 首页（还没进画布）不接：那儿没有画布可落节点
+    const homeEl = document.getElementById('home');
+    if (homeEl && !homeEl.classList.contains('hidden')) return;
+    // 焦点在输入框 / 富文本里：那是它自己的粘贴，别抢
+    if (isFieldTarget(ev.target)) return;
+    const dt = ev.clipboardData;
+    if (!dt) return;
+    ev.preventDefault();
+    const at = pointerWorld || screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+    const types = Array.from(dt.types || []);
+    // 画布内复制的节点优先：那是用户刚做的动作，不能被剪贴板里的旧内容抢走
+    if (types.includes('application/x-infisheet-nodes')
+      || String(dt.getData('text/plain') || '').startsWith(CANVAS_COPY_MARK)) {
+      pasteClipboard();
+      return;
+    }
+    // 先看 files：截图 / 资源管理器复制的图都在这儿。
+    // 有些应用只往 items 里塞，files 是空的，那条路再兜一次。
+    let files = [...(dt.files || [])].filter((f) => f && String(f.type || '').startsWith('image/'));
+    if (!files.length) {
+      files = [...(dt.items || [])]
+        .filter((it) => it && it.kind === 'file' && String(it.type || '').startsWith('image/'))
+        .map((it) => it.getAsFile())
+        .filter(Boolean);
+    }
+    if (files.length) {
+      files.forEach((f, i) => {
+        addImageFromFile(f, Math.round(at.x) + i * 36, Math.round(at.y) + i * 36);
+      });
+      flash(`已粘贴 ${files.length} 张图`);
+      return;
+    }
+    // 网页上右键「复制图片」：files 是空的，图片地址只在 text/html 里
+    const imgSrc = firstImgSrc(dt.getData('text/html'));
+    if (imgSrc) {
+      flash('正在取图片…');
+      fileFromClipboardUrl(imgSrc)
+        .then((f) => (f ? addImageFromFile(f, Math.round(at.x), Math.round(at.y)) : null))
+        .then((n) => { if (n) flash('已从网页粘贴图片'); })
+        .catch((err) => flash(err.message || '这张图取不回来'));
+      return;
+    }
+    const text = String(dt.getData('text/plain') || '').trim();
+    if (text) {
+      const n = addTextNode(Math.round(at.x), Math.round(at.y), text);
+      selectOnly(n.id);
+      flash('已粘贴为提示词节点');
+      return;
+    }
+    // 什么也没认出来：把剪贴板里到底有什么说出来，比干等着强
+    if (clipboard && clipboard.nodes.length) { pasteClipboard(); return; }
+    flash(types.length ? `剪贴板里没有能用的内容（${types.join(' / ')}）` : '剪贴板是空的');
+  });
+
   // 「加载图片…」：从磁盘挑（支持多选）直接变成图片节点，选完就带着图。
   // 和「图片」（空白节点，等拖文件进来）分开，是因为多数人双击画布就是想放一张图。
   // 复用同一个 input：每次都新建的话，选过的文件会一直挂在内存里；清 value 是为了
@@ -9335,8 +9572,12 @@
       const k = ev.key.toLowerCase();
       if (k === 'z') { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); return; }
       if (k === 'y') { ev.preventDefault(); redo(); return; }
-      if (k === 'c') { if (copySelection()) ev.preventDefault(); return; }
-      if (k === 'v') { ev.preventDefault(); pasteClipboard(); return; }
+      // 复制不拦默认行为：要让 copy 事件照常跑，那边会往剪贴板里打一个「这是画布节点」的
+      // 标记，粘贴时才好和系统剪贴板里的旧内容区分开
+      if (k === 'c') { copySelection(); return; }
+      // Ctrl+V 不在这里拦：交给下面 document 的 paste 事件，那条路上能直接读系统剪贴板
+      // （图片 / 文字），不用弹剪贴板权限。画布内复制的节点由 paste 处理器兜底。
+      if (k === 'v') return;
       if (k === 'd') { ev.preventDefault(); duplicateSelection(); return; }
       if (k === 's') { ev.preventDefault(); flushSave(); return; }
       if (k === 'k') { ev.preventDefault(); openSettingsSheet(); return; }
@@ -10489,7 +10730,12 @@
     // 减掉半个节点尺寸，让节点落在视口正中而不是右下偏
     const n = addImageNode(Math.round(c.x - 190), Math.round(c.y - 160), {}, false);
     selectOnly(n.id);
-    flash('已放入图片节点：写提示词，或先点面板里的「上传」');
+    // 用上了默认 / 没设默认，都在这一句里说清。以前只说「写提示词」——
+    // 用户设了「图生图 / 编辑」的默认，看到新节点还是空的，只会以为默认坏了
+    // （其实新建图片节点认的是「文生图」那一份）。
+    flash(n.gen && n.gen.wf
+      ? `已放入图片节点 · ${modelNameOf(n.gen.wf)}：写提示词就能生成`
+      : '已放入图片节点：还没选工作流 ——「文生图」没设默认，去 设置 → 工作流 点 ☆');
   }
 
   // 把「提示词 → 工作流 → 图片输出」这一套放进当前画布
@@ -11724,9 +11970,15 @@
     // 用户以为高清坏了。
     const want = EDIT_WF[kind] || 'img2img';
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
-    const wf = hint || (want === 'mask'
-      ? (((wfOptions().find((o) => o.alphaMask) || wfOptions().find((o) => o.image)) || {}).id || '')
-      : pickWorkflow(want));
+    // 吃遮罩那一档（擦除 / 去字）的挑法：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 →
+    // 随便一份能吃图的。中间这层必须有：用户明明设了默认，擦除却挑了列表里第一份吃图的
+    // 工作流，看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能擦。
+    const all = wfOptions();
+    const defHit = all.find((o) => o.id === wfDefaultId('img2img'));
+    const maskWf = ((all.find((o) => o.alphaMask) || {}).id || '')
+      || (defHit ? defHit.id : '')
+      || (((all.find((o) => o.image)) || {}).id || '');
+    const wf = hint || (want === 'mask' ? maskWf : pickWorkflow(want));
     const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
