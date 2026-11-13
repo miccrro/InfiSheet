@@ -1039,8 +1039,8 @@ try {
   await page.waitFor(`!!document.querySelector('.gen-panel .gen-prompt')`, 5000);
   await page.evaluate(`(() => {
     const ta = document.querySelector('.gen-panel .gen-prompt');
-    window.__fadePromptOriginal = ta.value;
-    ta.value = Array(40).fill('E2E long prompt text to verify bottom fade').join('\\n');
+    window.__fadePromptOriginal = ta.innerHTML;
+    ta.textContent = Array(40).fill('E2E long prompt text to verify bottom fade').join('\\n');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await page.waitFor(`document.querySelector('.gen-panel .gen-prompt')?.classList.contains('has-more')`, 3000).catch(() => null);
@@ -1073,7 +1073,7 @@ try {
   await page.evaluate(`(() => {
     const ta = document.querySelector('.gen-panel .gen-prompt');
     if (ta && window.__fadePromptOriginal !== undefined) {
-      ta.value = window.__fadePromptOriginal;
+      ta.innerHTML = window.__fadePromptOriginal;
       ta.dispatchEvent(new Event('input', { bubbles: true }));
       delete window.__fadePromptOriginal;
     }
