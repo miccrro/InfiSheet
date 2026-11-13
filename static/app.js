@@ -387,6 +387,10 @@
     const title = document.createElement('div');
     title.className = 'node-title';
     title.innerHTML = `<span class="n-icon">${NODE_ICON[n.type] || ''}</span><span class="n-name">${esc(n.title)}</span>`;
+    // 双击标题改名（所有节点类型都支持）：标题本来就是「名字」，双击它改名字最直觉。
+    // 图标和右侧药丸不参与，只有 .n-name 这一截可编辑。
+    const nameEl = title.querySelector('.n-name');
+    nameEl.ondblclick = (ev) => { ev.stopPropagation(); startRenameNode(nameEl, n); };
     // 图片节点：像素尺寸和名字放同一行（以前它浮在图片右上角，正好压在画面内容上）
     let dimEl = null;
     if (n.type === 'image') {
@@ -601,6 +605,13 @@
         // 框天然等于图片高度，多一条边都没有。只有极端的竖长图会被 max-height 截住。
         const fit = () => {
           thumb.classList.remove('is-empty');
+          // 旧项目的复制/编辑节点没有保存宽度：解码后按真实分辨率补上，
+          // 否则同一张图的生成节点与编辑节点会分别用 400px 和默认 380px。
+          if (!n.w && im.naturalWidth && im.naturalHeight) {
+            n.w = generatedNodeWidth({ w: im.naturalWidth, h: im.naturalHeight });
+            el.style.width = `${n.w}px`;
+            queueSave();
+          }
           // 扩图模式：--ar 和尺寸标签都归边框管（它按「扩完之后」的画布算），
           // 这里再按原图写一次就会把框拉回去
           if (!outpaintOn(n)) {
@@ -2151,6 +2162,48 @@
     renderRefs(n);
   }
 
+  function openCanvasMaterialMenu(anchor, n) {
+    if (popAnchor === anchor) { closePopMenu(); return; }
+    closePopMenu();
+    const candidates = state.nodes.filter((x) => x.type === 'image' && x.id !== n.id && x.dataURL);
+    const label = refLabelFn(n);
+    const menu = document.createElement('div');
+    menu.className = 'popmenu material-menu';
+    const title = document.createElement('div');
+    title.className = 'popmenu-title';
+    title.textContent = '选择画布图片';
+    menu.appendChild(title);
+    const list = document.createElement('div');
+    list.className = 'material-list';
+    if (!candidates.length) {
+      const empty = document.createElement('div');
+      empty.className = 'material-empty';
+      empty.textContent = '画布上还没有其他图片';
+      list.appendChild(empty);
+    }
+    candidates.forEach((src) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'material-item';
+      item.innerHTML = `<img src="${esc(src.dataURL)}" alt="" draggable="false" /><span>${esc(label(src))}</span>`;
+      item.onclick = () => {
+        closePopMenu();
+        n.dataURL = src.dataURL;
+        n.uploaded = null;
+        rerenderNode(n.id);
+        queueSave();
+        commit();
+        flash(`已取用「${label(src)}」`);
+      };
+      list.appendChild(item);
+    });
+    menu.appendChild(list);
+    document.body.appendChild(menu);
+    placePopMenu(menu, anchor);
+    popAnchor = anchor;
+    armPopClose(anchor);
+  }
+
   // 光标前的 `@xxx` → 打开引用菜单。不能要求 `@` 前面是空格——中文文案里大家就是「文案@」接着打；
   // 只排除紧跟 `[` 的情况（那是胶囊的 `@[名字]` token，不是新起的引用）
   const AT_RE = /@([^\s@[]{0,20})$/;
@@ -2867,6 +2920,24 @@
   // 也是整个界面里唯一一颗不在 24 栅格体系里的图标（审计里唯一报「出栅格」的就是它）。
   const WF_ICON = icon('wf');
 
+  // 普通生成与扩图共用同一个底栏构造器；具体菜单由各模式装配，状态和发送键复用原节点。
+  function buildGenControlRow(className = '') {
+    const row = document.createElement('div');
+    row.className = `gen-control-row${className ? ` ${className}` : ''}`;
+    return row;
+  }
+
+  function makeGenControlButton({ className = '', title = '', html = '', text = '', onClick }) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className ? `${className} gen-control` : 'gen-control';
+    button.title = title;
+    if (html) button.innerHTML = html;
+    else button.textContent = text;
+    if (onClick) button.addEventListener('click', onClick);
+    return button;
+  }
+
   function buildGenPanel(n) {
     // 快照恢复出来的 gen 可能只有部分字段（提示词 / 工作流 / 画幅 / 张数 / 组图），这里补齐默认值。
     // **两件事必须同时做到**：
@@ -2940,16 +3011,10 @@
       actions.appendChild(b);
       return b;
     };
-    mkChip('上传', ICON.plus, () => pickImage(n), '上传本地图片到这个节点');
-    mkChip('画布素材', ICON.grid, () => {
-      const src = state.nodes.find((x) => x.type === 'image' && x.id !== n.id && x.dataURL);
-      if (!src) { flash('画布上还没有其他图片可用'); return; }
-      n.dataURL = src.dataURL;
-      n.uploaded = null;
-      rerenderNode(n.id);
-      queueSave();
-      flash('已取用画布上的图片');
-    }, '把画布上已有的图片取过来');
+    mkChip('上传', ICON.plus, () => pickImage(n), '上传本地图片到这个节点').classList.add('gen-upload');
+    const materialChip = mkChip('画布素材', ICON.grid,
+      () => openCanvasMaterialMenu(materialChip, n), '选择画布上的图片');
+    materialChip.classList.add('gen-material');
     mkChip('清空', ICON.clear, () => {
       g.prompt = '';
       const ta = panel.querySelector('.gen-prompt');
@@ -2965,7 +3030,7 @@
     paintStyleChip(styleBtn, g.style);
     // 展开：不再「把面板加宽 60px」（那点宽度解决不了长提示词），改成单开一块放大的编辑区
     const expand = document.createElement('button');
-    expand.className = 'chip icon-only';
+    expand.className = 'chip icon-only gen-expand';
     expand.innerHTML = ICON.expand;
     expand.title = '把整个面板放到大窗口里编辑';
     expand.onclick = (ev) => {
@@ -3002,6 +3067,7 @@
     };
     const absorb = () => {
       g.prompt = promptText(ta);
+      if (outpaintOn(n)) delete g.opPromptSet;
       // 把胶囊删掉 = 取消这张参考图：缩略图要跟着消失，别留一张「看不见的参考图」
       if (g.extras && g.extras.length) {
         const label = refLabelFn(n);
@@ -3019,6 +3085,9 @@
       detectAtMention(ta, n);      // 输入 @ 时弹出画布图片列表
     };
     ta.onkeydown = (ev) => {
+      if (outpaintOn(n) && ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault(); generateImage(n); return;
+      }
       // 回车统一插 <br>：默认行为会包一层 <div>，正文里混满块级元素后光标和选区都不听话
       if (ev.key === 'Enter' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
         ev.preventDefault();
@@ -3049,8 +3118,7 @@
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncPromptOverflow).observe(ta);
 
     // 底部控制栏
-    const bar = document.createElement('div');
-    bar.className = 'gen-bar';
+    const bar = buildGenControlRow('gen-bar');
 
     // 原生 select 在 #world 的 transform 里弹层会被裁/错位，统一换自绘菜单
     const mkMenu = (iconSvg, optsIn, cur, onPick, placeholder, extras, iconFn) => {
@@ -3067,7 +3135,7 @@
       }
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'gm-btn';
+      btn.className = 'gm-btn gen-control';
       const txt = document.createElement('span');
       const caret = document.createElement('i');
       caret.className = 'gm-caret';
@@ -3123,7 +3191,7 @@
       },
       '未选择工作流', null,
       (v, hit) => wfIconHTML(hit ? hit[3] : '', 16));
-    wfBox.classList.add('wfsel');
+    wfBox.classList.add('wfsel', 'gen-control');
     wfBox.classList.toggle('is-empty', !g.wf);
     bar.appendChild(wfBox);   // 工作流放在最左，后面接画幅 / 尺寸 / 张数（同一行）
 
@@ -3136,10 +3204,10 @@
 
     // 参数胶囊：画幅 · 清晰度 · 张数 全在这一颗里，点开是分组弹层
     const optBox = document.createElement('div');
-    optBox.className = 'gensel optsel';
+    optBox.className = 'gensel optsel gen-control';
     const optBtn = document.createElement('button');
     optBtn.type = 'button';
-    optBtn.className = 'gm-btn';
+    optBtn.className = 'gm-btn gen-control';
     const optGlyph = document.createElement('i');
     optGlyph.className = 'go-glyph';
     const optSum = document.createElement('span');
@@ -3180,13 +3248,12 @@
     };
     bar.appendChild(optBox);
 
-    const run = document.createElement('button');
-    run.className = 'gen-run';
-    run.innerHTML = ICON.arrow;
-    run.title = '生成（Enter 也可）';
+    const run = makeGenControlButton({
+      className: 'gen-run', html: ICON.arrow, title: '生成（Enter 也可）',
+      onClick: (ev) => { ev.stopPropagation(); generateImage(n); },
+    });
     run.disabled = !!g.busy;
     if (g.busy) run.classList.add('busy');
-    run.onclick = (ev) => { ev.stopPropagation(); generateImage(n); };
     bar.appendChild(run);
 
     // 状态行从底栏里搬出来了，单独占一整行（可以换行）。
@@ -3344,7 +3411,7 @@
     // 风格：把模板套在提示词外层（Style: … Subject: 你的词）。这里必须 await ——
     // 风格提示词不在节点上、而是要按需从 styles/ 读，读不到就照常生成（不能因为风格库挂了就不出图）。
     let styleEntry = null;
-    if (g.style && g.style.cat) {
+    if (!outpaintOn(n) && g.style && g.style.cat) {
       styleEntry = await styleOf(g.style).catch(() => null);
       if (!styleEntry) flash(`风格「${g.style.cn || g.style.cat}」读不到了，这次按无风格生成`);
     }
@@ -3456,7 +3523,7 @@
       const inheritSnap = {
         prompt: rawPrompt || '',                    // 面板 / 文本节点里的原文（含 @[名字]），不是套了风格模板的那段
         wf: g.wf || '',
-        style: g.style ? { ...g.style } : null,
+        style: styleEntry && g.style ? { ...g.style } : null,
         seed: built.seed ? built.seed.value : null,
         aspect: g.aspect, aspectAuto: !!g.aspectAuto,
         autoW: g.autoW, autoH: g.autoH, autoScale: g.autoScale,
@@ -3590,12 +3657,25 @@
             batchItems = await Promise.all(batchItems.map(
               (it) => storeStitched(n, it, cropRect, mdoc, srcURL).catch(() => it)));
           }
-          const born = hadImage ? spawnResultNodes(n, batchItems, inheritSnap) : [];
+          // 工作流可能忽略面板尺寸，按产物的真实像素决定画布上的显示宽度。
+          const resultSizes = await Promise.all(batchItems.map(async (it) => {
+            try {
+              const im = await loadImageEl(it.url);
+              if (im.naturalWidth && im.naturalHeight) {
+                return { w: im.naturalWidth, h: im.naturalHeight };
+              }
+            } catch {
+              // 解码失败时仍按提交尺寸排布，生成结果本身照常交给图片节点显示。
+            }
+            return (it.stitched && imageSizeOf(n)) || { w: dims.width, h: dims.height };
+          }));
+          const born = hadImage ? spawnResultNodes(n, batchItems, inheritSnap, resultSizes) : [];
           if (!hadImage) {
             g.gallery = batchItems.slice();
             g.idx = 0;
             n.dataURL = batchItems[0].url;
             n.uploaded = null;
+            n.w = generatedNodeWidth(resultSizes[0]);
           }
           // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
           // 这里记的是「这次用的什么参数、出了哪几张」。原节点的图不再被这一批顶掉，
@@ -3605,7 +3685,7 @@
             w: dims.width, h: dims.height, batch: Number(g.batch) || 1, wf: g.wf || '',
             // 风格记成和节点上一样的 {cat,i,cn}：派生 / 复现时能原样套回去，
             // 光记一个中文名就只能看了
-            style: g.style ? { ...g.style } : null,
+            style: styleEntry && g.style ? { ...g.style } : null,
             items: batchItems.slice(),
           });
           // 自动存一份进资产库（时间+序号命名）。放在 pushRun 之后、状态文案之前：
@@ -5487,15 +5567,16 @@
                 <button type="button" id="setHelp">教程与快捷键…</button>
               </div>
               <div class="set-sep"></div>
-              <!-- 关于 / 检查更新：只读地看一眼 GitHub 最新 release，不下载、不动本地文件。
+              <!-- 关于 / 检查更新：默认只读；安装需要用户确认，更新器保留数据并回滚失败的程序文件。
                    放在「高级」最后一格——这是个一年点两三次的动作，不该占常驻位置。 -->
               <div class="set-group">关于</div>
               <p class="set-tip">InfiSheet <b id="setAppVer">…</b> · 本地服务 ${location.host}</p>
               <div class="set-actions">
                 <button type="button" id="setCheckUpdate">检查更新</button>
-                <button type="button" id="setUpdateGo" class="hidden">去下载</button>
+                <button type="button" id="setUpdateInstall" class="hidden">下载并安装</button>
+                <button type="button" id="setUpdateGo" class="hidden">打开下载页</button>
               </div>
-              <p class="set-tip" id="setUpdateHint">只查有没有新版本，不会动本地文件。</p>
+              <p class="set-tip" id="setUpdateHint">检查后可确认下载并安装；画布和工作流数据会保留。</p>
             </div>
           </div>
         </div>
@@ -5602,6 +5683,7 @@
     // 版本号本地读（/api/version，不联网），点按钮才去打 GitHub。断网、仓库没发版
     // 都只是把原因写在提示里，不弹错误框——用户点它是想看一句话，不是想处理异常。
     const updBtn = box.querySelector('#setCheckUpdate');
+    const updInstall = box.querySelector('#setUpdateInstall');
     const updGo = box.querySelector('#setUpdateGo');
     const updHint = box.querySelector('#setUpdateHint');
     const verEl = box.querySelector('#setAppVer');
@@ -5610,6 +5692,7 @@
     }).catch(() => { if (verEl) verEl.textContent = '—'; });
     updBtn.onclick = async () => {
       updBtn.disabled = true;
+      updInstall.classList.add('hidden');
       updGo.classList.add('hidden');
       updHint.textContent = '正在问 GitHub…';
       try {
@@ -5623,6 +5706,54 @@
           updHint.textContent = `有新版本 ${r.latest}（当前 ${r.current}）`;
           updGo.classList.remove('hidden');
           updGo.onclick = () => window.open(r.url, '_blank', 'noopener');
+          if (r.canInstall) {
+            updInstall.classList.remove('hidden');
+            updInstall.onclick = async () => {
+              if (!confirm(`下载并安装 InfiSheet ${r.latest}？服务会短暂重启，画布和工作流数据会保留。`)) return;
+              updInstall.disabled = true;
+              updBtn.disabled = true;
+              updHint.textContent = `正在下载并校验 InfiSheet ${r.latest}…`;
+              let taskId = '';
+              try {
+                const started = await api('/api/update/install', { method: 'POST' });
+                if (!started.ok) {
+                  updHint.textContent = `更新未启动：${started.error || '未知原因'}`;
+                  updInstall.disabled = false;
+                  return;
+                }
+                taskId = started.taskId || '';
+                for (let attempt = 0; taskId && attempt < 180; attempt += 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                  try {
+                    const status = await api('/api/update/status');
+                    if (status.taskId !== taskId) continue;
+                    if (status.status === 'error') {
+                      updHint.textContent = status.message || '更新失败，原版本仍可使用。';
+                      updInstall.disabled = false;
+                      updBtn.disabled = false;
+                      return;
+                    }
+                    if (status.status === 'complete') {
+                      updHint.textContent = status.message || `已更新到 InfiSheet ${r.latest}`;
+                      updInstall.textContent = '更新完成';
+                      return;
+                    }
+                    updHint.textContent = status.message || '更新处理中…';
+                  } catch {
+                    // 服务在切换期间会短暂离线；继续轮询，直到新版本重新启动。
+                  }
+                }
+                updHint.textContent = '更新仍在处理中；服务恢复后可重新检查版本。';
+              } catch (err) {
+                updHint.textContent = `更新未启动：${err.message}`;
+                updInstall.disabled = false;
+              } finally {
+                if (!taskId) updBtn.disabled = false;
+              }
+            };
+          } else if (r.installReason) {
+            updHint.textContent += `；${r.installReason}，可打开下载页手动更新。`;
+          }
         } else {
           updHint.textContent = `已是最新（${r.current}）`;
         }
@@ -5957,6 +6088,49 @@
     span.onkeydown = (ev) => {
       ev.stopPropagation();                  // 别让画布快捷键（Delete 删节点等）截走
       // 直接收尾，别指望 blur()：元素没拿到焦点时 blur 不触发，名字就白改了
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    };
+  }
+
+  // 双击节点标题改名：就地变 contenteditable，回车/失焦保存，Esc 放弃。
+  // 预填的是「模型名」而不是完整标题——自动标题里的提示词摘要（如「· 海蛇绒球」）
+  // 同一批图全一样，改名时留着只会让用户先删一遍再打字。
+  // 没跑过生成（没有 gen.wf）的节点就预填当前标题，比如文本节点的「提示词」。
+  function renameSeed(n) {
+    return modelNameOf(n.gen && n.gen.wf) || n.title || '';
+  }
+
+  function startRenameNode(span, n) {
+    if (span.dataset.editing) return;
+    span.dataset.editing = '1';
+    const before = n.title;
+    span.textContent = renameSeed(n);
+    span.contentEditable = 'true';
+    span.classList.add('editing');
+    span.focus();
+    // 全选：双击改名的预期是「直接打字覆盖」，不是把光标插在末尾
+    const range = document.createRange();
+    range.selectNodeContents(span);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const finish = (save) => {
+      if (!span.dataset.editing) return;
+      delete span.dataset.editing;
+      span.contentEditable = 'false';
+      span.classList.remove('editing');
+      // 粘进来的可能带换行和一串空白，压成一行；太长会把节点顶宽，卡到 40 字
+      const v = (span.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      const next = save && v ? v : before;
+      n.title = next;
+      span.textContent = next;          // 取消时恢复原标题，不用重建整个节点
+      if (next !== before) { queueSave(); commit(); }
+    };
+    span.onblur = () => finish(true);
+    span.onkeydown = (ev) => {
+      ev.stopPropagation();             // 别让画布快捷键（Delete 删节点等）截走
       if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
       else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
     };
@@ -7384,6 +7558,27 @@
     return s.length > max ? `${s.slice(0, max)}…` : s;
   }
 
+  // 工作流的显示名：优先库里给的中文标题，没有就把 id 收拾成能看的文件名
+  // （去掉 lib: / preset: 前缀与 .json 后缀）。标题命名和双击改名的预填都用它。
+  function modelNameOf(wf) {
+    const id = String(wf || '');
+    if (!id) return '';
+    const opt = wfOptions().find((o) => o.id === id);
+    if (opt && opt.label) return opt.label;
+    return id.replace(/^(lib|preset):/, '').replace(/\.(api\.)?json$/i, '');
+  }
+
+  // 图片节点标题统一成「模型 · 提示词摘要」：
+  //   模型取当前工作流在库里的显示名，摘要取提示词前 18 字。
+  //   两者都拿不到时用调用方给的兜底名（如「图片（生成）」）。
+  // 以前产物节点一律叫「图片（生成）」，一排图看过去分不清谁是谁。
+  function genNodeTitle(gen, fallback = '图片') {
+    const g = gen || {};
+    const model = modelNameOf(g.wf);
+    const brief = shortTitle(g.prompt || '', 18);
+    return [model, brief].filter(Boolean).join(' · ') || fallback;
+  }
+
   function jobTitleOf(n, text) {
     const given = shortTitle(text);
     if (given) return given;
@@ -7675,7 +7870,13 @@
   // inherit 是这一轮真正用的那套参数：写进新节点的 gen 里，图片详情（nodeImageInfo）与
   // 资产库详情（assetImageInfo）都读 gen，于是「这张是用什么词出的」当场能查到；
   // 点标题上的「生成」打开面板时也是这套参数，不用重新敲一遍。
-  function spawnResultNodes(src, items, inherit) {
+  // 1K / 2K / 4K 约为 360 / 400 / 440px；自定义尺寸也平滑变化，避免大图占满画布。
+  function generatedNodeWidth(size) {
+    const long = Math.max(Number(size && size.w) || 0, Number(size && size.h) || 0);
+    return clamp(Math.round(360 + 40 * Math.log2(Math.max(long, 1) / 1024)), 320, 440);
+  }
+
+  function spawnResultNodes(src, items, inherit, sizes) {
     if (!src || !items || !items.length) return [];
     const p = inherit || {};
     // 每个节点一份独立对象：共享同一个 gen 会变成「改 A 的提示词，B 跟着变」
@@ -7697,61 +7898,77 @@
       extras: [],
       gallery: [], idx: 0, runs: [],
     });
-    // 落点：默认贴原节点右边一个 GAP。右边被占**不再整步往右跳**（一撞就飞出去一大截），
-    // 改成顺着这一列往下让，间距照样是 GAP。
-    const GAP = 40;
-    const NW = 380;   // 新图片节点的宽（nodeWidth 的默认值）
-    const NH = 420;   // 高度只能估：图还没解码，真实高度竖图能到 760
+    // 节点之间留出连线空间；按各张图的宽高排布，竖图也不会压到下一张。
+    const GAP = 72;
+    const layout = items.map((_, i) => {
+      const size = sizes[i];
+      const w = generatedNodeWidth(size);
+      return { w, h: Math.min(760, w * size.h / size.w) + 36 };
+    });
     const y0 = Math.round(src.y);
     const baseX = Math.round(src.x + nodeWidth(src) + GAP);
-    // 高度取实测值：竖图能到 760px，按固定值估会把「其实不挡路」的节点也算成障碍。
+    // 已有节点用实测高度；新节点的高度按图片比例和 CSS 的 760px 上限估算。
     const hOf = (o) => {
       const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(o.id)}"]`);
-      return (el && el.offsetHeight) || NH;
+      return (el && el.offsetHeight) || o.h || 420;
     };
-    // 撞不撞：只看真的压上去（x、y 两个方向都重叠）。留 GAP 当余量会把
-    // 「挨得近但没压上」的邻居也算成障碍，右边一整排 30px 间距的节点就全被判成挡路，
-    // 结果一生成就往下载。
-    const clash = (x, y, taken) => state.nodes.some((o) => o !== src
-      && x < o.x + nodeWidth(o) && x + NW > o.x
-      && y < o.y + hOf(o) && y + NH > o.y)
-      || taken.some((t) => x < t.x + NW && x + NW > t.x
-        && y < t.y + NH && y + NH > t.y);
+    // 避让只看真正重叠，间距由落点本身保证。
+    const overlaps = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x
+      && a.y < b.y + b.h && a.y + a.h > b.y;
+    const clash = (s, taken) => state.nodes.some((o) => o !== src
+      && overlaps(s, { x: o.x, y: o.y, w: nodeWidth(o), h: hOf(o) }))
+      || taken.some((t) => overlaps(s, t));
     const fits = (spots) => {
       const taken = [];
       for (const s of spots) {
-        if (clash(s[0], s[1], taken)) return false;
-        taken.push({ x: s[0], y: s[1] });
+        if (clash(s, taken)) return false;
+        taken.push(s);
       }
       return true;
     };
     // 先试一行横排；右侧被占就整组改成竖排（同一列往下），两种情况间距都是 GAP
     let spots = null;
-    const row = items.map((_, i) => [baseX + i * (NW + GAP), y0]);
+    let rowX = baseX;
+    const row = layout.map((size) => {
+      const spot = { x: rowX, y: y0, ...size };
+      rowX += size.w + GAP;
+      return spot;
+    });
     if (fits(row)) spots = row;
     else {
       let cy = y0;
       for (let guard = 0; guard < 80 && !spots; guard++) {
-        const col = items.map((_, i) => [baseX, cy + i * (NH + GAP)]);
+        let colY = cy;
+        const col = layout.map((size) => {
+          const spot = { x: baseX, y: colY, ...size };
+          colY += size.h + GAP;
+          return spot;
+        });
         if (fits(col)) { spots = col; break; }
-        // 起点推到挡路节点的下面；推不动就收手，别死循环
+        // 把整列推到挡路节点下方，同时保留每张图在列内的相对位置。
         const next = state.nodes.reduce((m, o) => {
           if (o === src) return m;
-          const ox = baseX < o.x + nodeWidth(o) && baseX + NW > o.x;
-          const oy = cy < o.y + hOf(o) && cy + NH > o.y;
-          return ox && oy ? Math.max(m, o.y + hOf(o) + GAP) : m;
+          const box = { x: o.x, y: o.y, w: nodeWidth(o), h: hOf(o) };
+          for (const s of col) {
+            if (overlaps(s, box)) m = Math.max(m, box.y + box.h + GAP - (s.y - cy));
+          }
+          return m;
         }, cy);
         if (next <= cy) break;
         cy = next;
       }
       if (!spots) spots = row;   // 实在找不到空位，仍旧用原来那一行
     }
-    const born = items.map((it, i) => addImageNode(spots[i][0], spots[i][1], {
-      // uploaded 由调用方给：裁切重绘贴回去的整图已经传进 ComfyUI 的 input/ 了，
-      // 记上名字，下次拿它当参考图时不必再传一遍（普通产物没有这一项，仍为 null）
-      dataURL: it.url, filename: it.filename || '', uploaded: it.uploaded || null,
-      title: '图片（生成）', plain: true, gen: genOf(),
-    }, true));
+    const born = items.map((it, i) => {
+      // 每个节点一份独立对象：共享同一个 gen 会变成「改 A 的提示词，B 跟着变」
+      const gen = genOf();
+      return addImageNode(spots[i].x, spots[i].y, {
+        // uploaded 由调用方给：裁切重绘贴回去的整图已经传进 ComfyUI 的 input/ 了，
+        // 记上名字，下次拿它当参考图时不必再传一遍（普通产物没有这一项，仍为 null）
+        dataURL: it.url, filename: it.filename || '', uploaded: it.uploaded || null,
+        title: genNodeTitle(gen, '图片（生成）'), plain: true, gen, w: spots[i].w,
+      }, true);
+    });
     // 方向：原节点 → 新节点。反过来（新 → 原）画出来是「产物指回上游」，
     // 线要从产物右侧绕一大圈才够得着原节点的 in 口，看着就是反的。
     born.forEach((nd) => {
@@ -7772,8 +7989,12 @@
       const up = await api('/api/upload', { method: 'POST', body: fd });
       if (!up.ok) throw new Error(up.error || '上传失败');
       // 用服务端代理 URL 而不是 blob:（blob URL 只在当前页面有效，存档恢复后会变破图）
-      addImageNode(srcNode.x + nodeWidth(srcNode) + 60, srcNode.y, {
-        dataURL: url, filename: name, uploaded: up.image, title: '图片（来自生成）',
+      const im = await loadImageEl(url).catch(() => null);
+      addImageNode(srcNode.x + nodeWidth(srcNode) + 72, srcNode.y, {
+        dataURL: url, filename: name, uploaded: up.image,
+        title: genNodeTitle(srcNode.gen, '图片（来自生成）'),
+        w: im && im.naturalWidth && im.naturalHeight
+          ? generatedNodeWidth({ w: im.naturalWidth, h: im.naturalHeight }) : 380,
       });
       flash('已钉到画布，可直接连到图生图工作流');
     } catch (err) {
@@ -7917,6 +8138,7 @@
     const gal = (run.items || []).slice();
     const born = addImageNode(n.x + 60, n.y + 60, {
       dataURL: gal.length ? gal[0].url : null,
+      w: run.w && run.h ? generatedNodeWidth({ w: run.w, h: run.h }) : nodeWidth(n),
       gen: {
         prompt: run.prompt || '',
         wf: run.wf || '',
@@ -11508,6 +11730,7 @@
     const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
+      w: nodeWidth(src),
       uploaded: src.uploaded || null,
       subfolder: src.subfolder || '',
       filename: src.filename || null,
@@ -11625,6 +11848,7 @@
     const cv = rotateCanvas(img, deg, flip);
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: await persistEditedImage(cv, 'rotate'),
+      w: generatedNodeWidth({ w: cv.width, h: cv.height }),
       title: `旋转 · ${src.title}`,
     });
     selectOnly(n.id);
@@ -11800,6 +12024,7 @@
         closeImgPanel();
         const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
           dataURL: await persistEditedImage(cv, 'color'),
+          w: nodeWidth(n),
           title: `调色 · ${n.title}`,
         });
         selectOnly(nn.id);
@@ -12184,31 +12409,24 @@
     thumb.appendChild(stage);
     thumb.appendChild(sel);
 
-    // ---- 扩图模式下，整个生成面板就只剩这一条 ----
-    // 早先是屏幕坐标的浮条（`position: fixed` + 挂 body）：不会被顶出视口，但**跟不住节点**——
-    // 节点在画布右边、条却钉在屏幕左下角，用户的原话是「无法跟随」。
-    // 现在是面板里的一条：面板挂在 `.node` 上（绝对定位 + 抵消画布缩放），节点动它就动。
-    //
-    // 这一条把扩图要用的东西全装下了，两行：**上面是提示词，下面是参数 + 生成**。
-    // 顺序是照着「写什么 → 怎么跑 → 发出去」排的：先看到自己在写什么，再是选项和那颗按钮。
-    // 面板里原来的「上传 / 画布素材 / 清空 / 风格」、大提示词框、底下那排按钮全部让位
-    // （`.gen-panel.op-on`）——扩图时这些要么用不上，要么和这条重复。
+    // 扩图沿用生成面板的操作区与提示词；这里只装配专属的底栏参数。
     const bar = document.createElement('div');
     bar.className = 'op-bar';
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', '扩图参数');
-    bar.innerHTML = '<div class="of-row of-prompt">'
-      + '<textarea class="of-input" rows="2" spellcheck="false"'
-      + ' placeholder="提示词：描述扩出来的地方要补什么（Enter 生成，Shift+Enter 换行）"></textarea>'
-      + '</div>'
-      + '<div class="of-row of-params">'
-      + '<button type="button" class="of-btn" data-of="wf"></button>'
-      + '<button type="button" class="of-btn" data-of="size"></button>'
-      + '<button type="button" class="of-btn" data-of="res"></button>'
-      + '<button type="button" class="of-btn" data-of="batch"></button>'
-      + '<span class="of-read"></span>'
-      + '<button type="button" class="of-btn ghost" data-of="cancel">取消</button>'
-      + '</div>';
+    const paramRow = buildGenControlRow('of-row of-params');
+    const makeOutpaintButton = (key, title = '') => {
+      const button = makeGenControlButton({ className: 'of-btn', title });
+      button.dataset.of = key;
+      paramRow.appendChild(button);
+      return button;
+    };
+    makeOutpaintButton('wf');
+    makeOutpaintButton('opts');
+    const readout = document.createElement('span');
+    readout.className = 'of-read';
+    bar.appendChild(readout);
+    bar.appendChild(paramRow);
     const genBar = panel.querySelector('.gen-bar');
     if (genBar) panel.insertBefore(bar, genBar);
     else panel.appendChild(bar);
@@ -12216,54 +12434,12 @@
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     if (opSession) opSession.bar = bar;
 
-    // 提示词：多行，改的是 n.gen.prompt 本身（收起来之后大提示词框读到的是同一个值）。
-    // 扩图模板本来就有两行字，单行输入框把它截成「…主体」那种看不全的样子——用户截图里
-    // 那半句话就是这个原因。所以这里用 textarea + 按内容长高（到 6 行封顶，再多自己滚）。
-    const promptInp = bar.querySelector('.of-input');
-    const OF_MAX_H = 132;                 // ≈ 6 行；再长就滚动，别把面板撑到屏幕外
-    const fitPrompt = () => {
-      // 先清掉高度让浏览器按内容量（`height:auto`）。量到 0 说明还没挂进 DOM——
-      // buildGenPanel 是在节点插进 #nodes **之前**跑的，这时候 scrollHeight 恒为 0，
-      // 直接写 height 会把框压成一条线。这种情况交回 CSS（rows=2）兜着。
-      promptInp.style.height = '';
-      const sh = promptInp.scrollHeight;
-      if (!sh) return;
-      promptInp.style.height = `${Math.min(sh, OF_MAX_H)}px`;
-      placePanel();      // 面板跟着长高，得重贴一次（否则长出来的那截会掉到屏幕外面）
-    };
-    const syncPrompt = () => {
-      const v = String(n.gen.prompt || '');
-      if (promptInp.value !== v) promptInp.value = v;
-      promptInp.title = v;
-      fitPrompt();
-    };
-    syncPrompt();
-    // 挂进 DOM 之后重量一次：上面那次是在离屏状态跑的，量不到 scrollHeight
-    requestAnimationFrame(fitPrompt);
-    promptInp.addEventListener('input', () => {
-      n.gen.prompt = promptInp.value;
-      promptInp.title = promptInp.value;
-      delete n.gen.opPromptSet;     // 用户改过就别再当成「我们填的模板」收回去
-      fitPrompt();
-      queueSave();
-    });
-    promptInp.addEventListener('keydown', (ev) => {
-      // Enter 生成、Shift+Enter 换行：多行框里这两个键最容易点错，先把约定写死在这里
-      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); generateImage(n); }
-      ev.stopPropagation();          // 别让画布的快捷键（Delete / 空格平移）吃到输入
-    });
+    const cancel = makeOutpaintButton('cancel');
+    cancel.classList.add('ghost');
+    cancel.textContent = '取消';
+    const run = panel.querySelector('.gen-run');
+    if (run) paramRow.appendChild(run);
 
-    // 状态文字和生成按钮**搬**到参数行末尾（不是复制一个）：`refreshGenPanel` 靠
-    // `.gen-run` / `.gen-status` 这两个选择器在面板里找它们，搬家后照样找得到。
-    const paramRow = bar.querySelector('.of-params');
-    [panel.querySelector('.gen-status'), panel.querySelector('.gen-run')].forEach((el2) => {
-      if (el2) paramRow.appendChild(el2);
-    });
-    // 搬完之后那一行就是空的：留着它会多出一条空白（面板里可见的孩子也不再只剩参数条）
-    const stRow = panel.querySelector('.gen-status-row');
-    if (stRow && !stRow.children.length) stRow.classList.add('hidden');
-
-    const readout = bar.querySelector('.of-read');
     const btnOf = (k) => bar.querySelector(`[data-of="${k}"]`);
 
     // 尺寸档按「当前 pad 等于哪一档」反推：拖过锚点之后没有一档成立，就报「自定义」
@@ -12289,13 +12465,10 @@
       if (!op) return;
       const f = outpaintFrame(op.w, op.h, op);
       const wf = wfOptions().find((o) => o.id === n.gen.wf);
-      btnOf('wf').innerHTML = `${icon('wf')}<span>${wf ? wf.label : '选工作流'}</span><i class="of-caret"></i>`;
+      btnOf('wf').innerHTML = `${wfIconHTML(wf ? wf.icon : '', 16)}<span>${wf ? wf.label : '选工作流'}</span><i class="of-caret"></i>`;
       btnOf('wf').title = wf ? `${wf.catLabel} · ${wf.label}` : '还没有可用工作流';
-      btnOf('size').innerHTML = `<span>${sizeTag(op)}</span><i class="of-caret"></i>`;
-      btnOf('size').title = `画布尺寸：${op.w} × ${op.h} → ${f.nw} × ${f.nh}（拖边框上的八个锚点也能改）`;
-      btnOf('res').innerHTML = `<span>${resTag(f)}</span><i class="of-caret"></i>`;
-      btnOf('res').title = '输出分辨率：按当前画布比例缩放到目标长边';
-      btnOf('batch').innerHTML = `<span>${n.gen.batch || 1} 张</span><i class="of-caret"></i>`;
+      btnOf('opts').innerHTML = `<span>${sizeTag(op)} · ${resTag(f)} · ${n.gen.batch || 1}张</span><i class="of-caret"></i>`;
+      btnOf('opts').title = `画布尺寸 / 分辨率 / 张数：${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
       readout.textContent = `${op.w} × ${op.h} → ${f.nw} × ${f.nh}`;
       // 一行放不下时这串数字会被省略号截断，全文放 title 里
       readout.title = `原图 ${op.w} × ${op.h} → 画布 ${f.nw} × ${f.nh}`;
@@ -12320,13 +12493,13 @@
           syncBar();
           syncGenOpts(n);
         },
-        o.id === n.gen.wf ? 'active' : ''],
+        o.id === n.gen.wf ? 'active' : '', wfIconHTML(o.icon, 16)],
       ), '工作流（只列吃图的）');
     };
 
-    const openSizeMenu = () => {
+    const sizeItems = () => {
       const op = outpaintOf(n);
-      if (!op) return;
+      if (!op) return [];
       // 第一项是「原图」：四边归零，回到一格没扩的状态（相当于把拖出来的都收回去）。
       // 没有这一项的话，拖歪了只能一格一格拖回来，或者收起扩图重来。
       const items = [['原图（不扩）', () => {
@@ -12349,34 +12522,110 @@
         syncBar();
         syncGenOpts(n);
       }]);
-      items.push(['自定义尺寸…', () => openDimMenu(btnOf('size'), n, () => {
+      items.push(['自定义尺寸…', () => openDimMenu(btnOf('opts'), n, () => {
         draw();
         syncBar();
         syncGenOpts(n);
       })]);
-      openPopMenu(btnOf('size'), items, '尺寸');
+      return items;
     };
 
-    const openResMenu = () => {
+    const resItems = () => {
       const op = outpaintOf(n);
-      if (!op) return;
-      const items = SIZES.map(([, label, px]) => [label, () => {
+      if (!op) return [];
+      return SIZES.map(([, label, px]) => [label, () => {
         scaleOutpaintTo(n, px);
         draw();
         syncBar();
         syncGenOpts(n);
       }]);
-      openPopMenu(btnOf('res'), items, '分辨率（按当前比例缩放到目标长边）');
     };
 
-    const openBatchMenu = () => {
-      openPopMenu(btnOf('batch'), [1, 2, 4].map((v) => [`${v} 张`, () => {
+    const batchItems = () => [1, 2, 4].map((v) => [`${v} 张`, () => {
         n.gen.batch = v;
         queueSave();
         commit();
         syncBar();
         syncGenOpts(n);
-      }, Number(n.gen.batch) === v ? 'active' : '']), '数量');
+      }, Number(n.gen.batch) === v ? 'active' : '']);
+    const openOptionsMenu = () => {
+      const anchor = btnOf('opts');
+      if (popAnchor === anchor) { closePopMenu(); return; }
+      closePopMenu();
+      const menu = document.createElement('div');
+      menu.className = 'popmenu gen-opts';
+      const section = (title, cls) => {
+        const box = document.createElement('div');
+        box.className = 'go-sec';
+        const heading = document.createElement('div');
+        heading.className = 'go-title';
+        heading.textContent = title;
+        const content = document.createElement('div');
+        content.className = cls;
+        box.append(heading, content);
+        menu.appendChild(box);
+        return content;
+      };
+      const foot = document.createElement('div');
+      foot.className = 'go-foot';
+      const ratioGrid = section('画幅', 'go-ratios');
+      const resolutionGrid = section('分辨率', 'go-seg');
+      const batchGrid = section('张数', 'go-seg');
+      const pick = (fn) => { fn(); paint(); placePopMenu(menu, anchor); };
+      sizeItems().forEach(([label, fn]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'go-ratio';
+        button.dataset.value = label === '原图（不扩）' ? '原图' : label === '自定义尺寸…' ? '自定义' : label;
+        const ratio = /^\d+:\d+$/.test(label);
+        if (ratio) {
+          const [w, h] = ratioGlyph(label, 22, 15);
+          const glyph = document.createElement('i');
+          glyph.style.width = `${w}px`;
+          glyph.style.height = `${h}px`;
+          button.appendChild(glyph);
+        } else {
+          const glyph = document.createElement('b');
+          glyph.textContent = label === '原图（不扩）' ? '↩' : label === '自定义尺寸…' ? '↔' : '＋';
+          button.appendChild(glyph);
+        }
+        const caption = document.createElement('span');
+        caption.textContent = button.dataset.value;
+        button.appendChild(caption);
+        button.onclick = label === '自定义尺寸…' ? fn : () => pick(fn);
+        ratioGrid.appendChild(button);
+      });
+      resItems().forEach(([label, fn], i) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.value = label;
+        button.innerHTML = `<span>${label}</span><em>${SIZES[i][2]}px</em>`;
+        button.onclick = () => pick(fn);
+        resolutionGrid.appendChild(button);
+      });
+      batchItems().forEach(([label, fn]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.value = label;
+        button.textContent = label;
+        button.onclick = () => pick(fn);
+        batchGrid.appendChild(button);
+      });
+      const paint = () => {
+        const op = outpaintOf(n);
+        if (!op) return;
+        const frame = outpaintFrame(op.w, op.h, op);
+        ratioGrid.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.value === sizeTag(op)));
+        resolutionGrid.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.value === resTag(frame)));
+        batchGrid.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.value === `${n.gen.batch || 1} 张`));
+        foot.textContent = `${op.w} × ${op.h} → ${frame.nw} × ${frame.nh} · ${n.gen.batch || 1} 张`;
+      };
+      menu.appendChild(foot);
+      document.body.appendChild(menu);
+      paint();
+      placePopMenu(menu, anchor);
+      popAnchor = anchor;
+      armPopClose(anchor);
     };
 
     bar.addEventListener('click', (ev) => {
@@ -12385,9 +12634,7 @@
       ev.stopPropagation();
       if (b.dataset.of === 'cancel') { closeOutpaint(n); return; }
       if (b.dataset.of === 'wf') openWfMenu();
-      else if (b.dataset.of === 'size') openSizeMenu();
-      else if (b.dataset.of === 'res') openResMenu();
-      else if (b.dataset.of === 'batch') openBatchMenu();
+      else if (b.dataset.of === 'opts') openOptionsMenu();
     }, { signal: ac.signal });
     const el = thumb.closest('.node');
     const dimEl = el && el.querySelector('.n-dim');
@@ -13463,6 +13710,7 @@
     closeCrop();
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: url,
+      w: generatedNodeWidth({ w: sw, h: sh }),
       title: `裁剪 ${sw} × ${sh}`,
     });
     selectOnly(n.id);
