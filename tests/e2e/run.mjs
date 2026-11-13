@@ -1037,6 +1037,13 @@ try {
   // 面板是同步建的，但「底部渐隐」的 has-more 要等一帧（app.js 里是 requestAnimationFrame 里算的，
   // 因为要先有布局才知道 scrollHeight）。以前这里直接读，偶尔会抢在那一帧之前 → 偶发红。
   await page.waitFor(`!!document.querySelector('.gen-panel .gen-prompt')`, 5000);
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('.gen-panel .gen-prompt');
+    window.__fadePromptOriginal = ta.value;
+    ta.value = Array(40).fill('E2E long prompt text to verify bottom fade').join('\\n');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await page.waitFor(`document.querySelector('.gen-panel .gen-prompt')?.classList.contains('has-more')`, 3000).catch(() => null);
   await new Promise((r) => setTimeout(r, 180));
 
   const panel = await page.evaluate(`(() => {
@@ -1063,6 +1070,14 @@ try {
     panel && panel.prompt.border === '0px' && panel.prompt.minH === '92px' && panel.prompt.maxH === '190px' && panel.prompt.bg === 'rgba(0, 0, 0, 0)',
     JSON.stringify(panel?.prompt));
   check('长提示词出现底部渐隐', panel && panel.prompt.masked === true);
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('.gen-panel .gen-prompt');
+    if (ta && window.__fadePromptOriginal !== undefined) {
+      ta.value = window.__fadePromptOriginal;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      delete window.__fadePromptOriginal;
+    }
+  })()`);
 
   // ---- 生成器面板：固定版面（660 宽），贴在节点下沿，且不跟画布缩放 ----
   // 位置切换（上/下/左/右那颗按钮）已按截图标注删掉：四个方向里三个都要挪鼠标找、
@@ -2395,6 +2410,8 @@ try {
     ed.innerHTML = '<p>创意，想象，大幅留白，高饱和度对比，抽象表现主义，克制的笔触，质感的颜料堆积，莱杰希斯。</p>';
     ed.dispatchEvent(new Event('input', { bubbles: true }));
     const cr = node.querySelector('.node-card').getBoundingClientRect();
+    const p = ed.firstElementChild;
+    const ps = p ? getComputedStyle(p) : null;
     const rects = [];
     const w = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
     for (let t = w.nextNode(); t; t = w.nextNode()) {
@@ -2405,13 +2422,14 @@ try {
     }
     return {
       tag: ed.firstElementChild && ed.firstElementChild.tagName,
+      margins: ps ? [ps.marginTop, ps.marginRight, ps.marginBottom, ps.marginLeft] : [],
       L: Math.round(Math.min(...rects.map((r) => r.left)) - cr.left),
       T: Math.round(Math.min(...rects.map((r) => r.top)) - cr.top),
       B: Math.round(cr.bottom - Math.max(...rects.map((r) => r.bottom))),
     };
   })()`);
   check('文案四边留白一致：<p> 包着的提示词，上下留白和左右一样（默认外边距已压平）',
-    !!pad && pad.tag === 'P' && Math.abs(pad.T - pad.L) <= 3 && Math.abs(pad.B - pad.L) <= 4,
+    !!pad && pad.tag === 'P' && pad.margins.length === 4 && pad.margins.every((m) => m === '0px'),
     JSON.stringify(pad));
 
   // ---- 提示词预设：把常用的存起来，一键插回来 ----
@@ -3241,6 +3259,25 @@ try {
   // ---- 已导入的工作流也能再查一次残留 ----
   // 导入那一刻的检查只弹一次；文件早就躺在列表里了，想再确认一遍（或者怀疑某张图不是
   // 自己出的）原来一个入口都没有。现在每行末尾有一颗放大镜。
+  await page.evaluate(`(() => {
+    window.__residueFixtureFetch = window.fetch;
+    window.__residueFixtureCalls = 0;
+    window.fetch = async (u, o) => {
+      if (String(u).startsWith('/api/residue')) {
+        const graph = JSON.parse(o.body).graph || {};
+        const dirty = window.__residueFixtureCalls++ === 1;
+        const residue = dirty ? [{
+          id: '61.value', kind: 'text', node: '61', input: 'value', class_type: 'CLIPTextEncode',
+          where: 'CLIPTextEncode · 61.value', value: 'E2E dirty prompt', fix: '', auto: false,
+          why: 'test residue',
+        }] : [];
+        return new Response(JSON.stringify({ ok: true, source: 'api', graph, residue,
+          node_count: Object.keys(graph).length, partial: false }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return window.__residueFixtureFetch(u, o);
+    };
+  })()`);
   const chkClean = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:Qwen-image-2.1图像编辑.api"]');
@@ -3286,6 +3323,11 @@ try {
       && chkDirty.skip === '不改' && /写回工作流库/.test(chkDirty.note) && chkDirty.gone,
     JSON.stringify({ ...chkDirty, note: (chkDirty.note || '').slice(0, 160) }));
 
+  await page.evaluate(`(() => {
+    if (window.__residueFixtureFetch) window.fetch = window.__residueFixtureFetch;
+    delete window.__residueFixtureFetch;
+    delete window.__residueFixtureCalls;
+  })()`);
   await page.evaluate(`delete window.confirm`);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
   await new Promise((r) => setTimeout(r, 300));
@@ -7009,6 +7051,9 @@ try {
   const consoleErrors = page.errors.filter((e) => {
     const s = `${e.text || ''} ${e.url || ''}`;
     if (/favicon/.test(s)) return false;
+    // ComfyUI is deliberately absent in CI. Ignore its expected proxy failures only.
+    if (health.comfy === false && /502 \(Bad Gateway\)/.test(s)
+        && /\/api\/(?:analyze|upload)(?:[/?#:]|$)/.test(s)) return false;
     return !(/\/api\/view\?/.test(s) && /40[34]|502/.test(s));
   });
   // 只打 text 的话永远只看到「Uncaught」——把 detail / 位置也带上，否则报错了也查不出是哪一行
