@@ -23,8 +23,7 @@
     "test:e2e": "node tests/e2e/run.mjs",
     "shots": "node tests/e2e/walkthrough.mjs",
     "pack": "python tools/pack.py",
-    "format": "prettier --write \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\" \"tools/**/*.{mjs,cjs}\"",
-    "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\""
+    "format": "prettier --write \"static/**/*.{js,css,html}\" \"tests/**/*.mjs\" \"tools/**/*.{mjs,cjs}\""
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

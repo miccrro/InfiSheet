@@ -204,7 +204,7 @@ Reviewer 按这个顺序看，**每一条都要能回答「是/否」**，回答
 
 | 现象 | 原因 | 怎么办 |
 |---|---|---|
-| `npm run format:check` 报一堆 | 仓库里的尾注释是**手对齐**的，prettier 会压成单空格（`app.js` 约 3600 行差异） | 别跑 `--write`，会产生毁掉 blame 的巨型提交。改完代码手动对齐即可，见 REVIEW-2026-11-12 P2-3 |
+| prettier 格式化后 diff 巨大 | 仓库里的尾注释是**手对齐**的，prettier 会压成单空格（`app.js` 约 3600 行差异） | `format:check` 已删掉（一条永远红的命令等于没有）。别在存量文件上跑 `--write`，会产生毁掉 blame 的巨型提交；新文件可以单独格式化 |
 | `eslint` 说 `icon` 未定义 | `icon()` 是 `icons.js` 挂在 window 上的 | 已在 `eslint.config.mjs` 里声明，别再报这个 |
 | 本地 `curl 127.0.0.1:8788` 返回 502 | 系统代理把 localhost 也转发了 | 加 `--noproxy '*'` |
 | e2e 里 mock 了 `/api/run` 但用例还是失败 | 轮询 `/api/job` 没挡，判「任务丢失」触发自动重试 | 两个都要挡，见 `tests/e2e/run.mjs` 扩图那段注释 |

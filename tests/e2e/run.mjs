@@ -5,6 +5,8 @@
  *
  *   npm run test:e2e            # 默认 headless
  *   HEADED=1 npm run test:e2e   # 想看着它跑
+ *   GROUP=资产 npm run test:e2e  # 只打印名字里带「资产」的用例（流程仍然全跑）
+ *   STOP_AT=资产 npm run test:e2e # 跑到名字里带「资产」的第一条就收工（改前面某块时反馈快）
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,9 +14,27 @@ import { launchChrome, newPage, stopChrome } from './cdp.mjs';
 import { ROOT, TMP, freePort, makeDataDir, seedProject, startServer, rmDir } from './lib/server.mjs';
 
 const results = [];
+// GROUP / STOP_AT 是「改一块、只看这一块」的旋钮。
+// 这个脚本是一条顺序流程（前一段留下的画布和项目是后一段的前提），没法把中间某一段
+// 单独拎出来跑，所以：
+//   GROUP=资产 npm run test:e2e   仍然全跑，但只打印名字里带「资产」的用例——失败时不用翻 470 行
+//   STOP_AT=资产 npm run test:e2e  跑到名字里带「资产」的那条就收工，改前面某块时反馈快
+// 真要「只跑资产库 60 秒」，得把脚本按节拆成可独立启动的文件，那是另一件事。
+const GROUP = (process.env.GROUP || '').trim();
+const STOP_AT = (process.env.STOP_AT || '').trim();
+class StopRun extends Error {}
 function check(name, ok, detail = '') {
   results.push({ name, ok: !!ok, detail });
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`);
+  if (!GROUP || name.includes(GROUP)) {
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`);
+  }
+  if (STOP_AT && name.includes(STOP_AT)) throw new StopRun(`STOP_AT=${STOP_AT}`);
+}
+// 环境相关的用例显式跳过，而不是长期红着。
+// 一条永远红的断言等于没有断言：真回归混在那片红里也看不出来。
+function skip(name, why) {
+  results.push({ name, ok: true, skipped: true, detail: why });
+  if (!GROUP || name.includes(GROUP)) console.log(`SKIP  ${name}  [${why}]`);
 }
 
 const headed = process.env.HEADED === '1';
@@ -1805,10 +1825,10 @@ try {
   check('画布放大上限 800%', zoom.spun === '800%' && zoom.scale8 && zoom.hasPresets && zoom.preset === '800%',
     JSON.stringify(zoom));
 
-  // 悬浮控制条：12px 圆角矩形（不是胶囊）；底栏按界面密度放大热区——
-  // 主按钮 ≥40×40、次级 32×32，所以它比另外三条单行条高，不参与「同高」比较。
-  // 「普通按钮 32 方块 + 20 图标」这三条条是同一档：以前项目栏 / 视图工具是 28、底栏是 36，
-  // 同一屏里三种大小，图标 16 / 17 / 18 也跟着飘。
+  // 悬浮控制条：12px 圆角矩形（不是胶囊）；条高统一 40、条内控件 32×32——
+  // 这套 token 见 style.css 的「悬浮控制条统一」一节（--ui-bar-h / --ui-bar-r / --ui-ctl）。
+  // 以前四条条各写各的（42 / 34 / 46 / 52，圆角 16 / 16 / 999 / 999），后来统一成一档。
+  // 主按钮带文字所以更宽（≥40），但高度和次级按钮同档——它不再比另外三条条高。
   const shapes = await page.evaluate(`(() => {
     const prime = document.querySelector('#bar .icon.prime');
     const sec = document.querySelector('#bar [data-act="select-mode"]');
@@ -1832,11 +1852,13 @@ try {
     };
   })()`);
   const square = (s) => s[0] === s[1];
-  check('底栏 / 视图工具是 12px 圆角矩形；主按钮热区 ≥40、次级 ≥32；三条单行悬浮条同高',
+  check('底栏 / 视图工具是 12px 圆角矩形；三条单行悬浮条同高 40；主按钮比次级宽但同高',
     shapes.bar === '12px' && shapes.vt === '12px'
-      && shapes.prime[0] >= 40 && shapes.prime[1] >= 40
-      && shapes.sec[0] >= 32 && shapes.sec[1] >= 32
-      && shapes.hs.every((h) => h === shapes.hs[0]), JSON.stringify(shapes));
+      && shapes.hs.every((h) => h === 40)
+      && shapes.prime[1] === shapes.sec[1]      // 同一档高度：主按钮不再单独拔高
+      && shapes.prime[0] >= 40                  // 带文字，所以更宽
+      && shapes.sec[0] === 32 && shapes.sec[1] === 32,
+    JSON.stringify(shapes));
   check('项目栏 / 视图工具 / 底栏的普通按钮是同一档：32 方块 + 20 图标',
     shapes.ctl.every(square) && shapes.ctl.every((s) => s[0] === 32)
       && shapes.ico.every((n) => n === 20),
@@ -3309,22 +3331,28 @@ try {
     comfyPanel.has && /^https?:\/\//.test(comfyPanel.url) && comfyPanel.placeholder === 'http://127.0.0.1:8188',
     JSON.stringify(comfyPanel));
 
+  // 用一个确定没人监听的端口：手输 host:port 要能被补成 http:// 再存下来。
+  // 等「保存并测试」自己跑完（它 disabled 就是忙碌标记），别用固定 sleep——
+  // ComfyUI 在线时探活要走完整条链路，900ms 不一定回得来，读到的是上一拍的旧值，
+  // 于是「地址没补 http://」「连不上不标红」两条一起假红。
+  const deadPort = await freePort();
   await page.evaluate(`(() => {
-    document.getElementById('setComfyUrl').value = '127.0.0.1:8199';
+    document.getElementById('setComfyUrl').value = '127.0.0.1:${deadPort}';
     document.getElementById('setComfySave').click();
   })()`);
-  await new Promise((r) => setTimeout(r, 900));
+  await page.waitFor(`!document.getElementById('setComfySave').disabled`, 15000);
   const comfySaved = await page.evaluate(`(() => ({
     url: document.getElementById('setComfyUrl').value,
     hint: document.getElementById('setComfyHint').textContent,
     cls: document.getElementById('setComfyHint').className,
   }))()`);
-  check('手输 host:port 会被补成 http:// 再保存', comfySaved.url === 'http://127.0.0.1:8199', comfySaved.url);
+  check('手输 host:port 会被补成 http:// 再保存',
+    comfySaved.url === `http://127.0.0.1:${deadPort}`, comfySaved.url);
   check('连不上时标红并说清原因（不是静默失败）',
     /set-tip bad/.test(comfySaved.cls) && /连不上/.test(comfySaved.hint), comfySaved.hint.slice(0, 60));
 
   await page.evaluate(`document.getElementById('setComfyReset').click()`);
-  await new Promise((r) => setTimeout(r, 900));
+  await page.waitFor(`!document.getElementById('setComfySave').disabled`, 15000);
   const comfyReset = await page.evaluate(`document.getElementById('setComfyUrl').value`);
   check('「恢复默认」把地址改回 127.0.0.1:8188', comfyReset === 'http://127.0.0.1:8188', comfyReset);
   await page.key('Escape', { code: 'Escape', keyCode: 27 });
@@ -4049,16 +4077,33 @@ try {
   check('勾选一格不重建格子：<img> 还是原来那个（省掉一次大图解码）',
     reuse.same && reuse.on === true, JSON.stringify(reuse));
 
+  // 缩略图的规则（见 app.js 的 thumbURL）：服务端能取的（/api/ 开头）走 /api/thumb?w=320，
+  // 原图地址留在 data-src；画布上的图是 dataURL，服务端缩不了，原样用。
+  // 以前这条用例只找 /api/ 那一类格子，本机没有真实产物时直接 null → 假红。
+  // 现在两种格子都按规则验，只有「一条 /api/ 资产都没有」时才跳过缩略图那半条。
   const thumb = await page.evaluate(`(() => {
-    const cell = [...document.querySelectorAll('#assetPane .asset-cell')]
-      .find((c) => (c.dataset.src || '').startsWith('/api/'));
-    if (!cell) return null;
-    const src = cell.querySelector('img').getAttribute('src') || '';
-    return { src: src.slice(0, 26), w: /[?&]w=320/.test(src), full: (cell.dataset.src || '').slice(0, 22) };
+    const cells = [...document.querySelectorAll('#assetPane .asset-cell')];
+    const bad = [];
+    let api = 0;
+    for (const c of cells) {
+      const full = c.dataset.src || '';
+      const src = c.querySelector('img').getAttribute('src') || '';
+      if (full.startsWith('/api/')) {
+        api++;
+        if (!src.startsWith('/api/thumb') || !/[?&]w=320/.test(src) || !src.includes(encodeURIComponent(full))) {
+          bad.push({ full: full.slice(0, 30), src: src.slice(0, 30) });
+        }
+      } else if (src !== full) {
+        bad.push({ full: full.slice(0, 20), src: src.slice(0, 20) });
+      }
+    }
+    return { n: cells.length, api, bad: bad.slice(0, 3) };
   })()`);
-  check('格子里的图走缩略图接口，原图地址留在 data-src（点开大图还是原图）',
-    !!thumb && thumb.src.startsWith('/api/thumb') && thumb.w === true && thumb.full.startsWith('/api/'),
-    JSON.stringify(thumb));
+  check('格子的图按规则取地址：/api/ 资产走缩略图、dataURL 原样用，原图地址都留在 data-src',
+    thumb.n > 0 && thumb.bad.length === 0, JSON.stringify(thumb));
+  if (thumb.api === 0) {
+    skip('格子里的图走缩略图接口（w=320）', '本机资产列表里没有 /api/ 资产，这一半没东西可验');
+  }
 
   // 框选：拖一个框，框到的格子一次全选中
   const marqBox = await page.evaluate(`(() => {
@@ -7038,12 +7083,15 @@ try {
       const t = b.querySelector('.cap-tag');
       return t ? t.textContent.trim() : '';
     };
+    // 两个合法标记：「未配置」= 去配一下就好；「不支持」= 本地压根没这个能力（剪辑），配不了。
+    // 灰了却什么都不说才是问题——那才是把状态只画成颜色。
+    const OK_TAG = ['未配置', '不支持'];
     return {
       labels: btns.map((b) => b.querySelector('.cap-label').textContent.trim()),
       nativeDisabled: btns.filter((b) => b.disabled).length,
       ariaOff: btns.filter(isOff).map((b) => b.querySelector('.cap-label').textContent.trim()),
       tags: btns.map((b) => b.querySelector('.cap-label').textContent.trim() + '=' + tagOf(b)),
-      offWithoutTag: btns.filter((b) => isOff(b) && tagOf(b) !== '未配置')
+      offWithoutTag: btns.filter((b) => isOff(b) && !OK_TAG.includes(tagOf(b)))
         .map((b) => b.querySelector('.cap-label').textContent.trim()),
       onWithTag: btns.filter((b) => !isOff(b) && tagOf(b) !== '')
         .map((b) => b.querySelector('.cap-label').textContent.trim()),
@@ -7061,9 +7109,11 @@ try {
   check('起始页：说明缩短为一句，不再和能力卡文案重复',
     /^也可双击空白处添加节点$/.test(capBase.sub.trim()) && !/直接放下一个/.test(capBase.sub),
     capBase.sub);
-  // 灰度不是状态表达：点不动的能力必须挂一个「未配置」小字，读屏和色弱用户都能拿到。
-  // 反过来可用的按钮不该挂，否则「未配置」变成装饰。
-  check('起始页：未配置的能力卡挂「未配置」文字标记，不只靠灰度',
+  // 灰度不是状态表达：点不动的能力必须挂一个文字标记，读屏和色弱用户都能拿到。
+  // 「未配置」和「不支持」是两件事（前者去配一下就好，后者本地没有这个能力），
+  // 所以两个都算合格标记；不合格的是「灰了但什么都不说」。
+  // 反过来可用的按钮不该挂，否则标记变成装饰。
+  check('起始页：点不动的能力卡挂文字标记（未配置 / 不支持），不只靠灰度',
     capBase.ariaOff.length > 0 && capBase.offWithoutTag.length === 0 && capBase.onWithTag.length === 0,
     JSON.stringify(capBase.tags));
   // 两种环境都要过：连不上时提示条必须出现且说人话；连得上时它必须收起（别平白吓人）
@@ -7278,8 +7328,12 @@ try {
     /服务已关闭/.test(downText) && !reachable, `${downText} · reachable=${reachable}`);
 
 } catch (e) {
-  // 带上栈：只有一句 message 时，翻半天也定位不到是哪一步炸的（真踩过）
-  check('运行过程未抛错', false, String(e && e.stack ? e.stack : e));
+  if (e instanceof StopRun) {
+    console.log(`\n（${e.message} 命中，提前收工）`);
+  } else {
+    // 带上栈：只有一句 message 时，翻半天也定位不到是哪一步炸的（真踩过）
+    check('运行过程未抛错', false, String(e && e.stack ? e.stack : e));
+  }
 } finally {
   if (page) await page.close();
   if (chromeCtx) await stopChrome(chromeCtx);
@@ -7287,8 +7341,14 @@ try {
   rmDir(dataDir);
 }
 
+const skipped = results.filter((r) => r.skipped);
 const failed = results.filter((r) => !r.ok);
-console.log(`\n共 ${results.length} 项：通过 ${results.length - failed.length} · 失败 ${failed.length}`);
+console.log(`\n共 ${results.length} 项：通过 ${results.length - failed.length - skipped.length}`
+  + `${skipped.length ? ` · 跳过 ${skipped.length}` : ''} · 失败 ${failed.length}`);
+if (skipped.length) {
+  console.log('跳过的（环境相关，不是没测）：');
+  for (const s of skipped) console.log(`  - ${s.name}：${s.detail}`);
+}
 if (fs.existsSync(path.join(TMP, 'chrome-profile'))) {
   rmDir(path.join(TMP, 'chrome-profile'));
 }
