@@ -170,7 +170,8 @@ def build_app() -> Path:
 # 用 $0 反推项目根（Contents/MacOS/ 往上三层），所以整个 .app 可以跟着项目一起搬。
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 if [ ! -f "$ROOT/启动.command" ]; then
-  osascript -e 'display alert "找不到 启动.command" message "InfiSheet.app 必须放在项目根目录里（和 启动.command 同一层）。"' >/dev/null 2>&1
+  MSG="InfiSheet.app 必须放在项目根目录里（和 启动.command 同一层）。"
+  osascript -e "display alert \"找不到 启动.command\" message \"$MSG\"" >/dev/null 2>&1
   exit 1
 fi
 exec open -a Terminal "$ROOT/启动.command"

@@ -176,7 +176,7 @@ def app_version() -> str:
             return ver
     except Exception:  # noqa: BLE001 —— package.json 读不到就用内置默认版本号
         pass
-    return "1.2.1"
+    return "1.3.0"
 
 
 
