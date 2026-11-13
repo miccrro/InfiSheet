@@ -1722,8 +1722,33 @@
     return out;
   }
 
-  // @[名字] 是给人看的引用标记，进 ComfyUI 之前必须处理掉，否则会当成提示词的一部分发给模型。
-  // 但**不能直接删**：「把 @[甲] 的人物放进 @[乙] 的场景」删完会变成「把 的人物放进 的场景」，
+  /* ---------------- 提示词：多个文本节点串起来 ---------------- */
+  // 提示词可以从**多个**文本节点来，两种连法都算：
+  //   * 链式：A → B → 图片（B 是 A 的下游，A 先拼）
+  //   * 直连：A、B 各自连到图片（按画布上从左到右排）
+  // 以前只取第一个直连的文本节点，链式上游那段根本没进模型，多连的那几个也被静默丢掉。
+  // seen 在递归前就打上：两条路都能走到同一个节点时只算一次，也顺手挡住环。
+  // 返回 [{ text, node }]：node 是给「提示词来自 文本节点「X」」那种说明用的。
+  function promptSegmentsOf(n) {
+    const out = [];
+    const seen = new Set();
+    const textsInto = (id) => state.links
+      .filter((l) => l.to === id && l.toKey === 'in')
+      .map((l) => getNode(l.from))
+      .filter((x) => x && x.type === 'text')
+      .sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    const walk = (node) => {
+      if (!node || node.type !== 'text' || seen.has(node.id)) return;
+      seen.add(node.id);
+      textsInto(node.id).forEach(walk);          // 更上游的先来
+      const v = String(node.value || '').trim();
+      if (v) out.push({ text: v, node });
+    };
+    textsInto(n.id).forEach(walk);
+    return out;
+  }
+
+  // @[名字] 是给人看的引用标记，进 ComfyUI 之前必须处理掉，否则会当成提示词的一部分发给模型。  // 但**不能直接删**：「把 @[甲] 的人物放进 @[乙] 的场景」删完会变成「把 的人物放进 的场景」，
   // 模型既不知道在说哪张图，连句子都不通顺了——这就是「@ 的图片识别不准」。
   // 正确做法是换成工作流里那套指代：图1 / 图2（和 images.image_1、image_2 一一对应）。
   // refs: [{ label }]，顺序就是它们被绑进工作流的顺序（第 1 张 = 图1）。
@@ -3055,8 +3080,8 @@
     panel.appendChild(chips);
 
     // 大输入框
-    const upstreamText = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from)).find((x) => x && x.type === 'text');
+    // 面板里要不要提「上游还有提示词」：链式串上来的也算（见 promptSegmentsOf）
+    const hasUpstreamText = promptSegmentsOf(n).length > 0;
     // 参考图缩略图：连线进来的 / @ 引用的，都摆在提示词上方（对齐参考图里那排缩略图）
     buildRefsStrip(n, panel);
     // 提示词用 contenteditable：`@[名字]` 要渲染成内联缩略图胶囊，textarea 做不到。
@@ -3067,8 +3092,8 @@
     ta.spellcheck = false;
     ta.setAttribute('role', 'textbox');
     ta.setAttribute('aria-multiline', 'true');
-    ta.dataset.ph = upstreamText
-      ? '（提示词来自左侧文本节点，这里再写内容不会覆盖它）'
+    ta.dataset.ph = hasUpstreamText
+      ? '（左侧文本节点会拼在前面，这里写的接在它后面）'
       : '可直接文字生图，或上传图片后输入指令对图片进行编辑，如：将背景改为雪夜；输入 @ 可引用画布上的图片';
     fillPrompt(ta, g.prompt || '', n);
     // 提示词超出可视高度时给底部加渐隐：否则最后一行被硬切一半，很像「排版坏了」
@@ -3417,11 +3442,11 @@
     }
     // 这一轮真正喂给模型的「节点自己的图」：扩图时是撑大的画布，否则就是节点上那张
     const srcURL = bake ? bake.url : n.dataURL;
-    // 上游：文本当提示词；图片当参考图（也可以挂在这条文本节点上，随它一起送进来）
-    const inLinks = state.links.filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from)).filter(Boolean);
-    const textIn = inLinks.find((x) => x.type === 'text');
-    const rawPrompt = (textIn ? (textIn.value || '') : g.prompt) || '';
+    // 提示词：所有上游文本节点（链式 + 直连）按顺序拼起来，面板里写的那段接在最后。
+    // 面板不再「有上游就整个作废」——那样在面板里补一句永远不生效，用户只会觉得白写了。
+    const segs = promptSegmentsOf(n).map((s) => s.text);
+    const panelPrompt = String(g.prompt || '').trim();
+    const rawPrompt = [...segs, panelPrompt].filter(Boolean).join('\n\n');
     // 风格：把模板套在提示词外层（Style: … Subject: 你的词）。这里必须 await ——
     // 风格提示词不在节点上、而是要按需从 styles/ 读，读不到就照常生成（不能因为风格库挂了就不出图）。
     let styleEntry = null;
@@ -3431,7 +3456,7 @@
     }
     const promptText = styleEntry ? applyStylePrompt(rawPrompt, styleEntry) : rawPrompt;
     // 只选了风格、没写提示词也能出图（模板本身就是完整的提示词）
-    if (!promptText.trim()) { flash(textIn ? '左侧文本节点是空的' : '先写提示词'); bail(); return; }
+    if (!promptText.trim()) { flash('先写提示词：面板里写，或连一个文本节点过来'); bail(); return; }
     // 参考图全上传（能传几张算几张）。以前只传第一张：用户 @ 了两张，第二张根本进不去，
     // 提示词里还留着指代——「@ 的图识别不准」有一半是这里。
     const refs = refsOf(n);
@@ -8308,19 +8333,23 @@
       };
     });
   }
-  // 这个节点「真正会用」的提示词。连了文本节点的时候，实际送进工作流的是文本节点里的字
-  // （面板里写的不生效，那句 placeholder 早就提示过了），可详情以前只读 gen.prompt ——
-  // 于是「用提示词节点出的图」在大图详情里永远是「（没有关联的提示词）」。
+  // 这个节点「真正会用」的提示词：上游文本节点（链式 + 直连）按顺序拼起来，
+  // 面板里写的那段接在最后——和 genOne 里 rawPrompt 的拼法完全一致。
+  // 以前只读第一个文本节点，面板那段被当成「不生效」，详情里也就只显示半截。
   // 注意别反过来把值写回 gen.prompt：那样拆掉连线后，面板里会凭空多出一段没写过的词。
   function promptOf(n) {
     const g = (n && n.gen) || {};
-    const textIn = state.links
-      .filter((l) => l.to === n.id && l.toKey === 'in')
-      .map((l) => getNode(l.from))
-      .find((x) => x && x.type === 'text' && String(x.value || '').trim());
-    if (textIn) return { text: String(textIn.value || '').trim(), from: `文本节点「${textIn.title || '提示词'}」` };
+    const segs = promptSegmentsOf(n);
     const own = String(g.prompt || '').trim();
-    if (own) return { text: own, from: '' };
+    if (segs.length || own) {
+      const src = segs.length
+        ? `文本节点${segs.length > 1 ? `等 ${segs.length} 个` : `「${segs[0].node.title || '提示词'}」`}`
+        : '';
+      return {
+        text: [...segs.map((s) => s.text), own].filter(Boolean).join('\n\n'),
+        from: [src, own ? '面板' : ''].filter(Boolean).join(' + '),
+      };
+    }
     // 面板空、连线也没了（文本节点被删掉或断开）：退回最近一次生成用的那段。
     // 图确实是那段词出出来的，比摆一句「没有关联的提示词」有用。
     const last = String(((g.runs || [])[0] || {}).prompt || '').trim();
