@@ -32,6 +32,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -40,6 +41,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -101,6 +103,69 @@ UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 UPDATE_TTL = 600          # 匿名 GitHub API 每小时只给 60 次，10 分钟内复用上一次结果
 UPDATE_TIMEOUT = 8
 _UPDATE_CACHE: dict = {"at": 0.0, "data": None}
+
+
+def update_install_block_reason() -> str:
+    """自动替换只支持发行 ZIP 安装，避免覆盖源码树或容器层。"""
+    if (ROOT / ".git").exists():
+        return "当前是 Git 源码目录，请用 Git 拉取更新"
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return "容器版本请通过镜像更新"
+    if not (ROOT / "tools" / "update_worker.py").is_file():
+        return "当前安装包缺少更新组件，请先下载完整发行包"
+    return ""
+
+
+def update_status_path() -> Path:
+    install_id = hashlib.sha256(os.fsencode(str(ROOT))).hexdigest()[:12]
+    return DATA / f".update-status-{install_id}.json"
+
+
+def write_update_status(task_id: str, status: str, version: str, message: str) -> None:
+    path = update_status_path()
+    tmp = path.with_name(path.name + f".{uuid.uuid4().hex[:8]}.tmp")
+    payload = {"taskId": task_id, "status": status, "version": version,
+               "message": message, "updatedAt": time.time()}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+class _ReleaseAssetLinks(HTMLParser):
+    def __init__(self, repo: str, tag: str, version: str):
+        super().__init__()
+        self.repo = repo
+        self.tag = tag
+        self.version = version
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
+        if tag != "a":
+            return
+        href = dict(attrs).get("href") or ""
+        path = urllib.parse.unquote(urllib.parse.urlsplit(href).path)
+        prefix = f"/{self.repo}/releases/download/{self.tag}/"
+        name = Path(path).name
+        if (path.startswith(prefix) and _is_app_release_zip(name, self.version)
+                and "/" not in name and "\\" not in name):
+            self.links.append(urllib.parse.urlunsplit(("https", "github.com", path, "", "")))
+
+
+def latest_release_zip_via_page(tag: str, version: str) -> str:
+    """API 限流时从 GitHub 的发行资产列表取程序 ZIP 下载链接。"""
+    if not re.fullmatch(r"v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?", tag):
+        return ""
+    page = f"https://github.com/{UPDATE_REPO}/releases/expanded_assets/{urllib.parse.quote(tag, safe='')}"
+    try:
+        req = urllib.request.Request(page, headers={"User-Agent": f"InfiSheet/{app_version()}"})
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+            raw = resp.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            return ""
+        parser = _ReleaseAssetLinks(UPDATE_REPO, tag, version)
+        parser.feed(raw.decode("utf-8", errors="replace"))
+        return parser.links[0] if parser.links else ""
+    except Exception:  # noqa: BLE001 -- public release HTML is only a rate-limit fallback
+        return ""
 
 
 def app_version() -> str:
@@ -574,8 +639,10 @@ def comfy_reachable(timeout: float = 3) -> bool:
 
 def version_key(raw) -> tuple:
     """v1.2.10 比 v1.2.9 新——按数字段比，字符串比会得出反的结论。缺的段当 0。"""
-    nums = re.findall(r"\d+", str(raw or ""))
-    return tuple(int(x) for x in nums[:4]) or (0,)
+    match = re.match(r"^[vV]?(\d+(?:\.\d+)*)", str(raw or "").strip())
+    nums = match.group(1).split(".") if match else []
+    parts = [int(x) for x in nums[:4]]
+    return tuple(parts + [0] * (4 - len(parts)))
 
 
 def update_check(force: bool = False) -> dict:
@@ -588,8 +655,9 @@ def update_check(force: bool = False) -> dict:
     if not force and _UPDATE_CACHE["data"] and now - _UPDATE_CACHE["at"] < UPDATE_TTL:
         return _UPDATE_CACHE["data"]
     cur = app_version()
-    out = {"ok": True, "current": cur, "latest": "", "hasUpdate": False,
-           "url": UPDATE_PAGE, "notes": "", "publishedAt": "", "zip": ""}
+    out = {"ok": True, "current": cur, "latest": "", "tag": "", "hasUpdate": False,
+           "url": UPDATE_PAGE, "notes": "", "publishedAt": "", "zip": "",
+           "zipSha256": ""}
     try:
         req = urllib.request.Request(UPDATE_API, headers={
             "User-Agent": f"InfiSheet/{cur}",      # GitHub API 不带 UA 会直接 403
@@ -604,7 +672,13 @@ def update_check(force: bool = False) -> dict:
             # 从跳转后的地址里抠 tag —— 这条路不占 API 配额，拿不到更新说明但够判断版本。
             tag = latest_tag_via_redirect()
             if tag:
+                latest = str(tag).lstrip("vV").strip()
                 out.update(latest_payload(cur, tag))
+                out["zip"] = latest_release_zip_via_page(tag, latest)
+                block_reason = update_install_block_reason()
+                out["canInstall"] = not block_reason and bool(out["zip"])
+                out["installReason"] = block_reason or (
+                    "GitHub 暂未提供程序 ZIP 下载地址" if not out["zip"] else "")
                 _UPDATE_CACHE.update({"at": now, "data": out})
                 return out
             out.update({"ok": False, "error": "GitHub 限流了，过一会儿再试"})
@@ -616,31 +690,53 @@ def update_check(force: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001 —— 网络 / 解析都可能失败，转成 ok=false + 原因
         out.update({"ok": False, "error": f"连不上 GitHub（{type(exc).__name__}）"})
         return out
-    latest = str(info.get("tag_name") or "").lstrip("vV").strip()
-    if not latest:
+    if not isinstance(info, dict):
+        out.update({"ok": False, "error": "GitHub 返回的发布信息格式不正确"})
+        return out
+    tag = str(info.get("tag_name") or "").strip()
+    if not re.fullmatch(r"v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?", tag):
         out.update({"ok": False, "error": "发布信息里没有版本号"})
         return out
-    zip_url = next((a.get("browser_download_url") for a in (info.get("assets") or [])
-                    if str(a.get("name") or "").endswith(".zip")), "")
+    latest = tag.lstrip("vV").strip()
+    assets = info.get("assets")
+    if not isinstance(assets, list):
+        assets = []
+    zip_asset = next((a for a in assets if isinstance(a, dict)
+                      and _is_app_release_zip(str(a.get("name") or ""), latest)), None)
+    zip_url = str((zip_asset or {}).get("browser_download_url") or "")
+    zip_digest = str((zip_asset or {}).get("digest") or "")
+    zip_sha256 = zip_digest[7:].lower() if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", zip_digest) else ""
     out.update({
+        "tag": tag,
         "latest": latest,
         "hasUpdate": version_key(latest) > version_key(cur),
-        "url": info.get("html_url") or UPDATE_PAGE,
+        "url": f"https://github.com/{UPDATE_REPO}/releases/tag/{urllib.parse.quote(tag, safe='')}",
         "notes": str(info.get("body") or "")[:1200],
         "publishedAt": info.get("published_at") or "",
         "zip": zip_url or "",
+        "zipSha256": zip_sha256,
     })
+    block_reason = update_install_block_reason()
+    out["canInstall"] = not block_reason and bool(out["zip"])
+    out["installReason"] = block_reason or ("GitHub 暂未提供程序 ZIP 下载地址" if not out["zip"] else "")
     _UPDATE_CACHE.update({"at": now, "data": out})     # 只缓存成功的那次，失败下次重试
     return out
 
 
+def _is_app_release_zip(name: str, version: str) -> bool:
+    prefix = f"infisheet-{version}"
+    return (name.lower().endswith(".zip") and not name.startswith("infisheet-data-")
+            and (name == f"{prefix}.zip" or name.startswith(f"{prefix}-")))
+
+
 def latest_payload(cur: str, tag: str) -> dict:
-    """只有 tag 时的结果（API 限流的退路用）：版本够判断，说明和附件留空。"""
+    """只有 tag 时的结果（API 限流的退路用）：版本与页面资产链接够判断和下载。"""
     latest = str(tag or "").lstrip("vV").strip()
     return {"latest": latest,
+            "tag": str(tag or ""),
             "hasUpdate": version_key(latest) > version_key(cur),
             "url": f"https://github.com/{UPDATE_REPO}/releases/tag/{tag}",
-            "notes": "", "publishedAt": "", "zip": ""}
+            "notes": "", "publishedAt": "", "zip": "", "zipSha256": ""}
 
 
 def latest_tag_via_redirect() -> str:
@@ -2743,6 +2839,94 @@ class Handler(BaseHTTPRequestHandler):
         self.json_out({"ok": True, "stopping": True})
         threading.Thread(target=_shutdown_soon, daemon=True).start()
 
+    def api_update_install(self):
+        """准备更新包后由独立进程替换文件并重启。"""
+        origin = self.headers.get("Origin") or ""
+        host = self.headers.get("Host") or ""
+        if origin and urllib.parse.urlsplit(origin).netloc != host:
+            self.drain_body()
+            return self.fail("跨站请求被拒绝", 403)
+        self.drain_body()
+        reason = update_install_block_reason()
+        if reason:
+            return self.fail(reason, 400)
+
+        update = update_check(force=True)
+        if not update.get("ok"):
+            return self.fail(str(update.get("error") or "暂时无法检查更新"), 502)
+        if not update.get("hasUpdate"):
+            return self.fail("当前已经是最新版本", 409)
+
+        tag = str(update.get("tag") or "")
+        version = str(update.get("latest") or "")
+        download_url = str(update.get("zip") or "")
+        if not download_url:
+            download_url = latest_release_zip_via_page(tag, version)
+        parsed = urllib.parse.urlsplit(download_url)
+        expected_path = f"/{UPDATE_REPO}/releases/download/{urllib.parse.quote(tag, safe='')}/"
+        asset_name = (urllib.parse.unquote(parsed.path[len(expected_path):])
+                      if parsed.path.startswith(expected_path) else "")
+        if (not tag or not version or parsed.scheme != "https" or parsed.hostname != "github.com"
+                or parsed.username or parsed.password or parsed.port not in (None, 443)
+                or parsed.query or parsed.fragment or "/" in asset_name
+                or not _is_app_release_zip(asset_name, version)):
+            return self.fail("找不到此版本对应的 InfiSheet 程序 ZIP；请打开 Release 页面手动下载", 503,
+                             {"url": update.get("url") or UPDATE_PAGE})
+
+        worker_source = ROOT / "tools" / "update_worker.py"
+        work_dir = Path(tempfile.mkdtemp(prefix="infisheet-update-"))
+        task_id = uuid.uuid4().hex
+        shutdown_host = str(self.server.server_address[0] or "127.0.0.1")
+        if shutdown_host in ("0.0.0.0", "::", ""):
+            shutdown_host = "127.0.0.1"
+        try:
+            worker_copy = work_dir / "update_worker.py"
+            shutil.copy2(worker_source, worker_copy)
+            manifest_path = work_dir / "update.json"
+            manifest = {
+                "repo": UPDATE_REPO,
+                "root": str(ROOT),
+                "pid": os.getpid(),
+                "port": PORT,
+                "python": sys.executable,
+                "args": sys.argv[1:],
+                "current_version": str(update.get("current") or app_version()),
+                "task_id": task_id,
+                "status_path": str(update_status_path()),
+                "tag": tag,
+                "version": version,
+                "url": download_url,
+                "sha256": str(update.get("zipSha256") or ""),
+                "health_host": shutdown_host,
+                "shutdown_url": f"http://{shutdown_host}:{PORT}/api/shutdown",
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            write_update_status(task_id, "starting", version, "更新程序已启动")
+            if os.name != "nt":
+                os.chmod(manifest_path, 0o600)
+            options = {
+                "cwd": str(ROOT),
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "close_fds": True,
+            }
+            if os.name == "nt":
+                options["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x8)
+                                             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
+            else:
+                options["start_new_session"] = True
+            subprocess.Popen([sys.executable, str(worker_copy), str(manifest_path)], **options)
+        except Exception as exc:  # noqa: BLE001 -- startup errors should leave the current server untouched
+            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                write_update_status(task_id, "error", version,
+                                    f"无法启动更新程序（{type(exc).__name__}）")
+            except OSError:
+                pass
+            return self.fail(f"无法启动更新程序（{type(exc).__name__}）", 500)
+        return self.json_out({"ok": True, "starting": True, "taskId": task_id, "version": version,
+                              "message": "更新包正在下载和校验；服务随后会重启"}, 202)
+
     def api_set_comfy(self):
         """改 ComfyUI 地址：校验 → 试连 → 存盘 → 立即生效。
 
@@ -2924,6 +3108,20 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 —— 检查更新失败要回 ok=false + 原因，不是 500
                 return self.json_out({"ok": False, "current": app_version(),
                                       "error": f"{type(exc).__name__}: {exc}"})
+
+        if path == "/api/update/status":
+            status_file = update_status_path()
+            try:
+                if status_file.is_symlink() or status_file.stat().st_size > 8192:
+                    return self.json_out({"ok": True, "status": "idle"})
+                status = json.loads(status_file.read_text(encoding="utf-8"))
+                if not isinstance(status, dict):
+                    raise ValueError("invalid update status")
+                return self.json_out({"ok": True, **status})
+            except FileNotFoundError:
+                return self.json_out({"ok": True, "status": "idle"})
+            except (OSError, ValueError):
+                return self.json_out({"ok": True, "status": "idle"})
 
         if path == "/api/mcp/setup":
             # 「怎么把 AI 接进来」全在这里：端点、stdio 命令、三个客户端的配置文件路径与片段
@@ -3165,6 +3363,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/shutdown":
             return self.api_shutdown()
+
+        if path == "/api/update/install":
+            return self.api_update_install()
 
         # 提示词预设的写操作（列表走 api_get）。一个入口靠 op 分发
         if path == "/api/prompts":
@@ -4491,6 +4692,7 @@ def main():
     global PORT, SERVER
     PORT = args.port
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    PORT = httpd.server_address[1]
     SERVER = httpd
     # 0.0.0.0 不是能打开的地址：浏览器要的是回环地址，对外地址由下面那行提示用户自己拼
     open_host = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host

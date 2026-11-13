@@ -5487,15 +5487,16 @@
                 <button type="button" id="setHelp">教程与快捷键…</button>
               </div>
               <div class="set-sep"></div>
-              <!-- 关于 / 检查更新：只读地看一眼 GitHub 最新 release，不下载、不动本地文件。
+              <!-- 关于 / 检查更新：默认只读；安装需要用户确认，更新器保留数据并回滚失败的程序文件。
                    放在「高级」最后一格——这是个一年点两三次的动作，不该占常驻位置。 -->
               <div class="set-group">关于</div>
               <p class="set-tip">InfiSheet <b id="setAppVer">…</b> · 本地服务 ${location.host}</p>
               <div class="set-actions">
                 <button type="button" id="setCheckUpdate">检查更新</button>
-                <button type="button" id="setUpdateGo" class="hidden">去下载</button>
+                <button type="button" id="setUpdateInstall" class="hidden">下载并安装</button>
+                <button type="button" id="setUpdateGo" class="hidden">打开下载页</button>
               </div>
-              <p class="set-tip" id="setUpdateHint">只查有没有新版本，不会动本地文件。</p>
+              <p class="set-tip" id="setUpdateHint">检查后可确认下载并安装；画布和工作流数据会保留。</p>
             </div>
           </div>
         </div>
@@ -5602,6 +5603,7 @@
     // 版本号本地读（/api/version，不联网），点按钮才去打 GitHub。断网、仓库没发版
     // 都只是把原因写在提示里，不弹错误框——用户点它是想看一句话，不是想处理异常。
     const updBtn = box.querySelector('#setCheckUpdate');
+    const updInstall = box.querySelector('#setUpdateInstall');
     const updGo = box.querySelector('#setUpdateGo');
     const updHint = box.querySelector('#setUpdateHint');
     const verEl = box.querySelector('#setAppVer');
@@ -5623,6 +5625,54 @@
           updHint.textContent = `有新版本 ${r.latest}（当前 ${r.current}）`;
           updGo.classList.remove('hidden');
           updGo.onclick = () => window.open(r.url, '_blank', 'noopener');
+          if (r.canInstall) {
+            updInstall.classList.remove('hidden');
+            updInstall.onclick = async () => {
+              if (!confirm(`下载并安装 InfiSheet ${r.latest}？服务会短暂重启，画布和工作流数据会保留。`)) return;
+              updInstall.disabled = true;
+              updBtn.disabled = true;
+              updHint.textContent = `正在下载并校验 InfiSheet ${r.latest}…`;
+              let taskId = '';
+              try {
+                const started = await api('/api/update/install', { method: 'POST' });
+                if (!started.ok) {
+                  updHint.textContent = `更新未启动：${started.error || '未知原因'}`;
+                  updInstall.disabled = false;
+                  return;
+                }
+                taskId = started.taskId || '';
+                for (let attempt = 0; taskId && attempt < 180; attempt += 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                  try {
+                    const status = await api('/api/update/status');
+                    if (status.taskId !== taskId) continue;
+                    if (status.status === 'error') {
+                      updHint.textContent = status.message || '更新失败，原版本仍可使用。';
+                      updInstall.disabled = false;
+                      updBtn.disabled = false;
+                      return;
+                    }
+                    if (status.status === 'complete') {
+                      updHint.textContent = status.message || `已更新到 InfiSheet ${r.latest}`;
+                      updInstall.textContent = '更新完成';
+                      return;
+                    }
+                    updHint.textContent = status.message || '更新处理中…';
+                  } catch {
+                    // 服务在切换期间会短暂离线；继续轮询，直到新版本重新启动。
+                  }
+                }
+                updHint.textContent = '更新仍在处理中；服务恢复后可重新检查版本。';
+              } catch (err) {
+                updHint.textContent = `更新未启动：${err.message}`;
+                updInstall.disabled = false;
+              } finally {
+                if (!taskId) updBtn.disabled = false;
+              }
+            };
+          } else if (r.installReason) {
+            updHint.textContent += `；${r.installReason}，可打开下载页手动更新。`;
+          }
         } else {
           updHint.textContent = `已是最新（${r.current}）`;
         }

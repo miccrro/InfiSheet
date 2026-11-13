@@ -293,7 +293,7 @@ python tests/mcp.py     # 58 项：协议握手 / 工具链路 / rev 乐观锁 /
   同一个面板跳两次。运行记录那一格**点开才去问 ComfyUI**，所以离线开设置不会先在控制台红一条。
 - **添加工作流**：把 `.json` 拖进画布、双击空白菜单里的「从 JSON 导入…」、「全部功能 → 导入工作流 JSON…」，三条路都是「在落点建一个工作流节点」；载入后自动识别插槽。
 - **全局设置里还有什么**：外观（背景色 / 纹理 + 网格吸附、显示连线、小地图、自动保存四个开关）、连接（ComfyUI 地址 + 保存并测试 / 恢复默认 / 关闭服务）、高级（适配视图 / 导出 / 导入 / 历史画布 + 快捷键 + **关于：显示版本、检查更新**）。开关存 localStorage，跨项目生效。
-- **检查更新**：设置 → 高级 → 关于，显示当前版本，点「检查更新」跟 GitHub 最新 release 比一眼，有新版就多出一个「去下载」（打开 release 页）。**只提示，不下载、不改本地文件**；断网或仓库还没发版就如实写一句原因，不弹错误框。结果在服务端缓存 10 分钟（匿名 GitHub API 每小时只有 60 次）。
+- **检查与安装更新**：设置 → 高级 → 关于，点「检查更新」查看 GitHub 最新 release。有新版时，发行 ZIP 安装可点「下载并安装」；需要再次确认，更新器会先下载并校验 ZIP 与版本，再暂存备份、保留 `data/`、替换程序并重启。新版启动检查失败会恢复旧文件并重新启动旧版。Git 源码目录和 Docker 容器不自动覆盖，仍可打开 Release 页手动更新。GitHub API 限流时会尝试从发行页读取版本和程序 ZIP 链接；断网或没有可用 ZIP 时会说明原因。检查结果缓存 10 分钟。
 - **复制 / 粘贴**：选中节点后 `Ctrl+C`，`Ctrl+V` 粘到鼠标位置（节点之间的连线一起复制），`Ctrl+D` 原地创建副本；「全部功能」菜单里也有。
 - **撤销 / 重做**：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z`（或 `Ctrl+Y`）重做，最多 40 步。快照只包含画布结构（节点/连线/分组/参数），不包含缩放位置；「全部功能」菜单里也有这两项。
 - **图片右上角显示原始尺寸**：`1024 × 1024` 这类像素尺寸浮在图片右上角，生成/上传/切换组图后自动更新；空节点不显示。
@@ -397,7 +397,9 @@ infisheet/
 |---|---|---|
 | GET | `/api/health` | ComfyUI 版本、显存、队列长度；`comfy_url` / `comfy_source` 说明当前连的是哪台 |
 | GET | `/api/version` | 本地版本号（读 `package.json`，不联网）+ 仓库地址；设置里「关于」那一行用它 |
-| GET | `/api/update/check` | 比对 GitHub 最新 release：`current` / `latest` / `hasUpdate` / `url` / `notes` / `zip`。结果缓存 10 分钟，`?force=1` 绕过；断网、还没发版、限流都只回 `ok:false + error`，不抛 5xx。**只查不下载，不动本地文件** |
+| GET | `/api/update/check` | 比对 GitHub 最新 release：`current` / `latest` / `hasUpdate` / `url` / `notes` / `zip` / `canInstall`。结果缓存 10 分钟，`?force=1` 绕过；限流时回退到 Release 页面读取版本和程序 ZIP。只检查，不下载 |
+| POST | `/api/update/install` | 无请求体；发行 ZIP 安装且确有新版时，在独立更新进程中下载、校验并暂存，然后关闭服务、备份并替换程序文件、重启和验证新版；失败时回滚。拒绝 Git 源码目录和容器安装；`data/` 不在更新包内，也不会被更新器覆盖 |
+| GET | `/api/update/status` | 读取当前更新任务状态：下载、校验、重启、完成或失败；不返回启动参数或令牌 |
 | GET | `/api/comfy` | 当前 ComfyUI 地址 + 来源（默认 / 环境变量 / 设置 / 命令行）+ 试连结果（`reachable` / `version` / `ms` / `error`） |
 | POST | `/api/comfy` | `{url}` → 校验（只收 http/https、端口 1~65535）→ 试连 → 存进 `settings.json` 并立即生效；连不上也保存，回 `saved:true, reachable:false, error:...`。`url` 传空 = 清掉自定义、回到启动时那一份 |
 | GET | `/api/models/{folder}` | 列出 `checkpoints` / `diffusion_models` / `loras` 等 |
