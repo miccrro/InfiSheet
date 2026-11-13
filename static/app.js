@@ -4222,7 +4222,7 @@
   }
 
   function createAssetGridRenderer(ctx) {
-    const { grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid,
+    const { grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid, paintSelection,
       paintPath, paintActions, renameAsset } = ctx;
     const thumbURL = (item) => {
         const u = String(item.url || '');
@@ -4629,7 +4629,7 @@
     const cellByKey = new Map();
     const clickState = { suppressClick: false };
     const paint = createAssetGridRenderer({
-      grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid,
+      grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid, paintSelection,
       paintPath, paintActions, renameAsset,
     });
 

@@ -4482,6 +4482,7 @@ def main():
         root=ROOT, static=STATIC, data=DATA, library=LIBRARY,
         comfy_json=comfy_json, comfy_request=comfy_request,
         analyze_graph=analyze_graph, list_library=list_library,
+        save_project_canvas=save_project_canvas,
         graph_category=graph_category, job_status=job_status,
         auto_import_assets=auto_import_assets,
         client_id=PROGRESS_CLIENT, mcp_lease=args.mcp_lease,
