@@ -202,10 +202,10 @@ def _proc_table():
                     stat = Path("/proc", d, "stat").read_text(errors="replace")
                     comm = Path("/proc", d, "comm").read_text(errors="replace").strip()
                     ppid = int(stat.rsplit(")", 1)[1].split()[1])
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001 —— 非 Linux 或进程已退出，读不到就跳过这一条
                     continue
                 table[int(d)] = (ppid, comm)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 进程表建不起来就不做父进程判断
         # 拿不到进程树不是错误路径：退回到「没有宿主名」，灯上就只说「MCP 已连接」
         return table
     return table
@@ -376,7 +376,7 @@ def data_dir() -> Path:
 def _read_json(path):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 配置读不了当没有，别让客户端连不上
         return None
 
 
@@ -422,22 +422,8 @@ def load_canvas(pid: str) -> dict:
 
 
 def save_canvas(pid: str, canvas: dict, base_rev=None, writer: str = "mcp") -> dict:
-    """带 rev 乐观锁的保存。
-
-    rev 只由服务端递增，客户端只上报「我是从哪一版改的」。base_rev 落后就拒绝，
-    这样浏览器和 MCP 同时开着时不会互相静默覆盖——这是能「看着 AI 改画布」的前提。
-    """
-    path = projects_dir() / f"{pid}.json"
-    prev = _read_json(path) or {}
-    prev_rev = int(prev.get("rev") or 0)
-    if base_rev is not None and int(base_rev) < prev_rev:
-        return {"ok": False, "conflict": True, "rev": prev_rev,
-                "lastWriter": prev.get("lastWriter") or ""}
-    canvas["rev"] = prev_rev + 1
-    canvas["lastWriter"] = writer
-    canvas["savedAt"] = int(time.time() * 1000)
-    path.write_text(json.dumps(canvas, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"ok": True, "conflict": False, "rev": canvas["rev"]}
+    """Use the server's locked, atomic project save path."""
+    return E().save_project_canvas(pid, canvas, base_rev=base_rev, writer=writer)
 
 
 def mutate(pid: str, fn, writer: str = "mcp", retries: int = 3):
@@ -684,7 +670,7 @@ def calc_dims(aspect: str = "1:1", size: str = "1k", custom=None) -> dict:
     long_side_px = SIZE_PX.get(size, 1024)
     try:
         a, b = [float(x) for x in str(aspect).split(":")]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 比例写错就回落到默认尺寸，别让工具直接失败
         a, b = 1.0, 1.0
     if a <= 0 or b <= 0:
         a = b = 1.0
@@ -1297,9 +1283,9 @@ def _t_status(_args):
             q = E().comfy_json("/queue", timeout=8)
             comfy["running"] = len(q.get("queue_running") or [])
             comfy["pending"] = len(q.get("queue_pending") or [])
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 队列取不到只影响状态展示
             pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 状态查询失败要回错误对象，不能抛给协议层
         comfy = {"online": False, "error": str(exc)[:160]}
     rows = list_project_rows()
     pid = active_project_id()
@@ -1878,7 +1864,7 @@ def _submit_prompt(built: dict) -> tuple:
     status, _, raw = E().comfy_request("POST", "/prompt", body, timeout=60)
     try:
         data = json.loads(raw.decode("utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— ComfyUI 回了非 JSON，按空处理再报错
         data = {}
     if status != 200:
         detail = json.dumps(data.get("error") or data, ensure_ascii=False)[:300]
@@ -1941,7 +1927,7 @@ def _settle_node(pid: str, node_id: str, prompt_id: str, gallery: list, *,
             E().auto_import_assets([
                 f"{it.get('type') or 'output'}:{it.get('subfolder') or ''}/{it['filename']}"
                 for it in gallery if it.get("filename")])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 自动入库失败不影响这次生成结果
             if not _AUTO_IMPORT_WARNED:
                 _AUTO_IMPORT_WARNED = True
                 print(f"[warn] 生成结果没能自动存进资产库：{exc}", file=sys.stderr)
@@ -2079,7 +2065,7 @@ def _t_run_node(args):
         try:
             mutate(pid, lambda c: find_node(c, str(args["node"])).setdefault("gen", {}).update(
                 {"status": "失败：" + msg}))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 标不上失败状态也别把工具调用搞崩
             pass
         raise ToolError("生成失败：" + msg)
 
@@ -2256,7 +2242,7 @@ def _t_cancel_job(args):
         try:
             mutate(pid, lambda c: find_node(c, str(args["node"])).setdefault("gen", {}).update(
                 {"status": "已取消", "pid": None}))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 标不上取消状态也别把工具调用搞崩
             pass
     return {"text": f"已取消 {prompt_id}", "data": {"prompt_id": prompt_id}}
 
@@ -2412,7 +2398,7 @@ def handle(payload):
             result = {"content": [{"type": "text",
                                    "text": f"连不上 ComfyUI：{exc}。确认 ComfyUI 在 8188 上跑着。"}],
                       "isError": True}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 工具执行出错要转成 isError 结果给客户端
             result = {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
                       "isError": True}
         return None if is_notification else _rpc_result(rid, result)
@@ -2457,7 +2443,7 @@ def _wait_server(port: int, timeout: float = 25.0) -> bool:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/projects", timeout=1.5) as res:
                 if res.status == 200:
                     return True
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 没起来就是 False，调用方按超时处理
             time.sleep(0.2)
     return False
 
@@ -2513,7 +2499,7 @@ def stdio_main(port: int = 8788, autostart: bool = True) -> int:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="strict")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 老 Python / 被重定向的流不支持 reconfigure
             pass
     url = f"http://127.0.0.1:{port}/mcp"
     session = {"id": None}
@@ -2538,7 +2524,7 @@ def stdio_main(port: int = 8788, autostart: bool = True) -> int:
         try:
             msg = json.loads(line)
             rid = msg.get("id") if isinstance(msg, dict) else None
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 —— 不是 JSON 的行跳过（stdio 协议允许空行和日志）
             sys.stdout.write(json.dumps(_rpc_error(None, -32700, "JSON 解析失败"), ensure_ascii=False) + "\n")
             sys.stdout.flush()
             continue
@@ -2560,13 +2546,13 @@ def stdio_main(port: int = 8788, autostart: bool = True) -> int:
                 if _wait_server(port):
                     try:
                         resp, sid = _http_post(url, msg, session["id"], client=who["spec"], host=who["host"])
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001 —— 任何转发失败都要回 JSON-RPC 错误，别让客户端干等
                         resp = _rpc_error(rid, -32603, f"连不上 InfiSheet 服务：{exc}")
                 else:
                     resp = _rpc_error(rid, -32603, "拉起 server.py 超时（25s）；手动跑 python server.py 看看报什么错")
             else:
                 resp = _rpc_error(rid, -32603, f"连不上 InfiSheet 服务（127.0.0.1:{port}）")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 任何转发失败都要回 JSON-RPC 错误，别让客户端干等
             resp = _rpc_error(rid, -32603, f"转发失败：{exc}")
         if sid:
             session["id"] = sid
