@@ -5631,18 +5631,39 @@ try {
   // 不看请求体就没法证明「送进去的是 32×16、不是 16×16」。
   await page.evaluate(`(() => {
     window.__runBodies = [];
+    window.__uploadedImageDims = {};
     window.__realFetch = window.fetch;
-    window.fetch = (u, o) => {
+    window.fetch = async (u, o) => {
       const url = String(u);
+      if (url.includes('/api/upload')) {
+        const file = o && o.body && o.body.get('image');
+        const bitmap = file ? await createImageBitmap(file) : null;
+        const name = file && file.name || 'e2e-outpaint.png';
+        if (bitmap) {
+          window.__uploadedImageDims[name] = { w: bitmap.width, h: bitmap.height };
+          bitmap.close();
+        }
+        return new Response(JSON.stringify({ ok: true, image: name, subfolder: '', type: 'input' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/analyze')) {
+        const body = JSON.parse(o.body);
+        const slots = Object.entries(body.graph || {}).flatMap(([node, nd]) => {
+          if (!nd || nd.class_type !== 'LoadImage' || !nd.inputs || !('image' in nd.inputs)) return [];
+          return [{ key: String(node) + '.image', node, input: 'image', kind: 'image', class_type: nd.class_type }];
+        });
+        return new Response(JSON.stringify({ ok: true, slots, autogrow: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       if (url.includes('/api/run')) {
         try { window.__runBodies.push(JSON.parse(o.body).graph); } catch { window.__runBodies.push(null); }
-        return Promise.resolve(new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 }));
+        return new Response(JSON.stringify({ ok: true, prompt_id: 'e2e-outpaint' }), { status: 200 });
       }
       // 轮询也一起挡掉：真去查这个假 pid 会判「任务丢失」→ 触发自动重试 →
       // 重试时扩图框正开着、pad 还是 0，bakeOutpaint 会把框收掉（no-op 分支），
       // 后面的用例就全乱了。这里直接回「跑完了、没有产物」。
       if (url.includes('/api/job')) {
-        return Promise.resolve(new Response(JSON.stringify({ ok: true, status: 'done', artifacts: [] }), { status: 200 }));
+        return new Response(JSON.stringify({ ok: true, status: 'done', artifacts: [] }), { status: 200 });
       }
       return window.__realFetch(u, o);
     };
@@ -5660,12 +5681,7 @@ try {
     const g = bodies[bodies.length - 1] || {};
     const sentLoads = Object.values(g).filter((nd) => nd && nd.class_type === 'LoadImage')
       .map((nd) => nd.inputs && nd.inputs.image).filter(Boolean);
-    const sent = await Promise.all(sentLoads.map((name) => new Promise((res) => {
-      const img = new Image();
-      img.onload = () => res({ name, w: img.naturalWidth, h: img.naturalHeight });
-      img.onerror = () => res({ name, w: 0, h: 0 });
-      img.src = '/api/view?filename=' + encodeURIComponent(name) + '&subfolder=&type=input';
-    })));
+    const sent = sentLoads.map((name) => ({ name, ...(window.__uploadedImageDims[name] || { w: 0, h: 0 }) }));
     // 这里**不**把 fetch 还回去：轮询还在跑，还回去就会查到真服务端、判任务丢失、触发自动重试
     return {
       n: document.querySelectorAll('#nodes .node').length,
@@ -6636,6 +6652,13 @@ try {
       ta.focus();
       ta.textContent = 'auto import';
       ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // 夹具里的 i2 通过 t1 接收提示词节点内容，generateImage 会优先使用这条输入。
+    // 同步更新两处，确保这次测试确实验证「auto import」被继承到结果节点。
+    const linkedPrompt = document.querySelector('#nodes .node[data-id="t1"] .text-body');
+    if (linkedPrompt) {
+      linkedPrompt.textContent = 'auto import';
+      linkedPrompt.dispatchEvent(new Event('input', { bubbles: true }));
     }
     // 上一个用例刚在这个节点上收尾，按钮可能还禁用着；而且面板会随进度重渲染，
     // 抓到的元素随时会脱离文档——所以每一轮都重新查、拿到活的再点。
