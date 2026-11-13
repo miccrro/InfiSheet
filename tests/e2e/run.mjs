@@ -1034,6 +1034,38 @@ try {
   })()`);
   check('点选图片节点', picked);
 
+  const materialMenu = await page.evaluate(`(() => {
+    const node = document.querySelector('.node.selected');
+    const before = node.querySelector('.thumb img')?.getAttribute('src') || '';
+    node.querySelector('.gen-material').click();
+    const menu = document.querySelector('.material-menu');
+    const items = menu ? [...menu.querySelectorAll('.material-item')] : [];
+    return {
+      before,
+      afterOpen: node.querySelector('.thumb img')?.getAttribute('src') || '',
+      title: menu?.querySelector('.popmenu-title')?.textContent,
+      count: items.length,
+      thumbnails: items.every((x) => !!x.querySelector('img')?.getAttribute('src')),
+    };
+  })()`);
+  check('画布素材先打开带缩略图的选择列表，不会直接换成第一张图',
+    materialMenu.title === '选择画布图片' && materialMenu.count >= 2
+      && materialMenu.thumbnails && materialMenu.afterOpen === materialMenu.before,
+    JSON.stringify(materialMenu));
+  const materialPick = await page.evaluate(`(() => {
+    const item = [...document.querySelectorAll('.material-menu .material-item')].at(-1);
+    const expected = item.querySelector('img').getAttribute('src');
+    item.click();
+    return {
+      chosen: document.querySelector('.node.selected .thumb img')?.getAttribute('src') === expected,
+      closed: !document.querySelector('.material-menu'),
+    };
+  })()`);
+  check('选中指定画布素材后才替换当前节点图片',
+    materialPick.chosen && materialPick.closed, JSON.stringify(materialPick));
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 200));
+
   // 面板是同步建的，但「底部渐隐」的 has-more 要等一帧（app.js 里是 requestAnimationFrame 里算的，
   // 因为要先有布局才知道 scrollHeight）。以前这里直接读，偶尔会抢在那一帧之前 → 偶发红。
   await page.waitFor(`!!document.querySelector('.gen-panel .gen-prompt')`, 5000);
@@ -5377,18 +5409,21 @@ try {
       // 面板收成一条：上传 / 画布素材 / 清空 / 风格（.gen-chips）、大提示词框、底下那排
       // （工作流胶囊 / 尺寸胶囊 / 生成）全部让位，面板里还看得见的孩子只剩这条参数条。
       // 注意别去查 .wfsel 的 display —— 它藏在自己的父级里，自身 computed 仍是 flex。
-      hidesDup: !!panel && panel.classList.contains('op-on')
-        && ['.gen-chips', '.gen-refs', '.gen-prompt', '.gen-bar'].every((s) => {
+      sharedUi: !!panel && panel.classList.contains('op-on')
+        && ['.gen-chips', '.gen-prompt'].every((s) => {
+          const x = panel.querySelector(s);
+          return x && getComputedStyle(x).display !== 'none';
+        })
+        && !!panel.querySelector('.gen-status-row .gen-status')
+        && ['.gen-upload', '.gen-material', '.gen-expand', '.gen-style', '.gen-bar'].every((s) => {
           const x = panel.querySelector(s);
           return !x || getComputedStyle(x).display === 'none';
-        })
-        && [...panel.children].filter((c) => getComputedStyle(c).display !== 'none')
-          .every((c) => c === bar),
+        }),
       // 第二行：提示词输入框 + 生成（状态文字也搬进来了，不然它和输入框抢地方）
       rows: bar ? [...bar.children].map((c) => c.className) : [],
-      hasInput: !!bar && !!bar.querySelector('.of-input'),
-      inputTag: bar && bar.querySelector('.of-input') ? bar.querySelector('.of-input').tagName : '',
-      inputVal: bar && bar.querySelector('.of-input') ? bar.querySelector('.of-input').value : '',
+      hasInput: !!panel && !!panel.querySelector('.gen-prompt'),
+      inputTag: panel && panel.querySelector('.gen-prompt') ? panel.querySelector('.gen-prompt').tagName : '',
+      inputVal: panel && panel.querySelector('.gen-prompt') ? panel.querySelector('.gen-prompt').textContent.trim() : '',
       // 面板贴着**画布外框**（和工具条一个逻辑，只是它在下方）：不能压住新扩出来的地方
       frameGap: panel ? Math.round(panel.getBoundingClientRect().top - st.bottom) : null,
       frameDx: panel ? Math.round((panel.getBoundingClientRect().left + panel.getBoundingClientRect().width / 2)
@@ -5398,7 +5433,8 @@ try {
       panelPrompt: panel && panel.querySelector('.gen-prompt')
         ? panel.querySelector('.gen-prompt').textContent.trim() : null,
       runInBar: !!bar && !!bar.querySelector('.gen-run'),
-      statusInBar: !!bar && !!bar.querySelector('.gen-status'),
+      statusInRow: !!panel && !!panel.querySelector('.gen-status-row .gen-status'),
+      cancelBeforeRun: !!bar && !!bar.querySelector('[data-of="cancel"] + .gen-run'),
       // 参数行必须**单行**：以前是 flex-wrap，工作流名 + 读数 + 状态一起变长时，
       // 生成按钮被挤到下一行单独占一行（用户截图里那个孤零零的 ↑）
       paramRow: (() => {
@@ -5412,13 +5448,14 @@ try {
           h: Math.round(rr.height),
           w: Math.round(rr.width),
           scrollW: row.scrollWidth,
+          workflowToOptions: Math.round(kids[1].left - kids[0].right),
           inside: kids.every((r) => r.top >= rr.top - 1 && r.bottom <= rr.bottom + 1),
           // 生成按钮的右边缘不能越过参数条（越了就是溢出到面板外面）
           fits: kids.every((r) => r.right <= rr.right + 1 && r.left >= rr.left - 1),
         };
       })(),
       buttons: bar ? [...bar.querySelectorAll('[data-of]')].map((b) => b.dataset.of) : [],
-      labels: bar ? ['wf', 'size', 'res', 'batch', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
+      labels: bar ? ['wf', 'opts', 'cancel'].map((k) => (btn(k) || {}).textContent.trim()) : [],
       read: bar ? bar.querySelector('.of-read').textContent.trim() : '',
       // 「完成」已经取消：收起扩图只走「取消」，烘像素交给「生成」
       noDone: !(bar && bar.querySelector('[data-op="done"]')),
@@ -5436,38 +5473,40 @@ try {
     outUi.open && outUi.onNode && outUi.anchors.join('/') === 'e/n/ne/nw/s/se/sw/w'
       && outUi.toolsShown && outUi.toolOn && outUi.noModal,
     JSON.stringify(outUi));
-  check('参数条并进了生成面板（在节点里、跟着节点走），面板收成这一条——胶囊 / 大提示词框 / 底下那排都让位',
-    outUi.onNode && outUi.inFlow === 'static' && outUi.hidesDup,
-    JSON.stringify({ onNode: outUi.onNode, pos: outUi.inFlow, hidesDup: outUi.hidesDup }));
-  check('参数条五段：工作流 / 尺寸 / 分辨率 / 数量 / 取消，没有「完成」',
-    outUi.buttons.join('/') === 'wf/size/res/batch/cancel'
-      && outUi.labels[4] === '取消' && outUi.noDone
-      && outUi.labels[0].length > 0 && outUi.labels[2].length > 0 && /^\d+ 张$/.test(outUi.labels[3]),
+  check('扩图沿用生成面板的操作区、提示词框和状态行，隐藏无关操作',
+    outUi.onNode && outUi.inFlow === 'static' && outUi.sharedUi,
+    JSON.stringify({ onNode: outUi.onNode, pos: outUi.inFlow, sharedUi: outUi.sharedUi }));
+  check('扩图底栏整合工作流、参数和取消，工作流显示图标',
+    outUi.buttons.join('/') === 'wf/opts/cancel'
+      && outUi.labels[2] === '取消' && outUi.noDone
+      && outUi.labels[0].length > 0 && /·/.test(outUi.labels[1]),
     JSON.stringify({ buttons: outUi.buttons, labels: outUi.labels }));
-  check('参数条两行：提示词（多行）在上，参数 + 取消 + 生成在下',
-    outUi.rows.join('|') === 'of-row of-prompt|of-row of-params'
-      && outUi.hasInput && outUi.inputTag === 'TEXTAREA'
+  check('扩图参数栏复用生成按钮，取消紧贴在生成按钮左侧',
+    outUi.rows.join('|') === 'of-read|gen-control-row of-row of-params'
+      && outUi.hasInput && outUi.inputTag === 'DIV'
       && outUi.inputVal === outUi.panelPrompt
-      && outUi.runInBar && outUi.statusInBar,
+      && outUi.runInBar && outUi.statusInRow && outUi.cancelBeforeRun,
     JSON.stringify({ rows: outUi.rows, tag: outUi.inputTag, input: outUi.inputVal.slice(0, 18),
       panel: String(outUi.panelPrompt).slice(0, 18),
-      run: outUi.runInBar, status: outUi.statusInBar }));
+      run: outUi.runInBar, status: outUi.statusInRow, cancel: outUi.cancelBeforeRun }));
   check('面板退到画布外框下沿外面（不压住新扩出来的地方），横向对着外框中线',
     outUi.frameGap >= 8 && Math.abs(outUi.frameDx) <= 2,
     JSON.stringify({ gap: outUi.frameGap, dx: outUi.frameDx }));
-  // 工作流名 + 读数 + 状态一起变长时，生成按钮曾被挤到下一行单独占一行。
+  // 工作流名 + 读数变长时，生成按钮不能被挤到下一行。
   // 参数行现在是 nowrap + 能截断的各自截断，所以：同一行、且都不越出这一条。
-  check('参数行是单行：工作流 / 尺寸 / 分辨率 / 张数 / 读数 / 取消 / 状态 / 生成 都在同一行，不溢出',
+  check('参数行是单行：工作流 / 尺寸 / 分辨率 / 张数 / 读数 / 取消 / 生成 都在同一行，不溢出',
     !!outUi.paramRow && outUi.paramRow.inside && outUi.paramRow.fits
       && outUi.paramRow.h < 34 && outUi.paramRow.scrollW <= outUi.paramRow.w + 1,
     JSON.stringify(outUi.paramRow));
-  // 用户截图里的触发条件：状态变成「完成 · 77s · 1 张」、读数也是一长串（1056 × 1216 → 1648 × 1216）
+  check('扩图参数紧贴工作流按钮，中间不留大块空白',
+    !!outUi.paramRow && outUi.paramRow.workflowToOptions >= 0
+      && outUi.paramRow.workflowToOptions <= 8,
+    JSON.stringify(outUi.paramRow));
+  // 状态独占一行；读数变长时，底栏仍保持单行。
   const paramLong = await page.evaluate(`(() => {
     const row = document.querySelector('.node.selected .of-params');
-    const st = row.querySelector('.gen-status');
-    const read = row.querySelector('.of-read');
-    const oldSt = st.textContent, oldRead = read.textContent;
-    st.textContent = '完成 · 77s · 1 张';
+    const read = document.querySelector('.op-bar .of-read');
+    const oldRead = read.textContent;
     read.textContent = '1056 × 1216 → 1648 × 1216';
     const rr = row.getBoundingClientRect();
     const kids = [...row.children].map((c) => c.getBoundingClientRect());
@@ -5477,33 +5516,51 @@ try {
       h: Math.round(rr.height),
       scrollW: row.scrollWidth, w: row.clientWidth,
     };
-    st.textContent = oldSt;
     read.textContent = oldRead;
     return out;
   })()`);
-  check('状态变长（「完成 · 77s · 1 张」）加长读数时，参数行仍然单行、不把生成按钮挤到下一行',
+  check('读数变长时，参数行仍然单行、不把生成按钮挤到下一行',
     paramLong.inside && paramLong.fits && paramLong.h < 34
       && paramLong.scrollW <= paramLong.w + 1,
     JSON.stringify(paramLong));
   check('刚打开时边框和原图一样大（还没扩），尺寸档报「原图」、读数是「原图 → 画布」',
     outUi.stage[0] === outUi.img[0] && outUi.stage[1] === outUi.img[1] && outUi.bands === 0
-      && outUi.labels[1] === '原图'
+      && outUi.labels[1].startsWith('原图 ·')
       && /\d+ × \d+\s+→\s+\d+ × \d+/.test(outUi.read),
     JSON.stringify({ stage: outUi.stage, img: outUi.img, size: outUi.labels[1], read: outUi.read }));
 
-  // 尺寸档现在藏在「尺寸」按钮的下拉里（悬浮条上只显示当前档，不铺一排按钮）
+  // 扩图参数复用生成面板的图形化分组弹层。
   const openOf = (k) => page.evaluate(`document.querySelector('.op-bar [data-of="${k}"]').click()`);
-  const pickMenu = (label) => page.evaluate(`(() => {
-    const b = [...document.querySelectorAll('.popmenu button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+  const pickRatio = (label) => page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.popmenu.gen-opts .go-ratio')].find((x) => x.dataset.value === ${JSON.stringify(label)});
     if (!b) return false;
     b.click();
     return true;
   })()`);
   const clickChip = async (label) => {
-    await openOf('size');
+    await openOf('opts');
     await new Promise((r) => setTimeout(r, 250));
-    if (!await pickMenu(label)) throw new Error(`尺寸菜单里没有「${label}」`);
+    if (!await pickRatio(label)) throw new Error(`画幅网格里没有「${label}」`);
   };
+  await openOf('opts');
+  const outOptions = await page.evaluate(`(() => {
+    const menu = document.querySelector('.popmenu.gen-opts');
+    if (!menu) return null;
+    return {
+      titles: [...menu.querySelectorAll('.go-title')].map((x) => x.textContent),
+      ratioCount: menu.querySelectorAll('.go-ratios .go-ratio').length,
+      glyphCount: menu.querySelectorAll('.go-ratios .go-ratio i').length,
+      resolutionCount: menu.querySelectorAll('.go-sec:nth-child(2) .go-seg button').length,
+      batchCount: menu.querySelectorAll('.go-sec:nth-child(3) .go-seg button').length,
+      foot: menu.querySelector('.go-foot')?.textContent,
+    };
+  })()`);
+  check('扩图参数用画幅图形网格和分辨率、张数按钮组',
+    !!outOptions && outOptions.titles.join('/') === '画幅/分辨率/张数'
+      && outOptions.ratioCount === 8 && outOptions.glyphCount === 5
+      && outOptions.resolutionCount === 3 && outOptions.batchCount === 3
+      && /\d+ × \d+ → \d+ × \d+/.test(outOptions.foot), JSON.stringify(outOptions));
+  await openOf('opts');
   await clickChip('16:9');
   await new Promise((r) => setTimeout(r, 300));
   const outWide = await page.evaluate(`(() => {
@@ -5514,11 +5571,11 @@ try {
              img: [Math.round(im.width), Math.round(im.height)],
              bands: [...el.querySelectorAll('.op-bands i')].length,
              read: document.querySelector('.op-bar .of-read').textContent.trim(),
-             onChip: document.querySelector('.op-bar [data-of="size"]').textContent.trim() };
+             onChip: document.querySelector('.op-bar [data-of="opts"]').textContent.trim() };
   })()`);
   check('选 16:9 → 舞台变横（原图只占中间一条），左右两条新边亮出来，悬浮条上的尺寸档跟着变',
     outWide.stage[0] > outWide.stage[1] && outWide.stage[0] > outWide.img[0]
-      && outWide.bands === 2 && outWide.onChip === '16:9',
+      && outWide.bands === 2 && outWide.onChip.startsWith('16:9 ·'),
     JSON.stringify(outWide));
 
   // 拖右边那个锚点：画布只在右侧变宽，左边那条边纹丝不动（这就是「自定义尺寸」的意义，
@@ -5561,7 +5618,7 @@ try {
              thumbW: Math.round(el.querySelector('.thumb').getBoundingClientRect().width),
              size: document.querySelector('.op-bar .of-read').textContent.trim(),
              opt: (el.querySelector('.go-sum') || {}).textContent || '',
-             onChip: document.querySelector('.op-bar [data-of="size"]').textContent.trim(),
+             onChip: document.querySelector('.op-bar [data-of="opts"]').textContent.trim(),
              // 工具条贴的是**画布外框**（.op-stage），不是缩略图：外框比图宽出去之后，
              // 还按缩略图居中就会「悬在框上方偏左」（用户截图里的那个样子）
              toolsDx: Math.round((tb.left + tb.width / 2) - (st.left + st.width / 2)),
@@ -5587,7 +5644,7 @@ try {
   const nBefore = nat(before), nAfter = nat(after);
   check('拖右边锚点 → 只有右边变宽（左边一个像素都不动），尺寸档改口叫「自定义」',
     !!eastAt && nAfter.r > nBefore.r + 8 && nAfter.l === nBefore.l
-      && after.size !== before.size && after.onChip === '自定义',
+      && after.size !== before.size && after.onChip.startsWith('自定义 ·'),
     JSON.stringify({ before: nBefore, after: nAfter, size: [before.size, after.size], chip: after.onChip }));
   // 这条是用户原话「图片大小固定不变」的直接回归：扩图应该是**画布长出去**，
   // 不是把画布塞满缩略图、让原图往里缩（那样拖了看着只是「图被压扁」）。
@@ -5642,11 +5699,12 @@ try {
     opFollow.s1.node[0] === opFollow.s0.node[0] + 60
       && opFollow.s1.node[1] === opFollow.s0.node[1] + 40
       && Math.abs(opFollow.s1.rel[0] - opFollow.s0.rel[0]) <= 2
-      && Math.abs(opFollow.s1.rel[1] - opFollow.s0.rel[1]) <= 2,
+      && opFollow.s1.node[1] + opFollow.s1.rel[1] > opFollow.s0.node[1] + opFollow.s0.rel[1]
+      && opFollow.s1.node[1] + opFollow.s1.rel[1] <= opFollow.s0.node[1] + opFollow.s0.rel[1] + 40,
     JSON.stringify(opFollow));
 
   check('拖的同时面板里的尺寸胶囊跟着变（不是等生成完才改）',
-    after.opt !== before.opt && /^\d+×\d+ · \d+张$/.test(after.opt),
+    after.opt !== before.opt && /^自定义 · [^·]+ · \d+张$/.test(after.onChip),
     JSON.stringify({ before: before.opt, after: after.opt }));
 
   // 拖完点回 16:9：尺寸回到对称，后面烘出来的画布才有确定预期
@@ -5656,15 +5714,14 @@ try {
   // 这里写进去、点生成、等框收起来，大提示词框里应该原样是这串字——串起来才算真的接上了。
   const OP_PROMPT_E2E = 'E2E 扩图提示词：两边补成雪原';
   const promptIn = await page.evaluate(`(() => {
-    const inp = document.querySelector('.node.selected .op-bar .of-input');
+    const inp = document.querySelector('.node.selected .gen-prompt');
     if (!inp) return null;
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(inp, ${JSON.stringify(OP_PROMPT_E2E)});
+    inp.textContent = ${JSON.stringify(OP_PROMPT_E2E)};
     inp.dispatchEvent(new Event('input', { bubbles: true }));
-    return { value: inp.value, title: inp.title };
+    return { value: inp.textContent };
   })()`);
   check('参数条里的输入框改的就是这条节点的提示词本身（不是给扩图另存一份）',
-    !!promptIn && promptIn.value === OP_PROMPT_E2E && promptIn.title === OP_PROMPT_E2E,
+    !!promptIn && promptIn.value === OP_PROMPT_E2E,
     JSON.stringify(promptIn));
 
   // 生成这条路会把图丢给 ComfyUI：e2e 不碰真机（会把用户的显卡占住），
@@ -5840,18 +5897,13 @@ try {
     !!opPick.pick && !/局部重绘/.test(opPick.pick), JSON.stringify(opPick));
 
   await page.evaluate(`(() => {
-    const b = document.querySelector('.op-bar [data-of="size"]');
+    const b = document.querySelector('.op-bar [data-of="opts"]');
     if (b) b.click();
   })()`);
   // 等菜单里真的出现那一项再点：固定 350ms 在慢机器上偶尔会点空，
   // 后面那条「点生成后还是选的工作流」就会因为尺寸没改而假红。
-  await page.waitFor(`[...document.querySelectorAll('.popmenu button')]
-    .some((b) => b.textContent.trim() === '16:9')`, 4000).catch(() => null);
-  await page.evaluate(`(() => {
-    const b = [...document.querySelectorAll('.popmenu button')]
-      .find((x) => x.textContent.trim() === '16:9');
-    if (b) b.click();
-  })()`);
+  await page.waitFor(`!!document.querySelector('.popmenu.gen-opts .go-ratio[data-value="16:9"]')`, 4000).catch(() => null);
+  await pickRatio('16:9');
   await new Promise((r) => setTimeout(r, 500));
   // 这次让提交**直接失败**（不是返回假 prompt_id）：烘焙在提交之前就做完了，
   // 断言要看的全在那一步；而失败会让节点立刻退出 busy——
