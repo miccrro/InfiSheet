@@ -1029,6 +1029,14 @@ body.single-sel .node.selected .gen-panel { display: block; }
   color: var(--dim);
 }
 .node.selected .node-title .n-name { color: var(--text); }
+/* 双击标题改名：编辑态撑开——不解除 ellipsis 的话，正在输入的字会被截成「…」，
+   打了一半看不见自己写了什么。给个底和描边，明确「这块现在能打字」。 */
+.node-title .n-name.editing {
+  overflow: visible; text-overflow: clip; cursor: text;
+  padding: 2px 6px; margin: -2px -6px; border-radius: 5px;
+  background: var(--panel-2); color: var(--text);
+  box-shadow: 0 0 0 1px var(--accent); outline: none;
+}
 .node-title .n-run {
   padding: 2px 9px; font-size: 11px; border-radius: 6px;
 }
@@ -1366,6 +1374,8 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 .be-done:hover { background: #fff; }
 
+.gen-control-row { display: flex; align-items: center; min-width: 0; }
+.gen-control { font-variant-numeric: tabular-nums; }
 .gen-bar {
   display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
   padding-top: 8px; margin-top: 2px;
@@ -1426,6 +1436,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: block; flex: 0 0 auto; box-sizing: border-box;
   border: 1.2px solid currentColor; border-radius: 2px; opacity: 0.85;
 }
+.gen-opts .go-ratio > b { font-size: 14px; line-height: 1; font-weight: 500; }
 .gen-opts .go-ratio:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
 .gen-opts .go-ratio.on { color: #fff; border-color: rgba(255, 255, 255, 0.5); background: rgba(255, 255, 255, 0.1); }
 /* 智能画幅：没有比例方块，第一行直接写识别结果（—/3:4），所以字号比比例标签大一点 */
@@ -2720,6 +2731,19 @@ button.primary:hover,
 #refMenu .rm-browse { color: #7aa2ff; }
 #refMenu .rm-empty { padding: 8px 10px 4px; font-size: 11.5px; color: #919191; line-height: 1.5; }
 
+.popmenu.material-menu { min-width: 224px; padding: 6px; }
+.material-menu .material-list { max-height: 280px; overflow-y: auto; }
+.material-menu .material-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px;
+  border-radius: 8px; text-align: left;
+}
+.material-menu .material-item img {
+  width: 36px; height: 36px; flex: 0 0 auto; object-fit: cover;
+  border: 1px solid #363636; border-radius: 6px;
+}
+.material-menu .material-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.material-menu .material-empty { padding: 8px; color: #919191; font-size: 11.5px; }
+
 /* 选中节点的生成器面板要浮在其它节点之上。
    .node 带 transform，本身就是 stacking context，面板自己的 z-index 只在节点内部生效，
    所以必须把整个节点抬起来——否则下面的节点会盖住面板的提示词和底栏。 */
@@ -3591,66 +3615,34 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 /* 往上扩时画布会盖住节点标题，标题里的「生成」就被挡了：只给扩图中的这个节点提一层 */
 .node.op-raised .node-title { position: relative; z-index: 2; }
 
-/* ---------- 扩图参数条 ----------
-   提示词 + （工作流 / 尺寸 / 分辨率 / 数量 / 读数 / 取消 / 生成），**生成面板里的两行**。
-   曾经是屏幕坐标的浮条（fixed + 挂 body）：不会被顶出视口，但它跟不住节点——
-   节点在画布右边、条钉在屏幕左下角，用户的原话就是「无法跟随」。面板本身挂在
-   `.node` 上（绝对定位 + 抵消画布缩放），并进来就天然跟随。 */
+/* 扩图复用生成面板的提示词和状态行，底部只放扩图专属参数。 */
 .op-bar {
-  display: flex; flex-direction: column; gap: 4px;
-  margin: 0; padding: 4px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 2px; padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
-/* 上行：提示词。它自己就是那一行，不跟别人挤（多行框占满整条宽度） */
 .of-row { display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
-.of-prompt { flex-wrap: nowrap; gap: 6px; padding: 0 2px; }
-/* 多行输入：按内容长高（fitPrompt 写 height），到顶了自己滚。
-   `resize: none` —— 面板宽度是算出来的，让用户拖出个 300px 的宽框只会破坏版面。
-   选择器必须带 `.node`：上面 `.node textarea { resize: vertical }` 是 (0,1,1)，
-   光写 `.of-input` 的 (0,1,0) 压不住，右下角那颗拖拽手柄会一直露着。 */
-.node .of-input {
-  flex: 1 1 auto; min-width: 0; width: 100%;
-  padding: 5px 9px; border-radius: 7px;
-  background: rgba(0, 0, 0, 0.26);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  color: var(--text); font: inherit; font-size: 11.5px; line-height: 1.45;
-  resize: none; overflow-y: auto; display: block;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.node .of-input::placeholder { color: var(--faint); }
-.node .of-input:hover { background: rgba(0, 0, 0, 0.32); }
-.node .of-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.32); background: rgba(0, 0, 0, 0.38); }
-/* 下行：参数 + 取消 + 状态 + 生成。取消靠右站，别和左边那串参数挤在一起。
-   **这一行不许换行**：以前是 wrap，工作流名长一点（Qwen-image-2.1图像编辑）+ 读数长一点
-   （1056 × 1216 → 1648 × 1216）+ 状态长一点（完成 · 77s · 1 张），生成按钮就被挤到下一行
-   单独占一行，看着像面板多长了一条腿。放不下时让能截断的各自截断。 */
-.of-params { gap: 2px; flex-wrap: nowrap; }
-/* 工作流名可能很长：给它上限，超了省略号（文字在 span 里，ellipsis 才生效） */
-.of-params .of-btn[data-of="wf"] { flex: 0 1 auto; min-width: 0; max-width: 200px; }
+/* 工作流、参数、取消和生成共用一行；完整的尺寸读数单独显示在上方。 */
+.of-params { gap: 6px; flex-wrap: nowrap; }
+/* 工作流按钮按内容占宽，参数按钮紧跟其后；空间留给右侧取消与生成。 */
+.of-params .of-btn[data-of="wf"] { flex: 0 1 auto; min-width: 0; }
 .of-params .of-btn[data-of="wf"] > span {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .of-params .of-btn:not([data-of="wf"]) { flex: 0 0 auto; }
-/* 「原图 → 画布」读数也一样：宽画幅下这串数字能长到 180px */
-.of-params .of-read { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* 状态文字是从 `.gen-bar` 搬过来的：这里不许它抢参数的位置 */
-.of-params .gen-status { flex: 0 1 auto; min-width: 0; max-width: 34%; padding: 0 4px; }
+.op-bar .of-read { display: block; margin-bottom: 6px; padding: 0 8px; border: 0; color: #a5a5a5; font-size: 11.5px; }
 .of-params .of-btn.ghost { flex: 0 0 auto; margin-left: auto; }
-.of-params .gen-run { flex: 0 0 32px; }
+.of-params .gen-run { flex: 0 0 28px; width: 28px; height: 28px; }
 /* 面板窄到真放不下时（手机 / 分屏）退回换行——总比把生成按钮切到面板外面强 */
 @media (max-width: 560px) {
   .of-params { flex-wrap: wrap; }
 }
 
-/* 扩图期间整个面板只剩这一条：上传/素材/清空/风格、大提示词框、底下那排全部让位。
-   扩图时这些要么用不上（图已经定了），要么和这条重复（工作流 / 尺寸 / 张数）。
-   参考图那条（`.gen-refs`）也一起藏：它只在有连线/@ 引用时才占位，留着会把参数条顶下去。 */
-.gen-panel.op-on { width: min(720px, calc(100vw - 32px)); }
-.gen-panel.op-on .gen-chips,
+/* 扩图沿用生成面板，只隐藏会替换当前图片的操作和重复的普通参数栏。 */
+.gen-panel.op-on .gen-upload,
+.gen-panel.op-on .gen-material,
+.gen-panel.op-on .gen-expand,
+.gen-panel.op-on .gen-style,
 .gen-panel.op-on .gen-refs,
-.gen-panel.op-on .gen-prompt,
 .gen-panel.op-on .gen-bar { display: none; }
 
 /* 扩图时面板跟着**画布外框**走，和工具条一个逻辑（它在外框上方，面板在外框下方）：
@@ -3662,9 +3654,9 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 .of-btn {
   display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 8px; border: none; border-radius: 8px;
+  height: 28px; padding: 0 8px; border: none; border-radius: 8px;
   background: transparent; color: #cfcfcf;
-  font-size: 11.5px; line-height: 1; white-space: nowrap; cursor: pointer;
+  font-size: 12.5px; line-height: 1; white-space: nowrap; cursor: pointer;
   font-variant-numeric: tabular-nums;
   transition: background 0.15s, color 0.15s;
 }
