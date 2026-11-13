@@ -28,6 +28,8 @@ INCLUDE_FILES = [
     "启动.bat",
     "启动.command",
     "start.sh",
+    "InfiSheet.desktop",
+    "创建快捷方式.vbs",
     "Dockerfile",
     "docker-compose.yml",
     ".dockerignore",
@@ -42,7 +44,7 @@ INCLUDE_FILES = [
     "eslint.config.mjs",
     "pyproject.toml",
 ]
-INCLUDE_DIRS = ["static", "presets", "docs", "tools", "tests", ".github"]
+INCLUDE_DIRS = ["static", "presets", "docs", "tools", "tests", ".github", "InfiSheet.app"]
 EXCLUDE_PARTS = {"node_modules", ".tmp", "__pycache__", "data", "dist", ".git", "shots"}
 
 
@@ -56,6 +58,16 @@ def iter_files(base: Path):
         if any(part in EXCLUDE_PARTS for part in p.relative_to(ROOT).parts):
             continue
         yield p
+
+
+def needs_exec(rel: str) -> bool:
+    """zip 里要显式写 0755 的文件。
+
+    Windows 上打不出执行位：少了它，macOS/Linux 解压后双击就是「permission denied」。
+    `.app` 里的入口脚本同理——那个文件没有执行位，整个包双击就是没反应。
+    """
+    return (rel.endswith((".sh", ".command", ".desktop"))
+            or rel.startswith("InfiSheet.app/Contents/MacOS/"))
 
 
 def build(out_dir: Path, with_data: bool) -> list[Path]:
@@ -75,8 +87,7 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
             if p.is_file():
                 arc = f"infisheet/{name}"
                 zf.write(p, arc)
-                if name.endswith((".sh", ".command")):
-                    # Windows 上打不出执行位：显式写 0755，否则 macOS/Linux 解压后双击跑不起来
+                if needs_exec(name):
                     zf.getinfo(arc).external_attr = 0o100755 << 16
         for name in INCLUDE_DIRS:
             d = ROOT / name
@@ -87,6 +98,8 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
                 if rel.endswith(".pyc") or "/.tmp/" in "/" + rel:
                     continue
                 zf.write(p, f"infisheet/{rel}")
+                if needs_exec(rel):
+                    zf.getinfo(f"infisheet/{rel}").external_attr = 0o100755 << 16
     written.append(app_zip)
 
     if with_data:
