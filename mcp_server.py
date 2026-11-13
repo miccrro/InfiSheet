@@ -1721,9 +1721,8 @@ def _t_connect_nodes(args):
                 raise ToolError("这个插槽要文本节点")
             if slot.get("kind") == "image" and a.get("type") != "image":
                 raise ToolError("这个插槽要图片节点")
-        elif b.get("type") == "out":
-            if a.get("type") != "wf":
-                raise ToolError("输出节点只能接工作流节点")
+        elif b.get("type") == "out" and a.get("type") != "wf":
+            raise ToolError("输出节点只能接工作流节点")
         dup = next((link for link in c["links"]
                     if link.get("from") == a["id"] and link.get("to") == b["id"]
                     and link.get("toKey") == key), None)

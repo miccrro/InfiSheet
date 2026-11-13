@@ -1685,12 +1685,13 @@ def prompts_apply(payload: dict) -> dict:
             raise ValueError("提示词是空的")
         if len(items) >= PROMPT_MAX:
             raise ValueError(f"预设最多 {PROMPT_MAX} 条，先删几条")
+        next_at = max(int(time.time() * 1000), max((x["at"] for x in items), default=0) + 1)
         item = {
             "id": uuid.uuid4().hex[:12],
             "name": str(payload.get("name") or "").strip()[:PROMPT_NAME_MAX] or text[:16],
             "text": text[:PROMPT_TEXT_MAX],
             "html": str(payload.get("html") or "")[:PROMPT_HTML_MAX],
-            "at": int(time.time() * 1000),
+            "at": next_at,
         }
         items.append(item)
         return {"ok": True, "items": save_prompts(items), "item": item}
