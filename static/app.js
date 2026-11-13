@@ -9248,10 +9248,81 @@
     return n;
   }
 
+  // 「复制图片」在剪贴板里长什么样，各家浏览器不一样：
+  //   截图 / 资源管理器里复制的文件 → files 里有 image/png，最省事
+  //   网页上右键「复制图片」       → 常常只有 text/html，<img src="..."> 藏在里面
+  // 后者要把 src 抠出来：data: / blob: 本地就能读，http(s): 得让服务端代抓
+  // （画布上的 JS 读不到跨域图片的像素，fetch 只会拿到一个打不开的不透明响应）。
+  function firstImgSrc(html) {
+    const text = String(html || '');
+    if (!text) return '';
+    try {
+      for (const img of new DOMParser().parseFromString(text, 'text/html').querySelectorAll('img')) {
+        // 有的编辑器只给 srcset 不给 src，退一步取第一项
+        const s = (img.getAttribute('src') || '').trim()
+          || (img.getAttribute('srcset') || '').split(',')[0].trim().split(' ')[0];
+        if (s) return s;
+      }
+    } catch { /* DOMParser 挂了就走下面的正则 */ }
+    const m = text.match(/<img[^>]+src\s*=\s*["']([^"']+)["']/i);
+    return m ? m[1].trim() : '';
+  }
+
+  // 文件名要喂给 ComfyUI 的 upload/image：URL 里那些 %xx / 空格先收拾干净
+  function nameFromUrl(src) {
+    let base = '';
+    try {
+      base = decodeURIComponent(new URL(src, location.href).pathname.split('/').pop() || '');
+    } catch { /* 地址本身不合法：base 留空，下面会兜成 pasted */ }
+    base = base.replace(/[^\w.\-\u4e00-\u9fa5]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!base || base.startsWith('.')) base = 'pasted';
+    if (!/\.[a-z0-9]{2,5}$/i.test(base)) base += '.png';
+    return base.slice(0, 80);
+  }
+
+  async function fileFromClipboardUrl(src) {
+    const name = nameFromUrl(src);
+    if (/^data:image\//i.test(src) || /^blob:/i.test(src)) {
+      const blob = await (await fetch(src)).blob();
+      return new File([blob], name, { type: blob.type || 'image/png' });
+    }
+    if (!/^https?:\/\//i.test(src)) return null;      // 认不出的协议就当没有
+    const res = await fetch('/api/fetch-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: src }),
+    });
+    if (!res.ok) {
+      let msg = `取图失败（HTTP ${res.status}）`;
+      try { const d = await res.json(); if (d && d.error) msg = d.error; } catch { /* 不是 JSON 就用状态码 */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    return new File([blob], name, { type: blob.type || 'image/png' });
+  }
+
   // ---- 从系统剪贴板粘贴 ----
   // Ctrl+V 以前只认「画布内复制的节点」：剪贴板里是张图或一段字时，内部快照是空的，
   // 直接提示「剪贴板是空的」——用户看到的就是「读不到剪贴板」。
   // 改听 paste 事件：ev.clipboardData 直接带内容，不弹剪贴板权限，比 clipboard.read() 稳。
+  //
+  // 画布内复制的节点只在内存里，系统剪贴板可能还留着上一次的东西。不打个记号的话，
+  // 「复制节点 → Ctrl+V」会被剪贴板里的旧文字抢走，变成一个文本节点。所以复制时往
+  // 剪贴板写一个标记，粘贴时先认它。
+  const CANVAS_COPY_MARK = 'InfiSheet 节点 ×';
+
+  document.addEventListener('copy', (ev) => {
+    if (isFieldTarget(ev.target)) return;            // 富文本里复制文字，别抢
+    // 页面上真有一段文字被选中（比如大图里的提示词），那是「复制这段字」，别抢
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    if (!state.selected.size || !clipboard || !clipboard.nodes.length) return;
+    try {
+      ev.clipboardData.setData('text/plain', CANVAS_COPY_MARK + clipboard.nodes.length);
+      ev.clipboardData.setData('application/x-infisheet-nodes', String(clipboard.nodes.length));
+      ev.preventDefault();                            // 别把 DOM 里选中的东西也塞进去
+    } catch { /* 不让写就算了，粘贴那边还有内部快照兜底 */ }
+  });
   //   图片 → 一张一个图片节点，落点跟着鼠标，顺手传进 ComfyUI 的 input/
   //   纯文字 → 一个提示词节点
   //   都没有 → 退回画布内复制的节点（粘贴快照）
@@ -9265,6 +9336,13 @@
     if (!dt) return;
     ev.preventDefault();
     const at = pointerWorld || screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+    const types = Array.from(dt.types || []);
+    // 画布内复制的节点优先：那是用户刚做的动作，不能被剪贴板里的旧内容抢走
+    if (types.includes('application/x-infisheet-nodes')
+      || String(dt.getData('text/plain') || '').startsWith(CANVAS_COPY_MARK)) {
+      pasteClipboard();
+      return;
+    }
     // 先看 files：截图 / 资源管理器复制的图都在这儿。
     // 有些应用只往 items 里塞，files 是空的，那条路再兜一次。
     let files = [...(dt.files || [])].filter((f) => f && String(f.type || '').startsWith('image/'));
@@ -9281,6 +9359,16 @@
       flash(`已粘贴 ${files.length} 张图`);
       return;
     }
+    // 网页上右键「复制图片」：files 是空的，图片地址只在 text/html 里
+    const imgSrc = firstImgSrc(dt.getData('text/html'));
+    if (imgSrc) {
+      flash('正在取图片…');
+      fileFromClipboardUrl(imgSrc)
+        .then((f) => (f ? addImageFromFile(f, Math.round(at.x), Math.round(at.y)) : null))
+        .then((n) => { if (n) flash('已从网页粘贴图片'); })
+        .catch((err) => flash(err.message || '这张图取不回来'));
+      return;
+    }
     const text = String(dt.getData('text/plain') || '').trim();
     if (text) {
       const n = addTextNode(Math.round(at.x), Math.round(at.y), text);
@@ -9288,7 +9376,9 @@
       flash('已粘贴为提示词节点');
       return;
     }
-    pasteClipboard();
+    // 什么也没认出来：把剪贴板里到底有什么说出来，比干等着强
+    if (clipboard && clipboard.nodes.length) { pasteClipboard(); return; }
+    flash(types.length ? `剪贴板里没有能用的内容（${types.join(' / ')}）` : '剪贴板是空的');
   });
 
   // 「加载图片…」：从磁盘挑（支持多选）直接变成图片节点，选完就带着图。
@@ -9417,7 +9507,9 @@
       const k = ev.key.toLowerCase();
       if (k === 'z') { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); return; }
       if (k === 'y') { ev.preventDefault(); redo(); return; }
-      if (k === 'c') { if (copySelection()) ev.preventDefault(); return; }
+      // 复制不拦默认行为：要让 copy 事件照常跑，那边会往剪贴板里打一个「这是画布节点」的
+      // 标记，粘贴时才好和系统剪贴板里的旧内容区分开
+      if (k === 'c') { copySelection(); return; }
       // Ctrl+V 不在这里拦：交给下面 document 的 paste 事件，那条路上能直接读系统剪贴板
       // （图片 / 文字），不用弹剪贴板权限。画布内复制的节点由 paste 处理器兜底。
       if (k === 'v') return;

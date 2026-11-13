@@ -3387,6 +3387,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 —— 兜底：写盘失败要说清是哪种错
                 return self.fail(f"{type(exc).__name__}: {exc}", 500)
 
+        # 网页上「复制图片」：前端只有一段 <img src>，跨域抓不了，让服务端代抓一次。
+        # 直接把图片字节回给前端（不套 JSON + base64），前端当普通文件走上传流程。
+        if path == "/api/fetch-image":
+            payload = self.read_json() or {}
+            try:
+                blob, ctype = fetch_remote_image(payload.get("url"))
+            except ValueError as exc:
+                return self.fail(str(exc), 400)
+            except Exception as exc:  # noqa: BLE001 —— 网络层失败：502 比 500 更说得清
+                return self.fail(str(exc), 502)
+            return self._send(200, blob, ctype, {"Cache-Control": "no-store"})
+
         # 资产库的分组 / 归属 / 移除。一个入口靠 op 分发，见 asset_lib_apply()
         if path == "/api/assets/lib":
             payload = self.read_json() or {}
@@ -4099,6 +4111,54 @@ def edit_image_bytes(name: str):
     if not f.is_file():
         return None
     return f.read_bytes()
+
+
+# ---------- 代抓网页图片 ----------
+# 浏览器里「右键复制网页上的图片」几乎只往剪贴板塞一段 text/html（<img src=...>），
+# 没有文件对象；而且画布上的 JS 读不到跨域图片的像素（CORS），fetch 也只会拿到一个
+# 打不开的不透明响应。所以这条路只能让本机服务代抓一次，再当普通文件交给前端。
+FETCH_MAX_BYTES = 40 * 1024 * 1024
+FETCH_TIMEOUT = 20
+# 只按文件头认图：不少图床把 Content-Type 回成 application/octet-stream，看头部更准
+FETCH_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"),
+               (b"GIF8", "image/gif"), (b"RIFF", "image/webp"), (b"BM", "image/bmp"))
+
+
+def fetch_remote_image(url) -> tuple[bytes, str]:
+    """代抓一张图，返回 (bytes, content_type)。
+
+    只放行 http/https：file:// 之类一律拒掉，免得本机任意文件被读进画布。
+    """
+    u = str(url or "").strip()
+    parsed = urllib.parse.urlparse(u)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("只支持 http/https 的图片地址")
+    req = urllib.request.Request(u, headers={
+        "User-Agent": f"InfiSheet/{app_version()}",
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        # 不少站按 Referer 防盗链，给个同站来源比空着更容易过
+        "Referer": f"{parsed.scheme}://{parsed.netloc}/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            blob = resp.read(FETCH_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"对方服务器返回 {exc.code}") from exc
+    except Exception as exc:  # noqa: BLE001 —— 超时 / DNS / 断连都归成一句人话
+        raise RuntimeError(f"下载失败：{exc}") from exc
+    if not blob:
+        raise ValueError("抓回来是空的")
+    if len(blob) > FETCH_MAX_BYTES:
+        raise ValueError("图片超过 40MB，没抓")
+    mime = next((m for magic, m in FETCH_MAGIC if blob.startswith(magic)), "")
+    if not mime:
+        if ctype.startswith("image/"):
+            mime = ctype
+        else:
+            raise ValueError("这个地址返回的不是图片")
+    return blob, mime
+
 
 def safe_library_path(name: str):
     name = (name or "").strip()

@@ -1080,6 +1080,43 @@ def main() -> int:
               status == 200 and back.get("url") == fallback and back.get("saved") is False,
               back.get("url", ""))
 
+        # ---- 代抓网页图片（/api/fetch-image）----
+        # 网页上「复制图片」时剪贴板里只有一段 <img src>，画布读不到跨域像素，
+        # 只能由服务端代抓一次。起一个本机小服务当「那个网页」。
+        import http.server
+        import threading
+
+        class _Img(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 —— 基类规定的方法名
+                blob = _png(4, 4) if self.path.startswith("/a.png") else b"not an image"
+                ctype = "image/png" if self.path.startswith("/a.png") else "text/plain"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob)
+
+            def log_message(self, *args):   # 访问日志别刷进测试输出
+                pass
+
+        img_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Img)
+        threading.Thread(target=img_srv.serve_forever, daemon=True).start()
+        img_base = f"http://127.0.0.1:{img_srv.server_address[1]}"
+        try:
+            status, raw = request(base, "/api/fetch-image", "POST", {"url": img_base + "/a.png"})
+            check("代抓图片：抓回来的是原样字节（不是 JSON 套 base64）",
+                  status == 200 and raw == _png(4, 4), f"HTTP {status} · {len(raw or b'')} 字节")
+            status, raw = request(base, "/api/fetch-image", "POST", {"url": img_base + "/note.txt"})
+            err = json.loads(raw or b"{}").get("error", "")
+            check("代抓图片：地址返回的不是图就拒掉", status == 400 and "不是图片" in err,
+                  f"HTTP {status} · {err}")
+            status, raw = request(base, "/api/fetch-image", "POST", {"url": "file:///etc/passwd"})
+            err = json.loads(raw or b"{}").get("error", "")
+            check("代抓图片：非 http(s) 直接拒（不让本机任意文件被读进画布）",
+                  status == 400 and "http" in err, f"HTTP {status} · {err}")
+        finally:
+            img_srv.shutdown()
+
         # ---- 关闭服务 ----
         # 先验「跨站请求被挡」：本地服务没有鉴权，不能让任意网页一个 POST 就把画布关了。
         # 浏览器跨站发 POST 会带 Origin，同源校验足够挡住。
