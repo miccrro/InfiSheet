@@ -892,6 +892,17 @@
     txt2img: '文生图', img2img: '图生图 / 编辑', upscale: '高清放大',
     video: '视频', audio: '音频', other: '其他',
   };
+  // 每个能力分类的默认**到底管哪件事**。用户设了默认却发现没生效，十次有九次是
+  // 「设的那一类不是新建节点用的那一类」——新建图片节点只认文生图。所以这层对应关系
+  // 得写在设置面板上，而不是让用户自己推。
+  const CAT_USES = {
+    txt2img: '新建图片节点',
+    img2img: '抠图 / 擦除 / 去字',
+    upscale: '高清放大',
+    video: '视频生成',
+    audio: '音频生成',
+    other: '手动选择',
+  };
 
   // ---- 分类：用户自己的那一套 ----
   // CAT_ORDER / CAT_LABEL 是**能力**分类（服务端扫图推断，决定高清 / 扩图该挑谁），
@@ -4941,6 +4952,8 @@
   // 谁被默认选中，就意味着用户没选过也照样出图，而他根本不知道用的是哪个模板。
   // 用哪个工作流一律在节点的生成面板里当场选。
   let setWfQuery = '';
+  // 顶部芯片点了某个能力分类 → 列表只列这一类（挑默认时不用自己认哪份是文生图）
+  let setWfOnly = '';
   function renderSetWorkflows(box) {
     const listEl = box.querySelector('#setWfList');
     const catsEl = box.querySelector('#setCats');
@@ -4949,24 +4962,73 @@
     const opts = wfOptions();
     const cats = wfCategories();
 
-    // ---- 一行说明：每个能力分类当前用的是哪一份 ----
+    // ---- 每个能力分类当前用的是哪一份 ----
+    // 「未设」不能只是一段灰字：用户设了别的分类的默认，却以为这一份也该生效，
+    // 结果新建节点还是空的（真机反馈）。所以这里一行一个分类，写清「它管的是哪件事」，
+    // 值那颗芯片可点——点一下就只看该分类的候选，挑 ☆ 时不用自己认哪份是文生图。
     if (defEl) {
       const cats = CAT_ORDER.filter((c) => opts.some((o) => o.category === c));
+      defEl.innerHTML = '';
       if (!opts.length) {
         defEl.textContent = '还没有可用的工作流，点上面的「导入工作流…」加一个。';
       } else {
-        const parts = cats.map((c) => {
+        const head = document.createElement('span');
+        head.className = 'wf-def-head';
+        head.textContent = '按分类默认（点行里的 ☆ 换；新建节点按用途预选）';
+        defEl.appendChild(head);
+        const grid = document.createElement('div');
+        grid.className = 'wf-def-grid';
+        cats.forEach((c) => {
           const hit = opts.find((o) => o.id === wfDefaultId(c));
-          return `${CAT_LABEL[c] || c}：${hit ? hit.label : '未设'}`;
+          const use = CAT_USES[c] || '新建节点';
+          const row = document.createElement('div');
+          row.className = 'wf-def-row' + (setWfOnly === c ? ' only' : '');
+
+          const nm = document.createElement('span');
+          nm.className = 'wf-def-cat';
+          nm.textContent = CAT_LABEL[c] || c;
+
+          const useEl = document.createElement('span');
+          useEl.className = 'wf-def-use';
+          useEl.textContent = use;
+
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'wf-def' + (hit ? ' on' : ' miss');
+          btn.textContent = hit ? hit.label : '未设 · 点这里选';
+          btn.title = hit
+            ? `「${CAT_LABEL[c] || c}」的默认是「${hit.label}」，${use}会用它。点一下只看这一类`
+            : `「${CAT_LABEL[c] || c}」还没设默认：${use}不会自动带工作流。点一下看这一类有哪些候选`;
+          btn.onclick = () => {
+            setWfOnly = setWfOnly === c ? '' : c;
+            renderSetWorkflows(box);
+            flash(setWfOnly
+              ? `只看「${CAT_LABEL[c] || c}」：点行里的 ☆ 设为「${use}」的默认`
+              : '已显示全部工作流');
+          };
+
+          row.append(nm, useEl, btn);
+          grid.appendChild(row);
         });
-        defEl.textContent = `按分类默认 · ${parts.join(' · ')}（点行里的 ☆ 换；新建节点按用途预选）`;
+        defEl.appendChild(grid);
       }
     }
 
     // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 加到画布 / 删除 ----
     const q = setWfQuery.trim().toLowerCase();
-    const hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
+    let hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
+    // 顶部点了某个分类的「未设」→ 只列这一类。挑默认时眼前只有候选，不用在
+    // 十几份工作流里自己认哪份是文生图。
+    if (setWfOnly) hits = hits.filter((o) => o.category === setWfOnly);
     listEl.innerHTML = '';
+    if (setWfOnly) {
+      // 过滤条先摆上：哪怕这一类一份都没有，也要留着「显示全部」的出口
+      const bar = document.createElement('p');
+      bar.className = 'tip wf-only';
+      bar.innerHTML = `只看「${esc(CAT_LABEL[setWfOnly] || setWfOnly)}」· <button type="button" class="wf-only-x">显示全部</button>`;
+      bar.querySelector('.wf-only-x').onclick = () => { setWfOnly = ''; renderSetWorkflows(box); };
+      listEl.appendChild(bar);
+    }
     if (!opts.length) {
       const p = document.createElement('p');
       p.className = 'tip';
@@ -4975,7 +5037,9 @@
     } else if (!hits.length) {
       const p = document.createElement('p');
       p.className = 'tip';
-      p.textContent = `没有匹配「${setWfQuery.trim()}」的工作流。`;
+      p.textContent = setWfQuery.trim()
+        ? `没有匹配「${setWfQuery.trim()}」的工作流。`
+        : `这一分类下没有工作流。`;
       listEl.appendChild(p);
     }
     hits.forEach((o) => {
@@ -5469,6 +5533,7 @@
   //   工作流（库 + 分类）/ 运行记录 / 外观 / 连接 / 高级
   function openSettingsSheet(focus) {
     closeSettingsSheet();
+    setWfOnly = '';          // 上次「只看某一类」的过滤不带到下一次打开
     const box = document.createElement('div');
     box.id = 'appSettings';
     box.innerHTML = `
@@ -5498,7 +5563,7 @@
                 <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
               </div>
-              <p class="set-tip" id="setWfDefault"></p>
+              <div class="set-tip" id="setWfDefault"></div>
               <div class="wf-list" id="setWfList"></div>
               <div class="set-group">分类</div>
               <div class="wf-cats" id="setCats"></div>
@@ -10665,7 +10730,12 @@
     // 减掉半个节点尺寸，让节点落在视口正中而不是右下偏
     const n = addImageNode(Math.round(c.x - 190), Math.round(c.y - 160), {}, false);
     selectOnly(n.id);
-    flash('已放入图片节点：写提示词，或先点面板里的「上传」');
+    // 用上了默认 / 没设默认，都在这一句里说清。以前只说「写提示词」——
+    // 用户设了「图生图 / 编辑」的默认，看到新节点还是空的，只会以为默认坏了
+    // （其实新建图片节点认的是「文生图」那一份）。
+    flash(n.gen && n.gen.wf
+      ? `已放入图片节点 · ${modelNameOf(n.gen.wf)}：写提示词就能生成`
+      : '已放入图片节点：还没选工作流 ——「文生图」没设默认，去 设置 → 工作流 点 ☆');
   }
 
   // 把「提示词 → 工作流 → 图片输出」这一套放进当前画布
@@ -11900,9 +11970,15 @@
     // 用户以为高清坏了。
     const want = EDIT_WF[kind] || 'img2img';
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
-    const wf = hint || (want === 'mask'
-      ? (((wfOptions().find((o) => o.alphaMask) || wfOptions().find((o) => o.image)) || {}).id || '')
-      : pickWorkflow(want));
+    // 吃遮罩那一档（擦除 / 去字）的挑法：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 →
+    // 随便一份能吃图的。中间这层必须有：用户明明设了默认，擦除却挑了列表里第一份吃图的
+    // 工作流，看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能擦。
+    const all = wfOptions();
+    const defHit = all.find((o) => o.id === wfDefaultId('img2img'));
+    const maskWf = ((all.find((o) => o.alphaMask) || {}).id || '')
+      || (defHit ? defHit.id : '')
+      || (((all.find((o) => o.image)) || {}).id || '');
+    const wf = hint || (want === 'mask' ? maskWf : pickWorkflow(want));
     const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
