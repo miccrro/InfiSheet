@@ -43,6 +43,16 @@
   /* ---------------- 撤销 / 重做（快照式） ---------------- */
   // 名字不能叫 history：模块作用域里会遮住 window.history，路由改写 hash 时会炸
   const undoStack = { stack: [], idx: -1, limit: 40, applying: false };
+  // 快照里带着图（dataURL / 上传过的原图），一张 1MB 的图画布乘 40 份就是 40MB 常驻。
+  // 条数上限挡不住这件事，所以再加一条字节预算：超了就从最旧的开始丢，
+  // 但永远保住当前这一份——宁可少退几步，也不能把撤销栈变成内存黑洞。
+  const UNDO_BUDGET = 48 * 1024 * 1024;
+
+  function undoBytes() {
+    let n = 0;
+    for (const s of undoStack.stack) n += s.length;
+    return n;
+  }
 
   function snapshotState() {
     const data = serialize();
@@ -61,6 +71,7 @@
     undoStack.stack.length = undoStack.idx + 1;   // 撤销后再操作，丢掉重做分支
     undoStack.stack.push(snap);
     if (undoStack.stack.length > undoStack.limit) undoStack.stack.shift();
+    while (undoStack.stack.length > 1 && undoBytes() > UNDO_BUDGET) undoStack.stack.shift();
     undoStack.idx = undoStack.stack.length - 1;
     syncUndoBtns();
   }
@@ -3888,106 +3899,13 @@
     flash(`已放入画布：${title}`);
   }
 
-  async function openAssetSheet() {
-    if (document.getElementById('assetPane')) { closeAssetSheet(); return; }
-    // 每次打开都从「不在多选态」开始：关掉抽屉时留着的勾选没有意义，
-    // 再打开却还挂着「已选 3 项」，一按删除就把看不见的三张删了。
-    assetPicking = false;
-    assetPicked = new Set();
-    assetLastIdx = -1;
-    const box = document.createElement('div');
-    box.id = 'assetPane';
-    box.innerHTML = `
-      <aside class="asset-pane" role="dialog" aria-label="资产库">
-        <div class="asset-grip" title="拖动调整宽度（双击复位）"></div>
-        <header>
-          <strong>资产库</strong>
-          <span class="asset-n"></span>
-          <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史"
-                  aria-label="重新读取资产目录与 ComfyUI 历史">${icon('rotate')}</button>
-          <button type="button" class="x" title="关闭（Esc）">×</button>
-        </header>
-        <div class="asset-bar">
-          <div class="asset-row">
-            <input class="asset-q" placeholder="搜索文件名…" spellcheck="false" />
-            <button type="button" class="asset-pick" title="多选：收进库 / 移动分组 / 删除">选择</button>
-          </div>
-          <div class="asset-tabs">
-            <button type="button" data-k="all" class="on">全部</button>
-            <button type="button" data-k="lib">库</button>
-            <button type="button" data-k="output">生成</button>
-            <button type="button" data-k="canvas">画布</button>
-            <button type="button" data-k="input">上传</button>
-          </div>
-          <div class="asset-groups"></div>
-        </div>
-        <div class="asset-grid"><p class="asset-tip">读取中…</p></div>
-        <div class="asset-actions"></div>
-        <div class="asset-foot">
-          <div class="asset-path">
-            <span class="asset-path-t" title=""></span>
-            <button type="button" class="asset-root">修改…</button>
-          </div>
-          <div class="asset-path asset-comfy">
-            <span class="asset-comfy-t" title=""></span>
-            <button type="button" class="asset-comfy-btn">修改…</button>
-          </div>
-          <p class="asset-hint">
-            <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
-            <button type="button" class="asset-restore"></button>
-          </p>        </div>
-      </aside>`;
-    document.body.appendChild(box);
-    box.querySelector('.x').onclick = closeAssetSheet;
-
-    const grid = box.querySelector('.asset-grid');
-    const nEl = box.querySelector('.asset-n');
-    const q = box.querySelector('.asset-q');
-    const groupBar = box.querySelector('.asset-groups');
-    const actions = box.querySelector('.asset-actions');
-    const footEl = box.querySelector('.asset-foot');
+  function bindAssetPathControls(box, paintPath, reload) {
     const pathRow = box.querySelector('.asset-path');
     const pathT = box.querySelector('.asset-path-t');
     const pathBtn = box.querySelector('.asset-root');
     const comfyRow = box.querySelector('.asset-comfy');
     const comfyT = box.querySelector('.asset-comfy-t');
     const comfyBtn = box.querySelector('.asset-comfy-btn');
-    const hintEl = box.querySelector('.asset-hint');
-    const restoreBtn = box.querySelector('.asset-restore');
-    const pickBtn = box.querySelector('.asset-pick');
-
-    const groupName = (id) => (assetGroups.find((g) => g.id === id) || {}).name || '未分组';
-    // 当前选中的自定义分组 id；没选中（全部 / 未分组）时收进库就落未分组
-    const curGid = () => (assetGroup !== 'all' && assetGroup !== 'none' ? assetGroup : '');
-
-    /* ---------- 存放路径 ---------- */
-    // 路径只显示尾部两段：绝对路径一行放不下，全塞进去会把「修改…」挤出去。
-    const shortPath = (p) => {
-      const raw = String(p || '');
-      const sep = raw.includes('\\') ? '\\' : '/';
-      const parts = raw.split(/[\\/]+/).filter(Boolean);
-      return parts.length <= 3 ? raw : '…' + sep + parts.slice(-2).join(sep);
-    };
-    const paintPath = () => {
-      // 「默认」两个字不是装饰：默认路径跟着程序走，把整个文件夹拷到别的机器上图还在；
-      // 自定义路径（尤其填到 D:\ 上）换机器就没了。用户得能一眼看出自己是不是默认。
-      pathT.textContent = assetRoot
-        ? shortPath(assetRoot) + (assetRootDefault ? '（默认）' : '')
-        : '…';
-      pathT.title = assetRoot
-        ? (assetRootDefault
-          ? `${assetRoot}\n默认位置：程序目录下的 assets/，整个文件夹拷走图就跟着走`
-          : `${assetRoot}\n自定义位置（点「修改…」清空可恢复默认）`)
-        : '';
-      pathBtn.textContent = '修改…';
-      // 第二行：ComfyUI 的目录。没配的时候「删除」对库外的图只能从列表移除，
-      // 所以这行不是装饰——它决定删除能不能真删到磁盘。
-      comfyT.textContent = assetComfyDir ? `ComfyUI ${shortPath(assetComfyDir)}` : 'ComfyUI 目录未设置';
-      comfyT.title = assetComfyDir
-        ? `${assetComfyDir}\n删除库外的图会从这里真删（进系统回收站）`
-        : '不填也能用：只是库外（生成结果 / 上传素材）的图删除时只会从列表移除，磁盘文件不动';
-      comfyRow.classList.toggle('unset', !assetComfyDir);
-    };
     const closePathEdit = () => {
       pathRow.innerHTML = '';
       pathRow.append(pathT, pathBtn);
@@ -4078,6 +3996,133 @@
     /* ---------- 分组 ---------- */
     // 自定义分组挂在来源页签下面一行：来源是「这张图哪来的」，分组是「我把它放哪」，
     // 两者是 AND 关系（筛「生成」+「人像」= 人像组里的生成结果）。
+  }
+
+  function bindAssetPaneResize(box) {
+    const paneEl = box.querySelector('.asset-pane');
+    const grip = box.querySelector('.asset-grip');
+    const W_MIN = 320, W_MAX = () => Math.min(1100, Math.max(W_MIN, window.innerWidth - 120));
+    const applyPaneW = (w) => {
+      const v = Math.round(Math.max(W_MIN, Math.min(W_MAX(), w)));
+      paneEl.style.width = `${v}px`;
+      return v;
+    };
+    try {
+      const saved = Number(localStorage.getItem('infisheet-asset-w') || 0);
+      if (saved) applyPaneW(saved);
+    } catch { /* 隐私模式读不了，用默认宽度 */ }
+    grip.onpointerdown = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const startW = paneEl.getBoundingClientRect().width;
+      const x0 = ev.clientX;
+      document.body.classList.add('asset-resizing');
+      const onMove = (e) => applyPaneW(startW - (e.clientX - x0));
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        document.body.classList.remove('asset-resizing');
+        try { localStorage.setItem('infisheet-asset-w', String(Math.round(paneEl.getBoundingClientRect().width))); } catch { /* 忽略 */ }
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+    grip.ondblclick = (ev) => {
+      ev.stopPropagation();
+      paneEl.style.width = '';
+      try { localStorage.removeItem('infisheet-asset-w'); } catch { /* 忽略 */ }
+    };
+
+  }
+
+  function bindAssetMarquee(grid, cellByKey, paintSelection, setSuppressClick) {
+    let marquee = null;
+    const clearMarquee = () => {
+      if (!marquee) return;
+      marquee.el.remove();
+      marquee = null;
+      grid.classList.remove('marquee-on');
+    };
+    const marqueeApply = (ev) => {
+      const gr = grid.getBoundingClientRect();
+      const x = ev.clientX - gr.left + grid.scrollLeft;
+      const y = ev.clientY - gr.top + grid.scrollTop;
+      const box = {
+        l: Math.min(x, marquee.x0), r: Math.max(x, marquee.x0),
+        t: Math.min(y, marquee.y0), b: Math.max(y, marquee.y0),
+      };
+      marquee.el.style.left = `${box.l}px`;
+      marquee.el.style.top = `${box.t}px`;
+      marquee.el.style.width = `${box.r - box.l}px`;
+      marquee.el.style.height = `${box.b - box.t}px`;
+      // 命中判定用「拖动开始时抓下来的矩形」：拖动过程中格子不会动，
+      // 每一帧重新量 581 个 getBoundingClientRect 才是真卡的原因。
+      const next = new Set(marquee.base);
+      marquee.rects.forEach((r) => {
+        if (r.r < box.l || r.l > box.r || r.b < box.t || r.t > box.b) return;
+        next.add(r.k);
+      });
+      let changed = next.size !== assetPicked.size;
+      if (!changed) {
+        for (const k of next) if (!assetPicked.has(k)) { changed = true; break; }
+      }
+      if (!changed) return;
+      assetPicked = next;
+      paintSelection();
+    };
+
+    grid.addEventListener('pointerdown', (ev) => {
+      if (!assetPicking || ev.button !== 0) return;
+      if (ev.target.closest('.asset-tip')) return;
+      const gr = grid.getBoundingClientRect();
+      const rects = [];
+      cellByKey.forEach((rec, k) => {
+        const r = rec.cell.getBoundingClientRect();
+        rects.push({ k, l: r.left - gr.left + grid.scrollLeft, r: r.right - gr.left + grid.scrollLeft,
+          t: r.top - gr.top + grid.scrollTop, b: r.bottom - gr.top + grid.scrollTop });
+      });
+      const x0 = ev.clientX - gr.left + grid.scrollLeft;
+      const y0 = ev.clientY - gr.top + grid.scrollTop;
+      const start = { x: ev.clientX, y: ev.clientY };
+      const base = ev.shiftKey ? new Set(assetPicked) : new Set();
+      let dragging = false;
+      const onMove = (e) => {
+        if (!dragging) {
+          if (Math.abs(e.clientX - start.x) < 5 && Math.abs(e.clientY - start.y) < 5) return;
+          dragging = true;
+          const el = document.createElement('div');
+          el.className = 'asset-marquee';
+          grid.appendChild(el);
+          marquee = { el, rects, base, x0, y0 };
+          grid.classList.add('marquee-on');
+        }
+        e.preventDefault();
+        marqueeApply(e);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        if (dragging) {
+          setSuppressClick(true);
+          // 松手后浏览器还会补一次 click（可能落在另一格上），下一帧再放开
+          setTimeout(() => { setSuppressClick(false); }, 0);
+        }
+        clearMarquee();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    });
+    // 滚动时把框收掉：坐标是相对内容的，滚走之后框和格子就对不上了
+    grid.addEventListener('scroll', clearMarquee, { passive: true });
+
+    /* ---------- 抽屉宽度：拖左边沿 ---------- */
+    // 392px 只放得下 3 列，长文件名全被截断。宽度记在 localStorage 里，
+    // 宫格用 auto-fill，拉宽就自动多排几列。
+  }
+
+  function createAssetGroupControls(groupBar, curGid, groupName, paint) {
     const paintGroups = () => {
       groupBar.innerHTML = '';
       const pill = (label, key, cls) => {
@@ -4173,6 +4218,250 @@
 
     // 收进库：库外的图复制一份到存放目录。ComfyUI 那边的历史随时可能被清，
     // 复制进来才算真的留住了——所以这里不是「移动」，原图不会消失。
+    return { paintGroups, newAssetGroup, assignTo };
+  }
+
+  function createAssetGridRenderer(ctx) {
+    const { grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid,
+      paintPath, paintActions, renameAsset } = ctx;
+    const thumbURL = (item) => {
+        const u = String(item.url || '');
+        // 画布上的图是 dataURL，服务端缩不了，直接用；其余走缩略图接口
+        if (!u.startsWith('/api/')) return u;
+        return `/api/thumb?w=320&src=${encodeURIComponent(u)}`;
+      };
+
+    const buildCell = (item) => {
+        const cell = document.createElement('div');
+        cell.className = 'asset-cell';
+        cell.setAttribute('role', 'button');
+        cell.tabIndex = 0;
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.draggable = false;          // 拖拽留给框选，别让浏览器拖起图片影子
+        const name = document.createElement('span');
+        name.className = 'asset-name';
+        const badge = document.createElement('span');
+        badge.className = `asset-badge ${item.source}`;
+        badge.textContent = item.source === 'lib' ? '库'
+          : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
+        const add = document.createElement('span');
+        add.className = 'asset-add';
+        add.title = '放入画布';
+        add.textContent = '＋';
+        add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
+        const tick = document.createElement('span');
+        tick.className = 'asset-tick';
+        cell.append(img, badge, name, add, tick);
+        const rec = { cell, img, idx: -1 };
+        cell.onclick = (ev) => {
+          if (clickState.suppressClick) { clickState.suppressClick = false; return; }
+          if (!assetPicking) { openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item)); return; }
+          const key = assetKeyOf(item);
+          if (ev.shiftKey && assetLastIdx >= 0) {
+            // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
+            const list = assetFiltered();
+            const [a, b] = [assetLastIdx, rec.idx].sort((x, y) => x - y);
+            const on = !assetPicked.has(key);
+            for (let j = a; j <= b && j < list.length; j++) {
+              const k = assetKeyOf(list[j]);
+              if (on) assetPicked.add(k); else assetPicked.delete(k);
+            }
+          } else if (assetPicked.has(key)) assetPicked.delete(key);
+          else assetPicked.add(key);
+          assetLastIdx = rec.idx;
+          paintSelection();
+        };
+        cell.ondblclick = (ev) => {
+          ev.stopPropagation();
+          if (!assetPicking) putAssetOnCanvas(item);
+        };
+        cell.onkeydown = (ev) => {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          if (assetPicking) cell.onclick({ shiftKey: false });
+          else putAssetOnCanvas(item);
+        };
+        return rec;
+      };
+
+    const paint = () => {
+        const list = assetFiltered();
+        const hiddenN = assetHiddenKeys().length;
+        const total = (assetItems || []).length - hiddenN;
+        // 勾上的图一旦被筛掉就作废：看不见的东西不该被「删除」顺手带走
+        const alive = new Set(list.map(assetKeyOf));
+        [...assetPicked].forEach((k) => { if (!alive.has(k)) assetPicked.delete(k); });
+
+        nEl.textContent = list.length === total ? `${total} 项` : `${list.length} / ${total} 项`;
+        restoreBtn.textContent = hiddenN ? `已移除 ${hiddenN} 项` : '';
+        restoreBtn.classList.toggle('hidden', !hiddenN);
+        paintPath();
+
+        grid.querySelectorAll('.asset-tip').forEach((p) => p.remove());
+        if (!list.length) {
+          cellByKey.forEach((rec) => rec.cell.remove());
+          cellByKey.clear();
+          const why = assetQuery ? '没有匹配的文件'
+            : curGid() ? '这个分组还是空的：回「全部」选几张，用「移动到」放进来'
+              : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
+                : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
+                  : '还没有资产：生成一张图、或上传一张图就会出现在这里';
+          grid.innerHTML = `<p class="asset-tip">${why}</p>`;
+          paintActions();
+          return;
+        }
+        const groupOf = (item) => groupName(item.group || (assetMeta[assetKeyOf(item)] || {}).group || '');
+        // 复用 + 按顺序就位：cursor 走到哪儿，新格子就插到哪儿
+        let cursor = grid.firstElementChild;
+        const keep = new Set();
+        for (let i = 0; i < list.length; i++) {
+          const item = list[i];
+          const key = assetKeyOf(item);
+          keep.add(key);
+          let rec = cellByKey.get(key);
+          if (!rec) { rec = buildCell(item); cellByKey.set(key, rec); }
+          rec.idx = i;
+          rec.item = item;
+          if (rec.cell === cursor) cursor = cursor.nextElementSibling;
+          else grid.insertBefore(rec.cell, cursor || null);
+          const where = item.source === 'lib' ? '资产库（存放目录里的文件）'
+            : item.source === 'canvas' ? '画布上的图'
+              : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
+          rec.cell.title = `${item.filename}\n${where}\n分组：${groupOf(item)}`;
+          // 原图地址单独记一份：格子里的 <img> 现在是缩略图（/api/thumb?src=…），
+          // 想拿「这一格到底是哪张图」的地方（大图、断言、以后的重命名）都读这个。
+          rec.cell.dataset.src = String(item.url || '');
+          rec.img.src = thumbURL(item);
+          rec.cell.querySelector('.asset-name').textContent = item.filename || '（未命名）';
+          rec.cell.classList.toggle('pick', assetPicking);
+          rec.cell.classList.toggle('on', assetPicked.has(key));
+          // 库内文件才能改名：库外的是 ComfyUI 的产物，改名字等于把它从历史里改名，
+          // 下次 /history 一读又变回去了。
+          const wantRn = item.source === 'lib';
+          const rn = rec.cell.querySelector('.asset-rn');
+          if (wantRn && !rn) {
+            const b = document.createElement('span');
+            b.className = 'asset-add asset-rn';
+            b.title = '改名';
+            b.textContent = '✎';
+            b.onclick = (ev) => { ev.stopPropagation(); renameAsset(item); };
+            rec.cell.append(b);
+          } else if (!wantRn && rn) rn.remove();
+        }
+        for (const [k, rec] of cellByKey) {
+          if (!keep.has(k)) { rec.cell.remove(); cellByKey.delete(k); }
+        }
+        paintActions();
+      };
+
+      /* ---------- 框选：在多选态下按住拖动，框到谁选谁 ----------
+         以前只能一张一张点（或者 Shift 连选），几百张里挑二十张要点二十次。
+         现在：拖动出一块框，和框相交的格子一次全选中；按住 Shift 拖动 = 追加。
+         点在格子上的那一下如果没拖动，仍然是一次普通点击（勾选 / 取消勾选）。 */
+    return paint;
+  }
+
+  async function openAssetSheet() {
+    if (document.getElementById('assetPane')) { closeAssetSheet(); return; }
+    // 每次打开都从「不在多选态」开始：关掉抽屉时留着的勾选没有意义，
+    // 再打开却还挂着「已选 3 项」，一按删除就把看不见的三张删了。
+    assetPicking = false;
+    assetPicked = new Set();
+    assetLastIdx = -1;
+    const box = document.createElement('div');
+    box.id = 'assetPane';
+    box.innerHTML = `
+      <aside class="asset-pane" role="dialog" aria-label="资产库">
+        <div class="asset-grip" title="拖动调整宽度（双击复位）"></div>
+        <header>
+          <strong>资产库</strong>
+          <span class="asset-n"></span>
+          <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史"
+                  aria-label="重新读取资产目录与 ComfyUI 历史">${icon('rotate')}</button>
+          <button type="button" class="x" title="关闭（Esc）">×</button>
+        </header>
+        <div class="asset-bar">
+          <div class="asset-row">
+            <input class="asset-q" placeholder="搜索文件名…" spellcheck="false" />
+            <button type="button" class="asset-pick" title="多选：收进库 / 移动分组 / 删除">选择</button>
+          </div>
+          <div class="asset-tabs">
+            <button type="button" data-k="all" class="on">全部</button>
+            <button type="button" data-k="lib">库</button>
+            <button type="button" data-k="output">生成</button>
+            <button type="button" data-k="canvas">画布</button>
+            <button type="button" data-k="input">上传</button>
+          </div>
+          <div class="asset-groups"></div>
+        </div>
+        <div class="asset-grid"><p class="asset-tip">读取中…</p></div>
+        <div class="asset-actions"></div>
+        <div class="asset-foot">
+          <div class="asset-path">
+            <span class="asset-path-t" title=""></span>
+            <button type="button" class="asset-root">修改…</button>
+          </div>
+          <div class="asset-path asset-comfy">
+            <span class="asset-comfy-t" title=""></span>
+            <button type="button" class="asset-comfy-btn">修改…</button>
+          </div>
+          <p class="asset-hint">
+            <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
+            <button type="button" class="asset-restore"></button>
+          </p>        </div>
+      </aside>`;
+    document.body.appendChild(box);
+    box.querySelector('.x').onclick = closeAssetSheet;
+
+    const grid = box.querySelector('.asset-grid');
+    const nEl = box.querySelector('.asset-n');
+    const q = box.querySelector('.asset-q');
+    const groupBar = box.querySelector('.asset-groups');
+    const actions = box.querySelector('.asset-actions');
+    const footEl = box.querySelector('.asset-foot');
+    const pathT = box.querySelector('.asset-path-t');
+    const pathBtn = box.querySelector('.asset-root');
+    const comfyRow = box.querySelector('.asset-comfy');
+    const comfyT = box.querySelector('.asset-comfy-t');
+    const hintEl = box.querySelector('.asset-hint');
+    const restoreBtn = box.querySelector('.asset-restore');
+    const pickBtn = box.querySelector('.asset-pick');
+
+    const groupName = (id) => (assetGroups.find((g) => g.id === id) || {}).name || '未分组';
+    // 当前选中的自定义分组 id；没选中（全部 / 未分组）时收进库就落未分组
+    const curGid = () => (assetGroup !== 'all' && assetGroup !== 'none' ? assetGroup : '');
+
+    /* ---------- 存放路径 ---------- */
+    // 路径只显示尾部两段：绝对路径一行放不下，全塞进去会把「修改…」挤出去。
+    const shortPath = (p) => {
+      const raw = String(p || '');
+      const sep = raw.includes('\\') ? '\\' : '/';
+      const parts = raw.split(/[\\/]+/).filter(Boolean);
+      return parts.length <= 3 ? raw : '…' + sep + parts.slice(-2).join(sep);
+    };
+    const paintPath = () => {
+      // 「默认」两个字不是装饰：默认路径跟着程序走，把整个文件夹拷到别的机器上图还在；
+      // 自定义路径（尤其填到 D:\ 上）换机器就没了。用户得能一眼看出自己是不是默认。
+      pathT.textContent = assetRoot
+        ? shortPath(assetRoot) + (assetRootDefault ? '（默认）' : '')
+        : '…';
+      pathT.title = assetRoot
+        ? (assetRootDefault
+          ? `${assetRoot}\n默认位置：程序目录下的 assets/，整个文件夹拷走图就跟着走`
+          : `${assetRoot}\n自定义位置（点「修改…」清空可恢复默认）`)
+        : '';
+      pathBtn.textContent = '修改…';
+      // 第二行：ComfyUI 的目录。没配的时候「删除」对库外的图只能从列表移除，
+      // 所以这行不是装饰——它决定删除能不能真删到磁盘。
+      comfyT.textContent = assetComfyDir ? `ComfyUI ${shortPath(assetComfyDir)}` : 'ComfyUI 目录未设置';
+      comfyT.title = assetComfyDir
+        ? `${assetComfyDir}\n删除库外的图会从这里真删（进系统回收站）`
+        : '不填也能用：只是库外（生成结果 / 上传素材）的图删除时只会从列表移除，磁盘文件不动';
+      comfyRow.classList.toggle('unset', !assetComfyDir);
+    };
     const importPicked = async () => {
       const picked = assetFiltered().filter((it) => assetPicked.has(assetKeyOf(it)));
       const out = picked.filter((it) => it.source !== 'lib');
@@ -4337,262 +4626,19 @@
     /* ---------- 宫格：复用格子 ---------- */
     // key → { cell, img, on, idx }
     // 只增删变化的那几个，剩下的原地挪位置。滚动 / 勾选 / 切分组都靠这一条才不卡。
-    let suppressClick = false;      // 框选刚松手，别把这一下当成点击
     const cellByKey = new Map();
-    const thumbURL = (item) => {
-      const u = String(item.url || '');
-      // 画布上的图是 dataURL，服务端缩不了，直接用；其余走缩略图接口
-      if (!u.startsWith('/api/')) return u;
-      return `/api/thumb?w=320&src=${encodeURIComponent(u)}`;
-    };
-
-    const buildCell = (item) => {
-      const cell = document.createElement('div');
-      cell.className = 'asset-cell';
-      cell.setAttribute('role', 'button');
-      cell.tabIndex = 0;
-      const img = document.createElement('img');
-      img.alt = '';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.draggable = false;          // 拖拽留给框选，别让浏览器拖起图片影子
-      const name = document.createElement('span');
-      name.className = 'asset-name';
-      const badge = document.createElement('span');
-      badge.className = `asset-badge ${item.source}`;
-      badge.textContent = item.source === 'lib' ? '库'
-        : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
-      const add = document.createElement('span');
-      add.className = 'asset-add';
-      add.title = '放入画布';
-      add.textContent = '＋';
-      add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
-      const tick = document.createElement('span');
-      tick.className = 'asset-tick';
-      cell.append(img, badge, name, add, tick);
-      const rec = { cell, img, idx: -1 };
-      cell.onclick = (ev) => {
-        if (suppressClick) { suppressClick = false; return; }
-        if (!assetPicking) { openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item)); return; }
-        const key = assetKeyOf(item);
-        if (ev.shiftKey && assetLastIdx >= 0) {
-          // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
-          const list = assetFiltered();
-          const [a, b] = [assetLastIdx, rec.idx].sort((x, y) => x - y);
-          const on = !assetPicked.has(key);
-          for (let j = a; j <= b && j < list.length; j++) {
-            const k = assetKeyOf(list[j]);
-            if (on) assetPicked.add(k); else assetPicked.delete(k);
-          }
-        } else if (assetPicked.has(key)) assetPicked.delete(key);
-        else assetPicked.add(key);
-        assetLastIdx = rec.idx;
-        paintSelection();
-      };
-      cell.ondblclick = (ev) => {
-        ev.stopPropagation();
-        if (!assetPicking) putAssetOnCanvas(item);
-      };
-      cell.onkeydown = (ev) => {
-        if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        ev.preventDefault();
-        if (assetPicking) cell.onclick({ shiftKey: false });
-        else putAssetOnCanvas(item);
-      };
-      return rec;
-    };
-
-    const paint = () => {
-      const list = assetFiltered();
-      const hiddenN = assetHiddenKeys().length;
-      const total = (assetItems || []).length - hiddenN;
-      // 勾上的图一旦被筛掉就作废：看不见的东西不该被「删除」顺手带走
-      const alive = new Set(list.map(assetKeyOf));
-      [...assetPicked].forEach((k) => { if (!alive.has(k)) assetPicked.delete(k); });
-
-      nEl.textContent = list.length === total ? `${total} 项` : `${list.length} / ${total} 项`;
-      restoreBtn.textContent = hiddenN ? `已移除 ${hiddenN} 项` : '';
-      restoreBtn.classList.toggle('hidden', !hiddenN);
-      paintPath();
-
-      grid.querySelectorAll('.asset-tip').forEach((p) => p.remove());
-      if (!list.length) {
-        cellByKey.forEach((rec) => rec.cell.remove());
-        cellByKey.clear();
-        const why = assetQuery ? '没有匹配的文件'
-          : curGid() ? '这个分组还是空的：回「全部」选几张，用「移动到」放进来'
-            : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
-              : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
-                : '还没有资产：生成一张图、或上传一张图就会出现在这里';
-        grid.innerHTML = `<p class="asset-tip">${why}</p>`;
-        paintActions();
-        return;
-      }
-      const groupOf = (item) => groupName(item.group || (assetMeta[assetKeyOf(item)] || {}).group || '');
-      // 复用 + 按顺序就位：cursor 走到哪儿，新格子就插到哪儿
-      let cursor = grid.firstElementChild;
-      const keep = new Set();
-      for (let i = 0; i < list.length; i++) {
-        const item = list[i];
-        const key = assetKeyOf(item);
-        keep.add(key);
-        let rec = cellByKey.get(key);
-        if (!rec) { rec = buildCell(item); cellByKey.set(key, rec); }
-        rec.idx = i;
-        rec.item = item;
-        if (rec.cell === cursor) cursor = cursor.nextElementSibling;
-        else grid.insertBefore(rec.cell, cursor || null);
-        const where = item.source === 'lib' ? '资产库（存放目录里的文件）'
-          : item.source === 'canvas' ? '画布上的图'
-            : item.source === 'input' ? '上传素材（ComfyUI input/）' : '生成结果（ComfyUI output/）';
-        rec.cell.title = `${item.filename}\n${where}\n分组：${groupOf(item)}`;
-        // 原图地址单独记一份：格子里的 <img> 现在是缩略图（/api/thumb?src=…），
-        // 想拿「这一格到底是哪张图」的地方（大图、断言、以后的重命名）都读这个。
-        rec.cell.dataset.src = String(item.url || '');
-        rec.img.src = thumbURL(item);
-        rec.cell.querySelector('.asset-name').textContent = item.filename || '（未命名）';
-        rec.cell.classList.toggle('pick', assetPicking);
-        rec.cell.classList.toggle('on', assetPicked.has(key));
-        // 库内文件才能改名：库外的是 ComfyUI 的产物，改名字等于把它从历史里改名，
-        // 下次 /history 一读又变回去了。
-        const wantRn = item.source === 'lib';
-        const rn = rec.cell.querySelector('.asset-rn');
-        if (wantRn && !rn) {
-          const b = document.createElement('span');
-          b.className = 'asset-add asset-rn';
-          b.title = '改名';
-          b.textContent = '✎';
-          b.onclick = (ev) => { ev.stopPropagation(); renameAsset(item); };
-          rec.cell.append(b);
-        } else if (!wantRn && rn) rn.remove();
-      }
-      for (const [k, rec] of cellByKey) {
-        if (!keep.has(k)) { rec.cell.remove(); cellByKey.delete(k); }
-      }
-      paintActions();
-    };
-
-    /* ---------- 框选：在多选态下按住拖动，框到谁选谁 ----------
-       以前只能一张一张点（或者 Shift 连选），几百张里挑二十张要点二十次。
-       现在：拖动出一块框，和框相交的格子一次全选中；按住 Shift 拖动 = 追加。
-       点在格子上的那一下如果没拖动，仍然是一次普通点击（勾选 / 取消勾选）。 */
-    let marquee = null;
-    const clearMarquee = () => {
-      if (!marquee) return;
-      marquee.el.remove();
-      marquee = null;
-      grid.classList.remove('marquee-on');
-    };
-    const marqueeApply = (ev) => {
-      const gr = grid.getBoundingClientRect();
-      const x = ev.clientX - gr.left + grid.scrollLeft;
-      const y = ev.clientY - gr.top + grid.scrollTop;
-      const box = {
-        l: Math.min(x, marquee.x0), r: Math.max(x, marquee.x0),
-        t: Math.min(y, marquee.y0), b: Math.max(y, marquee.y0),
-      };
-      marquee.el.style.left = `${box.l}px`;
-      marquee.el.style.top = `${box.t}px`;
-      marquee.el.style.width = `${box.r - box.l}px`;
-      marquee.el.style.height = `${box.b - box.t}px`;
-      // 命中判定用「拖动开始时抓下来的矩形」：拖动过程中格子不会动，
-      // 每一帧重新量 581 个 getBoundingClientRect 才是真卡的原因。
-      const next = new Set(marquee.base);
-      marquee.rects.forEach((r) => {
-        if (r.r < box.l || r.l > box.r || r.b < box.t || r.t > box.b) return;
-        next.add(r.k);
-      });
-      let changed = next.size !== assetPicked.size;
-      if (!changed) {
-        for (const k of next) if (!assetPicked.has(k)) { changed = true; break; }
-      }
-      if (!changed) return;
-      assetPicked = next;
-      paintSelection();
-    };
-
-    grid.addEventListener('pointerdown', (ev) => {
-      if (!assetPicking || ev.button !== 0) return;
-      if (ev.target.closest('.asset-tip')) return;
-      const gr = grid.getBoundingClientRect();
-      const rects = [];
-      cellByKey.forEach((rec, k) => {
-        const r = rec.cell.getBoundingClientRect();
-        rects.push({ k, l: r.left - gr.left + grid.scrollLeft, r: r.right - gr.left + grid.scrollLeft,
-          t: r.top - gr.top + grid.scrollTop, b: r.bottom - gr.top + grid.scrollTop });
-      });
-      const x0 = ev.clientX - gr.left + grid.scrollLeft;
-      const y0 = ev.clientY - gr.top + grid.scrollTop;
-      const start = { x: ev.clientX, y: ev.clientY };
-      const base = ev.shiftKey ? new Set(assetPicked) : new Set();
-      let dragging = false;
-      const onMove = (e) => {
-        if (!dragging) {
-          if (Math.abs(e.clientX - start.x) < 5 && Math.abs(e.clientY - start.y) < 5) return;
-          dragging = true;
-          const el = document.createElement('div');
-          el.className = 'asset-marquee';
-          grid.appendChild(el);
-          marquee = { el, rects, base, x0, y0 };
-          grid.classList.add('marquee-on');
-        }
-        e.preventDefault();
-        marqueeApply(e);
-      };
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        window.removeEventListener('pointercancel', onUp);
-        if (dragging) {
-          suppressClick = true;
-          // 松手后浏览器还会补一次 click（可能落在另一格上），下一帧再放开
-          setTimeout(() => { suppressClick = false; }, 0);
-        }
-        clearMarquee();
-      };
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
-      window.addEventListener('pointercancel', onUp);
+    const clickState = { suppressClick: false };
+    const paint = createAssetGridRenderer({
+      grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid,
+      paintPath, paintActions, renameAsset,
     });
-    // 滚动时把框收掉：坐标是相对内容的，滚走之后框和格子就对不上了
-    grid.addEventListener('scroll', clearMarquee, { passive: true });
 
-    /* ---------- 抽屉宽度：拖左边沿 ---------- */
-    // 392px 只放得下 3 列，长文件名全被截断。宽度记在 localStorage 里，
-    // 宫格用 auto-fill，拉宽就自动多排几列。
-    const paneEl = box.querySelector('.asset-pane');
-    const grip = box.querySelector('.asset-grip');
-    const W_MIN = 320, W_MAX = () => Math.min(1100, Math.max(W_MIN, window.innerWidth - 120));
-    const applyPaneW = (w) => {
-      const v = Math.round(Math.max(W_MIN, Math.min(W_MAX(), w)));
-      paneEl.style.width = `${v}px`;
-      return v;
-    };
-    try {
-      const saved = Number(localStorage.getItem('infisheet-asset-w') || 0);
-      if (saved) applyPaneW(saved);
-    } catch { /* 隐私模式读不了，用默认宽度 */ }
-    grip.onpointerdown = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const startW = paneEl.getBoundingClientRect().width;
-      const x0 = ev.clientX;
-      document.body.classList.add('asset-resizing');
-      const onMove = (e) => applyPaneW(startW - (e.clientX - x0));
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        document.body.classList.remove('asset-resizing');
-        try { localStorage.setItem('infisheet-asset-w', String(Math.round(paneEl.getBoundingClientRect().width))); } catch { /* 忽略 */ }
-      };
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
-    };
-    grip.ondblclick = (ev) => {
-      ev.stopPropagation();
-      paneEl.style.width = '';
-      try { localStorage.removeItem('infisheet-asset-w'); } catch { /* 忽略 */ }
-    };
+    const { paintGroups, newAssetGroup, assignTo } =
+      createAssetGroupControls(groupBar, curGid, groupName, paint);
+
+    bindAssetMarquee(grid, cellByKey, paintSelection, (on) => { clickState.suppressClick = on; });
+
+    bindAssetPaneResize(box);
 
     const reload = async (force) => {
       grid.innerHTML = '<p class="asset-tip">读取中…</p>';
@@ -4601,6 +4647,8 @@
       paintGroups();
       paint();
     };
+    bindAssetPathControls(box, paintPath, reload);
+
 
     // 搜索防抖：每敲一个字就重排一遍宫格，几百个格子会一顿一顿的
     let qTimer = 0;
@@ -8336,11 +8384,29 @@
     return val;
   }
 
+  // localStorage 只有 5MB，画布一多就写不进去。以前这里是 `catch {}`：
+  // 草稿静默丢了，顶栏还显示「已保存」——最坏的那种失败（用户以为存住了）。
+  // 现在至少说一次，并且明确告诉他该按哪个按钮。
+  let localDraftWarned = false;
+  function saveLocalDraft() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(serialize()));
+      localDraftWarned = false;
+      return true;
+    } catch {
+      if (!localDraftWarned) {
+        localDraftWarned = true;
+        flash('本机草稿放不下（浏览器配额已满）：请用「保存」存到磁盘，别直接关页面');
+      }
+      return false;
+    }
+  }
+
   function flushSave() {
     clearTimeout(saveTimer);
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(serialize())); } catch { /* 超配额忽略 */ }
+    const local = saveLocalDraft();
     saveToServer();
-    flash('已保存');
+    if (local) flash('已保存');
   }
 
   async function saveToServer() {
@@ -8434,7 +8500,7 @@
     setSaveState('未保存…');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify(serialize())); } catch { /* 超配额忽略 */ }
+      if (!saveLocalDraft()) setSaveState('本机草稿未存下');
       if (autosaveOn()) saveToServer();
       else setSaveState('自动保存已关闭');
     }, 600);
@@ -11540,12 +11606,25 @@
     ], '旋转');
   }
 
+  // 编辑产物（旋转 / 调色 / 裁剪）先落盘，节点里只存地址。
+  // 以前直接把 dataURL 写进节点：一张几百 KB 到几 MB，存档要进 localStorage（5MB 配额），
+  // 撤销栈再乘 40 份。落盘之后同一张图反复保存也只有一个文件（文件名是内容哈希）。
+  // 服务端存不了（比如直接双击打开 HTML）时退回 dataURL——不能因为存不了图就把功能断掉。
+  async function persistEditedImage(cv, tag = 'edit') {
+    const dataURL = cv.toDataURL('image/png');
+    try {
+      const r = await postJson('/api/edit-image', { data: dataURL, name: tag });
+      if (r && r.ok && r.url) return r.url;
+    } catch { /* 落盘失败就走下面的兜底 */ }
+    return dataURL;
+  }
+
   async function applyRotate(src, deg, flip = '') {
     let img;
     try { img = await loadImageEl(src.dataURL); } catch { flash('图片加载失败，没法旋转'); return; }
     const cv = rotateCanvas(img, deg, flip);
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
-      dataURL: cv.toDataURL('image/png'),
+      dataURL: await persistEditedImage(cv, 'rotate'),
       title: `旋转 · ${src.title}`,
     });
     selectOnly(n.id);
@@ -11720,7 +11799,7 @@
         ctx.drawImage(img, 0, 0);
         closeImgPanel();
         const nn = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
-          dataURL: cv.toDataURL('image/png'),
+          dataURL: await persistEditedImage(cv, 'color'),
           title: `调色 · ${n.title}`,
         });
         selectOnly(nn.id);
@@ -12494,7 +12573,8 @@
   }
   function setMaskStyle(patch) {
     const next = { ...maskStyle(), ...patch };
-    try { localStorage.setItem(MASK_STYLE_KEY, JSON.stringify(next)); } catch { /* 超配额忽略 */ }
+    // 只是笔刷颜色 / 透明度：写不进去（隐私模式、配额满）就这次不记住，不必打扰用户
+    try { localStorage.setItem(MASK_STYLE_KEY, JSON.stringify(next)); } catch { /* 无伤大雅 */ }
     return next;
   }
   // #rrggbb + 透明度 → canvas 能用的 rgba()
@@ -12915,8 +12995,7 @@
         uploaded: up.image, stitched: true,
       };
     } catch {
-      // 传不上去（ComfyUI 断了）就先用 dataURL 顶着：图是对的，只是这一张存档大一点
-      return { ...item, url: dataURL, stitched: true };
+      return { ...item, url: await persistEditedImage(cv, 'stitch'), stitched: true };
     }
   }
 
@@ -13363,7 +13442,7 @@
     updateImgTools();
   }
 
-  function applyCrop() {
+  async function applyCrop() {
     const s = cropSession && cropSession.sel;
     if (!s) return;
     const { node: src, mask } = cropSession;
@@ -13380,7 +13459,7 @@
     const cv = document.createElement('canvas');
     cv.width = sw; cv.height = sh;
     cv.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const url = cv.toDataURL('image/png');
+    const url = await persistEditedImage(cv, 'crop');
     closeCrop();
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: url,
