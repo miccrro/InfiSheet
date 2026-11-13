@@ -9248,6 +9248,49 @@
     return n;
   }
 
+  // ---- 从系统剪贴板粘贴 ----
+  // Ctrl+V 以前只认「画布内复制的节点」：剪贴板里是张图或一段字时，内部快照是空的，
+  // 直接提示「剪贴板是空的」——用户看到的就是「读不到剪贴板」。
+  // 改听 paste 事件：ev.clipboardData 直接带内容，不弹剪贴板权限，比 clipboard.read() 稳。
+  //   图片 → 一张一个图片节点，落点跟着鼠标，顺手传进 ComfyUI 的 input/
+  //   纯文字 → 一个提示词节点
+  //   都没有 → 退回画布内复制的节点（粘贴快照）
+  document.addEventListener('paste', (ev) => {
+    // 首页（还没进画布）不接：那儿没有画布可落节点
+    const homeEl = document.getElementById('home');
+    if (homeEl && !homeEl.classList.contains('hidden')) return;
+    // 焦点在输入框 / 富文本里：那是它自己的粘贴，别抢
+    if (isFieldTarget(ev.target)) return;
+    const dt = ev.clipboardData;
+    if (!dt) return;
+    ev.preventDefault();
+    const at = pointerWorld || screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+    // 先看 files：截图 / 资源管理器复制的图都在这儿。
+    // 有些应用只往 items 里塞，files 是空的，那条路再兜一次。
+    let files = [...(dt.files || [])].filter((f) => f && String(f.type || '').startsWith('image/'));
+    if (!files.length) {
+      files = [...(dt.items || [])]
+        .filter((it) => it && it.kind === 'file' && String(it.type || '').startsWith('image/'))
+        .map((it) => it.getAsFile())
+        .filter(Boolean);
+    }
+    if (files.length) {
+      files.forEach((f, i) => {
+        addImageFromFile(f, Math.round(at.x) + i * 36, Math.round(at.y) + i * 36);
+      });
+      flash(`已粘贴 ${files.length} 张图`);
+      return;
+    }
+    const text = String(dt.getData('text/plain') || '').trim();
+    if (text) {
+      const n = addTextNode(Math.round(at.x), Math.round(at.y), text);
+      selectOnly(n.id);
+      flash('已粘贴为提示词节点');
+      return;
+    }
+    pasteClipboard();
+  });
+
   // 「加载图片…」：从磁盘挑（支持多选）直接变成图片节点，选完就带着图。
   // 和「图片」（空白节点，等拖文件进来）分开，是因为多数人双击画布就是想放一张图。
   // 复用同一个 input：每次都新建的话，选过的文件会一直挂在内存里；清 value 是为了
@@ -9375,7 +9418,9 @@
       if (k === 'z') { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); return; }
       if (k === 'y') { ev.preventDefault(); redo(); return; }
       if (k === 'c') { if (copySelection()) ev.preventDefault(); return; }
-      if (k === 'v') { ev.preventDefault(); pasteClipboard(); return; }
+      // Ctrl+V 不在这里拦：交给下面 document 的 paste 事件，那条路上能直接读系统剪贴板
+      // （图片 / 文字），不用弹剪贴板权限。画布内复制的节点由 paste 处理器兜底。
+      if (k === 'v') return;
       if (k === 'd') { ev.preventDefault(); duplicateSelection(); return; }
       if (k === 's') { ev.preventDefault(); flushSave(); return; }
       if (k === 'k') { ev.preventDefault(); openSettingsSheet(); return; }
