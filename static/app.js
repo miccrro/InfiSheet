@@ -281,7 +281,10 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // 焦点在输入控件 / 富文本里时，全局快捷键（Delete、空格平移、F 适配…）都要放行
   const FIELD_SEL = 'input, textarea, select, [contenteditable="true"]';
-  const isFieldTarget = (t) => !!(t && typeof t.matches === 'function' && t.matches(FIELD_SEL));
+  // 用 closest 而不是 matches：富文本里的事件目标常常是里面的 <p> / <b> / <span>，
+  // 只认目标本身的话，光标停在加粗段落里滚轮就被当成画布缩放（长提示词滚不动），
+  // 空格平移也会把空格吃掉。往上找到那个 contenteditable 容器才算数。
+  const isFieldTarget = (t) => !!(t && typeof t.closest === 'function' && t.closest(FIELD_SEL));
   // 只读的提示词框不是「正在打字」：它平时就是一块字，点一下不该把 Delete / 空格平移吃掉。
   // 滚轮那条仍然用 isFieldTarget（长提示词要能自己滚），两者不能混。
   const isTypingTarget = (t) => isFieldTarget(t) && !(t.tagName === 'TEXTAREA' && t.readOnly);
@@ -506,13 +509,21 @@
       const syncEmpty = () => ta.classList.toggle('is-empty', !richToText(ta).length);
       const autoGrow = () => {
         // 手动拉过高度就听用户的：再按内容算高度，一打字框就弹回去
-        if (n.h) { ta.style.height = `${n.h}px`; ta.style.overflowY = 'auto'; return; }
-        ta.style.height = 'auto';
-        // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
-        // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
-        const floor = ta.classList.contains('is-empty') ? 88 : 0;
-        ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
-        ta.style.overflowY = 'hidden';
+        if (n.h) {
+          ta.style.height = `${n.h}px`;
+        } else {
+          ta.style.height = 'auto';
+          // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
+          // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
+          const floor = ta.classList.contains('is-empty') ? 88 : 0;
+          ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
+        }
+        // 只有「真被截断」并且「正在编辑」时才给滚动条：
+        // 只读时滚轮要留给画布缩放（这块字占着节点一大片，抢滚轮等于画布滚不动），
+        // 编辑时才是「我在改这段长提示词」，得能滚。
+        // 以前这里一律 hidden，超过 420px 的内容既看不见也滚不动。
+        const clipped = ta.scrollHeight > ta.clientHeight + 2;
+        ta.style.overflowY = clipped && ta.isContentEditable ? 'auto' : 'hidden';
       };
       const absorb = () => {
         n.html = ta.innerHTML;
@@ -532,6 +543,8 @@
         ta.contentEditable = on ? 'true' : 'false';
         el.classList.toggle('editing', on);
         ta.title = on ? '' : '双击编辑提示词';
+        // 进出编辑态都要重算一次滚动条：编辑时被截断才给，退出时收起
+        autoGrow();
         if (!on) return;
         ta.focus();
         const r = document.createRange();
@@ -1172,8 +1185,9 @@
     return null;
   }
 
-  // 送进模型的第一张图决定画幅：节点自己的图优先，其次连线进来的参考图
-  // （和 genOne 里 picked 的取图顺序一致，否则「面板写的比例」和「实际喂进去的图」会对不上）
+  // 智能档的画幅：节点自己的图优先，其次连线进来的参考图。
+  // 注意「参考图」只算连线 / @ 引用那几张——节点自己的图不再自动喂进模型，
+  // 但「按它的尺寸出图」仍然成立：用户眼前就是这张图，智能档要的就是它的比例。
   // 返回实际像素 + 吸附后的比例：智能档要的是「原图多大就出多大」，只给比例是不够的。
   function autoSizeFor(n) {
     let src = n.dataURL ? imageSizeOf(n) : null;
@@ -3430,14 +3444,10 @@
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
       } catch { /* 这张传不上去就跳过，别把整次生成拖垮 */ }
     }
-    // 节点自己的图也当参考图（图就摆在这个节点上，没有连线的那种）。
-    // 扩图时跳过：节点上是**原图**，这一轮要喂的是撑大的画布（见下面 bake 那一段）。
-    if (!bake && !picked.length && n.dataURL) {
-      try {
-        const name = await ensureUploaded(n);
-        if (name) picked.push({ node: n, name, label: labelOf(n) });
-      } catch { /* 纯文生图 */ }
-    }
+    // 节点自己的图**不**当参考图。以前这里会把摆在节点上的图（上一次的结果、拖进来的图）
+    // 自动塞进 picked，于是「没连线、选的是文生图」也会把这张图喂进去：出图跟着原图走，
+    // 用户以为自己点的是文生图。想图生图就连一条线过来——连线是唯一明确的意图表达。
+    // （遮罩、扩图两条路各自 unshift 自己的源图，不受这里影响）
     // 遮罩：涂过就必须让这张图进模型，否则等于白涂。它永远是 unshift 进 picked 的第一张——
     // 工作流的第一个 image 插槽拿到它，提示词里的「图1」指的就是它。
     // 落地方式有两条，由**工作流能力**决定（不看用户选的是哪张）：
