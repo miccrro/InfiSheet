@@ -13819,8 +13819,9 @@
   // **不走遮罩**：遮罩是二值的（改 / 不改），它说不清「这根箭头指着的那只碗」。
   // 画上去的箭头、圈、序号是模型看得懂的指示，和描述里那句「换成青花瓷盘」一起才构成完整要求。
   const SMART_TOOLS = [
-    ['dot', '点击', '点一下标出要改的地方（自动编号）'],
-    ['rect', '框选', '拖一个框圈住它'],
+    // 「点一下」和「圈一块」合成一个工具：抬手之前谁也说不准用户是想点还是想框，
+    // 让他先选一次工具，多半会选错再返工。两种标记都编号，描述里「1 换成红色」才对得上号。
+    ['mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）'],
     ['brush', '画笔', '自由涂出要改的范围'],
     ['arrow', '箭头', '从起点拖到目标，指哪改哪'],
     ['text', '文字', '在图上写一句备注（模型也看得见）'],
@@ -13912,7 +13913,27 @@
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
       ctx.stroke();
     };
-    let dots = 0;
+    // 序号徽章：白圈红底白字。点和框共用一套编号（按落笔顺序），
+    // 这样描述里写「1 换成红色、2 去掉」时，两个编号指的是同一件事。
+    const badge = (x, y, no, r) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 2.2 * k;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+      ctx.strokeStyle = MARK_COLOR;
+      ctx.fillStyle = '#fff';
+      ctx.font = `700 ${Math.round(r * 1.05)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(no), x, y + r * 0.04);
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = MARK_COLOR;
+    };
+    const badgeR = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
+    let no = 0;
     for (const s of doc.strokes || []) {
       const kind = strokeKind(s);
       if (kind === 'brush' || kind === 'eraser') {
@@ -13932,10 +13953,15 @@
       if (kind === 'rect') {
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
+        no += 1;
         ctx.lineWidth = 3 * k;
         ctx.setLineDash([9 * k, 6 * k]);
         ctx.strokeRect(r[0], r[1], r[2], r[3]);
         ctx.setLineDash([]);
+        // 编号贴在框的左上角（夹在画面内，免得贴着边缘时被裁掉半个）
+        const br = badgeR();
+        badge(clamp(r[0], br + 2, Math.max(br + 2, doc.w - br - 2)),
+          clamp(r[1], br + 2, Math.max(br + 2, doc.h - br - 2)), s.n || no, br);
       } else if (kind === 'arrow') {
         const from = s.from || [];
         const to = s.to || [];
@@ -13954,26 +13980,10 @@
         ctx.closePath();
         ctx.fill();
       } else if (kind === 'dot') {
-        dots += 1;
+        no += 1;
         const at = s.at || [];
         if (at.length < 2) continue;
-        const r = Math.max(1, s.r || 12);
-        ctx.beginPath();
-        ctx.arc(at[0], at[1], r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.lineWidth = 2.2 * k;
-        ctx.strokeStyle = '#fff';
-        ctx.stroke();
-        ctx.strokeStyle = MARK_COLOR;
-        // 序号：多处标记时，「1 换成红色、2 去掉」才对得上号
-        ctx.fillStyle = '#fff';
-        ctx.font = `700 ${Math.round(r * 1.05)}px system-ui, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(String(s.n || dots), at[0], at[1] + r * 0.04);
-        ctx.textAlign = 'start';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = MARK_COLOR;
+        badge(at[0], at[1], s.n || no, Math.max(1, s.r || badgeR()));
       } else if (kind === 'text') {
         const box = markTextBox(ctx, s);
         const pad = 5 * k;
@@ -14062,7 +14072,7 @@
     if (ta && !promptText(ta).trim()) ta.dataset.ph = '要改成什么样？例如：换成青花瓷盘，其他不要动';
 
     const ac = new AbortController();
-    const sess = { tool: 'dot', size: 48, draft: null, textInput: null };
+    const sess = { tool: 'mark', size: 48, draft: null, textInput: null };
     // 节点被重建（换图 / 改尺寸 / 生成回来）时这块 DOM 就没了，挂在 window 上的监听要跟着摘：
     // 否则下一笔会同时落到新旧两个会话上，旧的那个还在改一份已经不在屏幕上的笔画。
     const alive = () => {
@@ -14128,6 +14138,10 @@
       inp.onblur = () => done(true);
     };
 
+    // 落笔：一律先按「框」起草，抬手时才知道用户是点还是拖——
+    // 点一下（没拖开）= 一个带序号的点，拖开 = 一个带序号的框。这样就不用先选工具。
+    const addDot = (p) => doc.strokes.push({ kind: 'dot', at: p, r: dotRadius() });
+
     cv.addEventListener('pointerdown', (ev) => {
       if (!alive()) return;
       if (ev.button !== 0) return;
@@ -14135,15 +14149,8 @@
       ev.stopPropagation();        // 不让画布顺手拖节点 / 平移
       if (sess.textInput) return;  // 正在写备注：先让它收尾
       const p = toDoc(ev);
-      if (sess.tool === 'dot') {
-        const no = doc.strokes.filter((s) => strokeKind(s) === 'dot').length + 1;
-        doc.strokes.push({ kind: 'dot', at: p, r: dotRadius(), n: no });
-        redraw();
-        refresh();
-        return;
-      }
       if (sess.tool === 'text') { askText(ev, p); return; }
-      if (sess.tool === 'rect') {
+      if (sess.tool === 'mark') {
         sess.draft = { kind: 'rect', origin: p, rect: [p[0], p[1], 0, 0] };
       } else if (sess.tool === 'arrow') {
         sess.draft = { kind: 'arrow', from: p, to: p.slice(), size: sess.size };
@@ -14182,10 +14189,18 @@
       const d = sess.draft;
       sess.draft = null;
       if (!d) return;
-      // 手抖点一下不该留下一个看不见的框 / 一根没有方向的箭头
-      const tiny = (d.kind === 'rect' && (d.rect[2] < 6 || d.rect[3] < 6))
-        || (d.kind === 'arrow' && Math.hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]) < 8);
-      if (tiny) doc.strokes.pop();
+      // 阈值按**屏幕**像素算再换回图上像素：4000px 的图上「6 个图上像素」不到一个屏幕像素，
+      // 手一抖就被当成框，出来一个看不见的小方块。
+      const cw = cv.getBoundingClientRect().width;
+      const px = cw > 0 ? doc.w / cw : 1;
+      if (d.kind === 'rect' && d.rect[2] < 6 * px && d.rect[3] < 6 * px) {
+        // 没拖开 = 用户想「点一下」：换成一个带序号的点，比留个看不见的框有用
+        doc.strokes.pop();
+        addDot(d.origin);
+      } else if (d.kind === 'arrow' && Math.hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]) < 8 * px) {
+        // 手抖点一下不该留下一个没有方向的箭头
+        doc.strokes.pop();
+      }
       delete d.origin;
       redraw();
       refresh();
@@ -14196,7 +14211,7 @@
     const setTool = (k) => {
       sess.tool = k;
       bar.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.tool === k)));
-      cv.style.cursor = k === 'text' ? 'text' : k === 'dot' ? 'pointer' : 'crosshair';
+      cv.style.cursor = k === 'text' ? 'text' : 'crosshair';
     };
     bar.querySelectorAll('[data-tool]').forEach((b) => { b.onclick = () => setTool(b.dataset.tool); });
 
@@ -14245,7 +14260,7 @@
       if (ev.key === ']') { ev.preventDefault(); setSize(sess.size + 4); }
     }, { signal: ac.signal });
 
-    setTool('dot');
+    setTool('mark');
     redraw();
     refresh();
   }

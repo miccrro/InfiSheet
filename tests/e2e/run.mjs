@@ -7499,9 +7499,11 @@ try {
       on: !!btn && btn.classList.contains('on'),
     };
   })()`, 8000).catch(() => null);
-  check('点「智能编辑」→ 标记层盖在节点图上：六种标记 + 描述框 + 预设都在，**没有独立编辑器**',
-    !!smartOpen && smartOpen.tools.join('/') === '点击/框选/画笔/箭头/文字/橡皮'
-      && smartOpen.pressed === '点击' && smartOpen.hasPrompt && smartOpen.presets === 5
+  // 「点一下」和「圈一块」合并成一个「标注」：抬手之前谁也说不准用户想点还是想框，
+  // 让他先选一次工具多半会选错再返工。两种标记都编号。
+  check('点「智能编辑」→ 标记层盖在节点图上：五种标记 + 描述框 + 预设都在，**没有独立编辑器**',
+    !!smartOpen && smartOpen.tools.join('/') === '标注/画笔/箭头/文字/橡皮'
+      && smartOpen.pressed === '标注' && smartOpen.hasPrompt && smartOpen.presets === 5
       && smartOpen.overlay === false && smartOpen.inNode === true && smartOpen.on === true,
     JSON.stringify(smartOpen && { tools: smartOpen.tools, pressed: smartOpen.pressed,
       presets: smartOpen.presets, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
@@ -7541,12 +7543,12 @@ try {
     beforeClick.same === true && beforeClick.pe !== 'none' && beforeClick.bars === 1,
     JSON.stringify(beforeClick));
   await page.clickAt(sAt(0.5, 0.5).x, sAt(0.5, 0.5).y, { settle: 220 });
-  check('点击：点一下就有一个带序号的标记', /标记 1 处/.test(await smartCount()),
+  check('点击：点一下就有一个带编号的标记', /标记 1 处/.test(await smartCount()),
     `${await smartCount()} · ${JSON.stringify(beforeClick)}`);
-  // 框选：拖一个框
-  await smartTool('rect');
+  // 同一个「标注」工具，拖一下就变成框——不用先换工具，框也带编号（1、2 连着排）
   await page.drag(sAt(0.2, 0.62), sAt(0.5, 0.84), { steps: 10, settle: 250 });
-  check('框选：拖一下就圈住一块', /标记 2 处/.test(await smartCount()), await smartCount());
+  check('框选：同一个「标注」工具拖一下就圈住一块（框也带编号）',
+    /标记 2 处/.test(await smartCount()), await smartCount());
 
   // 箭头：指哪改哪
   await smartTool('arrow');
@@ -7602,7 +7604,7 @@ try {
     const real = window.fetch.bind(window);
     const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const hits = [];
-    let upName = '', upSize = null, upDot = null, upArrow = null, upCorner = null;
+    let upName = '', upSize = null, upDot = null, upArrow = null, upCorner = null, upRect = null;
     window.fetch = async (url, opts) => {
       const u = String(url);
       if (u.startsWith('/api/upload')) {
@@ -7621,6 +7623,10 @@ try {
         upDot = px(Math.round(bm.width * 0.5) + 10, Math.round(bm.height * 0.5));
         // 箭头从 (20%,24%) 拖到 (42%,40%)：沿线中点应该压着红线
         upArrow = px(Math.round(bm.width * 0.31), Math.round(bm.height * 0.32));
+        // 框的编号徽章：框从 (20%,62%) 拖开，序号画在框左上角、半径 18。
+        // 取 (+12,+8) 这个点：在圆内、避开中间的白字，也避开框线本身（下面 8px 处）。
+        // 这一格在图上本来是棕色地面，红了只可能是徽章。
+        upRect = px(Math.round(bm.width * 0.2) + 12, Math.round(bm.height * 0.62) + 8);
         // 没标过的角落：必须和原图一模一样（否则说明整张被涂了）
         upCorner = px(4, 4);
         return json({ ok: true, image: f.name, subfolder: '', type: 'input' });
@@ -7664,7 +7670,7 @@ try {
       prompt: made ? (made.querySelector('.gen-prompt') || {}).textContent || '' : '',
       wf: made ? (made.querySelector('.wfsel .gm-btn') || {}).textContent || '' : '',
       maskPill: made ? !!made.querySelector('.n-mask') : null,
-      upName, upSize, upDot, upArrow, upCorner, srcCorner,
+      upName, upSize, upDot, upArrow, upCorner, upRect, srcCorner,
       srcSrc: srcAfter ? srcAfter.getAttribute('src') : '',
       runs: hits.length,
     };
@@ -7684,6 +7690,10 @@ try {
       && JSON.stringify(smartGen.upCorner) === JSON.stringify(smartGen.srcCorner),
     JSON.stringify({ size: smartGen.upSize, dot: smartGen.upDot, arrow: smartGen.upArrow,
       corner: smartGen.upCorner, srcCorner: smartGen.srcCorner }));
+  // 框也带编号：点和框共用一套序号，描述里写「1 换成红色、2 去掉」才对得上号
+  check('框选：框的左上角也画了编号（红底白字，就在交给模型的那张图上）',
+    smartGen.upRect && smartGen.upRect[0] > 180 && smartGen.upRect[1] < 130,
+    JSON.stringify(smartGen.upRect));
   check('智能编辑：上传的是标注图本身（<节点id>-edit.png，不是 -mask.png）',
     /^.+-edit\.png$/.test(smartGen.upName || '') && !/-mask\.png$/.test(smartGen.upName || ''),
     smartGen.upName);
