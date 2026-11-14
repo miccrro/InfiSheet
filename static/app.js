@@ -3708,9 +3708,10 @@
           // 反过来做的话，迁移会把这次刚出的图当成「更早的一次」，和下面 pushRun 那条重复——
           // 一次生成就在角标上写成「2 次」（实测踩到过：历史里两条指向同一个 krea2_0002x.png）。
           runsOf(n);
-          // 空节点和智能编辑的临时节点都由结果直接填入；智能编辑的原图仍在源节点。
+          // 空节点和一次性编辑节点由结果直接填入；原图仍在源节点。
           const smartReplace = !!g.smartReplace;
-          const hadImage = !!n.dataURL && !smartReplace;
+          const replaceInPlace = smartReplace || !!g.replaceOnComplete;
+          const hadImage = !!n.dataURL && !replaceInPlace;
           let batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
           // 裁切重绘：模型出的是「那一小块」，得贴回原图原位才是一张完整的图。
           // 贴回失败时不能把局部图当整图交付，也不能报「已贴回原位」。
@@ -3745,6 +3746,7 @@
             n.dataURL = batchItems[0].url;
             n.uploaded = null;
             n.w = generatedNodeWidth(resultSizes[0]);
+            delete g.replaceOnComplete;
             if (smartReplace) {
               delete g.smartReplace;
               delete g.smartHint;
@@ -3786,8 +3788,10 @@
             flash(cropRect
               ? `重绘结果已贴回原图原位，另存 ${born.length} 个图片节点（在右侧，原节点保留原图）`
               : `已生成 ${born.length} 个图片节点（在右侧，原节点保留原图）`);
-          } else if (smartReplace && !short) {
-            flash('智能编辑已完成，结果已放进编辑节点（原图保留）');
+          } else if (replaceInPlace && !short) {
+            flash(smartReplace
+              ? '智能编辑已完成，结果已放进编辑节点（原图保留）'
+              : '高清已完成，结果已放进高清节点（原图保留）');
           }
         });
     } catch (err) {
@@ -8614,6 +8618,7 @@
           smartDraft: n.gen.smartDraft && n.gen.smartDraft.strokes ? n.gen.smartDraft : undefined,
           smartHint: n.gen.smartHint || undefined,
           smartReplace: !!n.gen.smartReplace || undefined,
+          replaceOnComplete: !!n.gen.replaceOnComplete || undefined,
         } : null,
         // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
         // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
@@ -12036,7 +12041,7 @@
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
     const maskHit = maskWorkflow();
     const wf = hint || (want === 'mask' ? (maskHit ? maskHit.id : '') : pickWorkflow(want));
-    const gen = { wf, prompt };
+    const gen = { wf, prompt, ...(kind === 'upscale' ? { replaceOnComplete: true } : {}) };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
       w: nodeWidth(src),

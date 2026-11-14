@@ -5200,6 +5200,55 @@ try {
       && editRes.takesImage && editRes.cat === 'upscale',
     JSON.stringify(editRes));
 
+  const upscaleDone = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const node = document.querySelector('.node.selected');
+    const id = node.dataset.id;
+    const before = document.querySelectorAll('#nodes .node').length;
+    const pendingSrc = node.querySelector('.thumb img')?.getAttribute('src') || '';
+    const sourceSrc = document.querySelector('.node[data-id="${pick.img}"] .thumb img')?.getAttribute('src') || '';
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o),
+      { status: 200, headers: { 'Content-Type': 'application/json' } });
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/upload')) return json({ ok: true, image: 'e2e-upscale-input.png', type: 'input' });
+      if (u.startsWith('/api/analyze')) {
+        const graph = JSON.parse(opts.body).graph || {};
+        const slots = Object.entries(graph).flatMap(([nodeId, nd]) =>
+          nd?.class_type === 'LoadImage' && nd.inputs && 'image' in nd.inputs
+            ? [{ key: nodeId + '.image', node: nodeId, input: 'image', kind: 'image', value: nd.inputs.image }]
+            : []);
+        return json({ ok: true, slots, autogrow: [] });
+      }
+      if (u.startsWith('/api/run')) return json({ ok: true, prompt_id: 'e2e-upscale-1' });
+      if (u.startsWith('/api/job') && u.includes('e2e-upscale-1'))
+        return json({ ok: true, status: 'success', progress: 100, artifacts: [
+          { kind: 'image', filename: 'e2e-upscale-result.png', subfolder: '', type: 'output' }] });
+      return real(url, opts);
+    };
+    try {
+      node.querySelector('.gen-run').click();
+      let status = '';
+      for (let k = 0; k < 120; k++) {
+        status = document.querySelector('[data-panel-for="' + id + '"] .gen-status')?.textContent || '';
+        if (/完成|失败|错误/.test(status)) break;
+        await sleep(100);
+      }
+      const done = document.querySelector('.node[data-id="' + id + '"]');
+      return { before, after: document.querySelectorAll('#nodes .node').length, status,
+        pendingSrc, doneSrc: done?.querySelector('.thumb img')?.getAttribute('src') || '',
+        sourceSrc, sourceAfter: document.querySelector('.node[data-id="${pick.img}"] .thumb img')?.getAttribute('src') || '' };
+    } finally { window.fetch = real; }
+  })()`);
+  check('高清生成完成后结果填进高清节点，不再新增结果节点',
+    /完成/.test(upscaleDone.status) && upscaleDone.after === upscaleDone.before
+      && !!upscaleDone.pendingSrc && upscaleDone.doneSrc.includes('e2e-upscale-result.png')
+      && upscaleDone.sourceAfter === upscaleDone.sourceSrc,
+    JSON.stringify({ before: upscaleDone.before, after: upscaleDone.after,
+      status: upscaleDone.status, replaced: upscaleDone.doneSrc !== upscaleDone.pendingSrc,
+      sourceKept: upscaleDone.sourceAfter === upscaleDone.sourceSrc }));
+
   // 收尾：删掉刚造的两个节点，别影响后面的用例
   await page.evaluate(`(() => {
     const nodes = [...document.querySelectorAll('#nodes .node')];
