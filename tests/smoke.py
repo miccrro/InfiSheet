@@ -317,7 +317,7 @@ def main() -> int:
         check("库路径穿越被挡", status in (400, 403, 404), f"HTTP {status}")
 
         # ---- MCP 安装入口 ----
-        # 顶栏那盏灯点开就是这个面板的数据源：端点 / stdio 命令 / 三个客户端的配置片段。
+        # 顶栏那盏灯点开就是这个面板的数据源：端点 / stdio 命令 / 四个客户端的配置片段。
         # 门槛全在第一步（写错路径、漏了 type），所以这里验的是「照抄能不能用」。
         status, raw = request(base, "/api/mcp/setup")
         setup = json.loads(raw or b"{}")
@@ -326,14 +326,41 @@ def main() -> int:
               status == 200 and setup.get("endpoint", "").endswith(f":{port}/mcp")
               and setup.get("script", "").endswith("mcp_server.py") and bool(setup.get("python")),
               f"{setup.get('endpoint')} · {setup.get('script')}")
-        check("三个客户端都在，配置片段指向 mcp_server.py",
-              set(clients) == {"workbuddy", "claude", "cursor"}
+        check("四个客户端都在，配置片段指向 mcp_server.py",
+              set(clients) == {"workbuddy", "claude", "cursor", "codex"}
               and all(c["config"]["mcpServers"]["infisheet"]["args"][0].endswith("mcp_server.py")
-                      for c in clients.values()),
+                      for cid, c in clients.items() if cid != "codex")
+              and clients["codex"]["format"] == "toml"
+              and "[mcp_servers.infisheet]" in clients["codex"]["config"]
+              and "mcp_server.py" in clients["codex"]["config"],
               ",".join(sorted(clients)))
         check("Claude 的条目不带 type（它的格式和别家不同）",
               "type" not in clients["claude"]["config"]["mcpServers"]["infisheet"]
               and clients["workbuddy"]["config"]["mcpServers"]["infisheet"]["type"] == "stdio")
+
+        codex = Path(clients["codex"]["path"])
+        check("Codex 配置路径落在隔离目录里的 config.toml",
+              codex == mcp_home / ".codex" / "config.toml", str(codex))
+        status, raw = request(base, "/api/mcp/install", "POST", {"client": "codex"})
+        codex_result = json.loads(raw or b"{}")
+        codex_text = codex.read_text(encoding="utf-8") if codex.is_file() else ""
+        check("Codex 安装写入有效的 TOML 条目",
+              status == 200 and codex_result.get("ok") is True
+              and "[mcp_servers.infisheet]" in codex_text
+              and "mcp_server.py" in codex_text, str(codex))
+        codex.write_text('model = "user-choice"\n\n[mcp_servers.other]\nurl = "https://example.com/mcp"\n\n'
+                         + codex_text, encoding="utf-8")
+        status, raw = request(base, "/api/mcp/install", "POST", {"client": "codex"})
+        codex_after = codex.read_text(encoding="utf-8")
+        check("Codex 重装只更新 infisheet，保留其它配置并备份",
+              status == 200 and codex_after.count("[mcp_servers.infisheet]") == 1
+              and 'model = "user-choice"' in codex_after
+              and '[mcp_servers.other]' in codex_after
+              and bool(list(codex.parent.glob("config.toml.bak-*"))))
+        codex.write_text("[mcp_servers.infisheet\ninvalid", encoding="utf-8")
+        status, _ = request(base, "/api/mcp/install", "POST", {"client": "codex"})
+        check("Codex 现有 TOML 无效时拒绝覆盖",
+              status == 400 and codex.read_text(encoding="utf-8") == "[mcp_servers.infisheet\ninvalid")
 
         wb = Path(clients["workbuddy"]["path"])
         check("配置路径落在隔离目录里（不写用户真配置）",

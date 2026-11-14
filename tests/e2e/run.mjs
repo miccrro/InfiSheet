@@ -7077,6 +7077,7 @@ try {
       on: [...document.querySelectorAll('#mcpSetupTabs .mcp-tab.on')].map((b) => b.textContent),
       path: (document.getElementById('mcpSetupPath') || {}).value || '',
       json: (document.getElementById('mcpSetupJson') || {}).textContent || '',
+      copy: (document.getElementById('mcpSetupCopy') || {}).textContent || '',
       exists: (document.getElementById('mcpSetupExists') || {}).textContent || '',
       note: note ? note.textContent : '',
       noteKind: note ? note.className : '',
@@ -7090,9 +7091,9 @@ try {
     await new Promise((r) => setTimeout(r, 100));
     setupA = await readSetup();
   }
-  check('点顶栏的 MCP 灯 → 落到设置的「连接」格，MCP 那一块就在里面（端点 + 三个客户端）',
+  check('点顶栏的 MCP 灯 → 落到设置的「连接」格，MCP 那一块就在里面（端点 + 四个客户端）',
     setupA.open && setupA.active === 'conn' && setupA.inConn
-      && /\/mcp$/.test(setupA.endpoint) && setupA.tabs.length === 3,
+      && /\/mcp$/.test(setupA.endpoint) && setupA.tabs.length === 4,
     `${setupA.active} · inConn=${setupA.inConn} · ${setupA.endpoint} · ${setupA.tabs.join('/')}`);
   check('面板里的配置能直接抄：stdio 指向 mcp_server.py',
     /mcp_server\.py/.test(setupA.json) && /"stdio"/.test(setupA.json) && /mcpServers/.test(setupA.json),
@@ -7105,6 +7106,15 @@ try {
   check('切到 Claude：路径与配置片段一起换（它的条目没有 type）',
     setupB.path !== setupA.path && /claude/i.test(setupB.path) && !/"type"/.test(setupB.json),
     `${setupB.path.split(/[\\/]/).slice(-2).join('/')} · ${setupB.on.join('')}`);
+
+  await page.evaluate(`document.querySelector('#mcpSetupTabs [data-client="codex"]').click()`);
+  const setupCodex = await readSetup();
+  check('切到 Codex：显示 config.toml 路径与可复制的 TOML 条目',
+    /config\.toml$/.test(setupCodex.path)
+      && /\[mcp_servers\.infisheet\]/.test(setupCodex.json)
+      && /mcp_server\.py/.test(setupCodex.json)
+      && /TOML/.test(setupCodex.copy),
+    `${setupCodex.path} · ${setupCodex.copy}`);
 
   // 切回 WorkBuddy 并真写一次（e2e 的 HOME 指向临时目录，不会碰用户的真配置）
   await page.evaluate(`document.querySelectorAll('#mcpSetupTabs .mcp-tab')[0].click()`);

@@ -2520,15 +2520,16 @@ def auto_import_assets(keys: list[str]) -> dict:
 # 为什么要在应用里做这件事：MCP 的门槛全在第一步——用户得知道有这么个端点、要写 stdio 命令、
 # 路径还不能写错。顶栏那盏「MCP 待接入」的灯就是最好的入口：点它，配置直接给你抄。
 #
-# 写配置是**侵入性操作**（改的是用户全局的 mcp.json），所以三条底线：
-#   ① 只写白名单里的三个已知路径，不接受任意路径；
-#   ② 写之前先解析现有 JSON，解析不了就原样留着并如实报错，绝不覆盖；
+# 写配置是**侵入性操作**（改的是用户全局配置），所以三条底线：
+#   ① 只写白名单里的已知路径，不接受任意路径；
+#   ② 写之前先解析现有 JSON / TOML，解析不了就原样留着并如实报错，绝不覆盖；
 #   ③ 覆盖前一定备份（<文件名>.bak-时间戳），写用临时文件 + os.replace（半截文件不会留下）。
 # --------------------------------------------------------------------------- #
 MCP_CLIENTS = (
     ("workbuddy", "WorkBuddy / CodeBuddy"),
     ("claude", "Claude Desktop"),
     ("cursor", "Cursor"),
+    ("codex", "Codex"),
 )
 
 
@@ -2540,6 +2541,10 @@ def mcp_home() -> Path:
 
 def mcp_config_path(cid: str) -> Path:
     home = mcp_home()
+    if cid == "codex":
+        if os.environ.get("INFISHEET_MCP_HOME"):
+            return home / ".codex" / "config.toml"
+        return Path(os.environ.get("CODEX_HOME") or home / ".codex") / "config.toml"
     if cid == "workbuddy":
         return home / ".workbuddy" / "mcp.json"
     if cid == "cursor":
@@ -2592,13 +2597,25 @@ def mcp_entry(cid: str) -> dict:
     return {"mcpServers": {"infisheet": server}}
 
 
+def mcp_codex_entry() -> str:
+    """Codex 的 stdio MCP 条目使用 TOML，而不是 mcpServers JSON。"""
+    args = [str(ROOT / "mcp_server.py")]
+    if PORT != 8788:
+        args += ["--port", str(PORT)]
+    return ("[mcp_servers.infisheet]\n"
+            f"command = {json.dumps(mcp_python_cmd(), ensure_ascii=False)}\n"
+            f"args = {json.dumps(args, ensure_ascii=False)}\n")
+
+
 def mcp_setup_payload() -> dict:
     clients = []
     for cid, label in MCP_CLIENTS:
         path = mcp_config_path(cid)
         clients.append({
             "id": cid, "label": label, "path": str(path),
-            "exists": path.is_file(), "config": mcp_entry(cid),
+            "exists": path.is_file(),
+            "format": "toml" if cid == "codex" else "json",
+            "config": mcp_codex_entry() if cid == "codex" else mcp_entry(cid),
         })
     return {
         "ok": True,
@@ -2616,6 +2633,9 @@ def mcp_install(cid: str) -> dict:
         path = mcp_config_path(cid)
     except KeyError:
         raise ValueError(f"不认识的客户端：{cid}") from None
+
+    if cid == "codex":
+        return mcp_install_codex(path)
 
     data: dict = {}
     backup = None
@@ -2646,6 +2666,47 @@ def mcp_install(cid: str) -> dict:
         "backup": str(backup) if backup else None,
         "entry": servers["infisheet"],
     }
+
+
+def mcp_install_codex(path: Path) -> dict:
+    """只替换 Codex 配置里的 infisheet 表，保留其他设置和注释。"""
+    try:
+        import tomllib
+    except ImportError:
+        raise ValueError("Codex 一键写入需要 Python 3.11 或更新版本；请复制 TOML 手动配置") from None
+
+    raw = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    if raw.strip():
+        try:
+            tomllib.loads(raw)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"现有配置不是合法 TOML，没有动它：{path}（{exc}）") from exc
+
+    entry = mcp_codex_entry()
+    lines = raw.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines)
+                  if re.match(r"^\s*\[mcp_servers\.infisheet\]\s*(?:#.*)?$", line)), None)
+    if start is None:
+        updated = raw.rstrip() + ("\n\n" if raw.strip() else "") + entry
+    else:
+        end = next((i for i in range(start + 1, len(lines))
+                    if re.match(r"^\s*\[", lines[i])), len(lines))
+        updated = "".join(lines[:start]) + entry + "\n" + "".join(lines[end:])
+    try:
+        tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"不能安全合并 Codex 配置，没有动它：{path}（{exc}）") from exc
+
+    backup = None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if raw.strip():
+        backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+        shutil.copy2(path, backup)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(updated, encoding="utf-8")
+    os.replace(tmp, path)
+    return {"ok": True, "path": str(path), "backup": str(backup) if backup else None,
+            "entry": entry}
 
 
 def _shutdown_soon(delay: float = 0.4) -> None:

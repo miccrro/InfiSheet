@@ -5667,14 +5667,14 @@
                   </div>
                   <pre class="mcp-json" id="mcpSetupJson"></pre>
                   <div class="mcp-actions">
-                    <button type="button" class="mcp-btn primary" id="mcpSetupCopy">复制这段 JSON</button>
+                    <button type="button" class="mcp-btn primary" id="mcpSetupCopy">复制配置</button>
                     <button type="button" class="mcp-btn" id="mcpSetupWrite">写入这个文件</button>
                     <span class="mcp-note" id="mcpSetupNote"></span>
                   </div>
                 </div>
                 <p class="mcp-tip dim">
                   写完之后：WorkBuddy / CodeBuddy 到<b>连接器管理右上角「自定义连接器」点 Trust</b>（新条目不会自动生效）；
-                  Claude Desktop 重启客户端即可。接上之后顶栏那盏灯会自己变绿，不用刷新页面。
+                  Claude Desktop / Codex 重启客户端即可。接上之后顶栏那盏灯会自己变绿，不用刷新页面。
                 </p>
               </div>
               <div class="set-sep"></div>
@@ -9901,8 +9901,10 @@
       flag.textContent = c.exists ? '已存在 · 会合并并先备份' : '还没有 · 会新建';
       flag.className = `mcp-flag${c.exists ? ' ok' : ''}`;
     }
-    const json = document.getElementById('mcpSetupJson');
-    if (json) json.textContent = JSON.stringify(c.config, null, 2);
+    const config = document.getElementById('mcpSetupJson');
+    if (config) config.textContent = c.format === 'toml' ? c.config : JSON.stringify(c.config, null, 2);
+    const copy = document.getElementById('mcpSetupCopy');
+    if (copy) copy.textContent = `复制这段 ${c.format === 'toml' ? 'TOML' : 'JSON'}`;
     mcpSetupNote('');
   }
 
@@ -9926,7 +9928,7 @@
     }
   }
 
-  // 复制端点 / 复制 JSON / 写入配置文件。面板是每次打开重建的，绑定也得跟着重建。
+  // 复制端点 / 复制配置 / 写入配置文件。面板是每次打开重建的，绑定也得跟着重建。
   function bindMcpSection(box) {
     if (!box) return;
     // 端点 / 配置文件这两个只读框与上面的 ComfyUI 地址同属「字段」：能聚焦、有同样的焦点边框，

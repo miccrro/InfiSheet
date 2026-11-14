@@ -1,6 +1,6 @@
 # MCP：让 AI 直接操作画布
 
-InfiSheet 内置一个 **MCP Server**。接上之后，AI 客户端（Claude Desktop / WorkBuddy / Cursor / 任何支持
+InfiSheet 内置一个 **MCP Server**。接上之后，AI 客户端（Claude Desktop / WorkBuddy / Cursor / Codex / 任何支持
 MCP 的工具）可以自己读画布、建节点、连线、改参数、跑生成、取结果——**不需要打开浏览器**。
 浏览器开着的话，AI 做的事会在 4 秒内长到画面上。
 
@@ -26,15 +26,15 @@ MCP 接入和 ComfyUI 地址、服务开关是同一类事（这台机器怎么�
 
 - 当前状态（谁接进来了 / 已断开 / 还没人接）
 - **HTTP 端点**，一键复制
-- 三个客户端（WorkBuddy / CodeBuddy、Claude Desktop、Cursor）的**配置文件路径 + 能直接抄的 JSON**
+- 四个客户端（WorkBuddy / CodeBuddy、Claude Desktop、Cursor、Codex）的**配置文件路径 + 能直接抄的 JSON / TOML**
 - **「写入这个文件」**：替你合并进配置（先备份、解析不了就不动、原子写），回显路径与备份名
 
 写入后：WorkBuddy / CodeBuddy 到连接器管理右上角「自定义连接器」点 **Trust**（新条目不会自动生效）；
-Claude Desktop 重启客户端。接上之后灯自己变绿，不用刷新页面。
+Claude Desktop / Codex 重启客户端。接上之后灯自己变绿，不用刷新页面。
 
-> 接口就是 `GET /api/mcp/setup`（返回端点 / python / 脚本路径 / 三个客户端的片段）和
-> `POST /api/mcp/install {"client":"workbuddy|claude|cursor"}`（合并写入）。
-> 写的是**白名单里的三个已知路径**，不接受任意路径；测试用 `INFISHEET_MCP_HOME` 隔离到临时目录。
+> 接口就是 `GET /api/mcp/setup`（返回端点 / python / 脚本路径 / 四个客户端的片段）和
+> `POST /api/mcp/install {"client":"workbuddy|claude|cursor|codex"}`（合并写入）。
+> 写的是**白名单里的四个已知路径**，不接受任意路径；测试用 `INFISHEET_MCP_HOME` 隔离到临时目录。
 
 ### 方式 A：stdio（客户端自己拉起，最省事）
 
@@ -66,6 +66,14 @@ Claude Desktop 重启客户端。接上之后灯自己变绿，不用刷新页�
     }
   }
 }
+```
+
+**Codex**（`~/.codex/config.toml`，设置了 `CODEX_HOME` 时使用该目录）：
+
+```toml
+[mcp_servers.infisheet]
+command = "python"
+args = ["E:\\InfiSheet\\mcp_server.py"]
 ```
 
 端口不是 8788 就加 `--port 9000`；不想让它自动起服务就加 `--no-autostart`。
