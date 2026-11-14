@@ -3486,10 +3486,8 @@
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
       } catch { /* 这张传不上去就跳过，别把整次生成拖垮 */ }
     }
-    // 节点自己的图**不**当参考图。以前这里会把摆在节点上的图（上一次的结果、拖进来的图）
-    // 自动塞进 picked，于是「没连线、选的是文生图」也会把这张图喂进去：出图跟着原图走，
-    // 用户以为自己点的是文生图。想图生图就连一条线过来——连线是唯一明确的意图表达。
-    // （遮罩、扩图两条路各自 unshift 自己的源图，不受这里影响）
+    // 节点自己的图是否进工作流，等确认工作流能力后决定：能读图的流自动取当前图，
+    // 文生图只用文字。遮罩和扩图另有专门的上传路径。
     // 遮罩：涂过就必须让这张图进模型，否则等于白涂。它永远是 unshift 进 picked 的第一张——
     // 工作流的第一个 image 插槽拿到它，提示词里的「图1」指的就是它。
     // 落地方式有两条，由**工作流能力**决定（不看用户选的是哪张）：
@@ -3537,16 +3535,14 @@
         return;
       }
     }
-    // 智能编辑只送干净原图。把标记画进模型输入，模型会把它当成画面内容复现。
-    // 和上面「节点自己的图不当参考图」不矛盾——那是为了防止「没连线也偷偷图生图」，
-    // 而这里进模型是用户刚刚在编辑器里明确要求的。走的是和扩图同一条路：
-    // 一张临时上传的源图，unshift 成第一张（提示词里的「图1」指的就是它）。
-    if (g.selfSource && !needMask) {
+    // 普通图生图 / 高清：当前节点上的图就是第一张输入图。文生图不上传它；
+    // 遮罩、扩图已在上面准备了对应的工作图，不能再送一张普通原图覆盖它。
+    if (!needMask && !bake && srcURL && wfNow && wfNow.image && wfNow.category !== 'txt2img') {
       try {
-        const name = await uploadImageData(n.dataURL, `${n.id}-edit.png`);
+        const name = await ensureUploaded(n);
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
-        flash(`编辑原图上传失败：${err.message}`);
+        flash(`节点图片上传失败：${err.message}`);
         bail();
         return;
       }
@@ -14673,7 +14669,7 @@
         dataURL: n.dataURL,
         w: nodeWidth(n),
         title: `智能编辑 · ${n.title}`,
-        gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true,
+        gen: { wf: wf ? wf.id : '', prompt, aspectAuto: true,
           smartHint: locations.join('；'), smartReplace: true },
       });
       carryMask(n, made, mask);

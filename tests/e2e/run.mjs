@@ -7947,6 +7947,76 @@ try {
     smartGen.after === smartGen.before + 1 && smartGen.runs === 1,
     JSON.stringify({ nodes: smartGen.after - smartGen.before, runs: smartGen.runs }));
 
+  // 同一张已有图片：高清流要把节点图片填进 LoadImage；换成文生图后不能再上传它。
+  const ownImageBinding = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const id = '${smartPick.id}';
+    document.querySelector('.node[data-id="' + id + '"] .node-title').click();
+    const panel = () => document.querySelector('[data-panel-for="' + id + '"]');
+    const choose = async (name) => {
+      panel().querySelector('.wfsel .gm-btn').click();
+      await sleep(250);
+      const item = [...document.querySelectorAll('.popmenu button')]
+        .find((b) => b.textContent.includes(name));
+      if (!item) return '';
+      item.click();
+      await sleep(250);
+      return panel().querySelector('.wfsel .gm-btn').textContent.trim();
+    };
+    const run = async () => {
+      const real = window.fetch.bind(window);
+      const json = (o) => new Response(JSON.stringify(o),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const seen = { uploads: [], graph: null };
+      window.fetch = async (url, opts) => {
+        const u = String(url);
+        if (u.startsWith('/api/upload')) {
+          const f = opts?.body?.get?.('image');
+          seen.uploads.push(f?.name || '');
+          return json({ ok: true, image: 'e2e-own-image.png', subfolder: '', type: 'input' });
+        }
+        if (u.startsWith('/api/analyze')) {
+          const graph = JSON.parse(opts.body).graph || {};
+          const slots = Object.entries(graph).flatMap(([node, nd]) =>
+            nd?.class_type === 'LoadImage' && nd.inputs && 'image' in nd.inputs
+              ? [{ key: node + '.image', node, input: 'image', kind: 'image', value: nd.inputs.image }]
+              : []);
+          return json({ ok: true, slots, autogrow: [] });
+        }
+        if (u.startsWith('/api/run')) {
+          seen.graph = JSON.parse(opts.body).graph;
+          return json({ ok: false, error: 'e2e stop' });
+        }
+        return real(url, opts);
+      };
+      try {
+        const ta = panel().querySelector('.gen-prompt');
+        ta.textContent = 'e2e 图片读取';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        panel().querySelector('.gen-run').click();
+        for (let k = 0; k < 100 && !seen.graph; k++) await sleep(100);
+        const loads = Object.values(seen.graph || {})
+          .filter((nd) => nd?.class_type === 'LoadImage')
+          .map((nd) => nd.inputs?.image || '');
+        return { uploads: seen.uploads, loads, submitted: !!seen.graph };
+      } finally { window.fetch = real; }
+    };
+    const imageWf = await choose('Vosr');
+    const image = await run();
+    const textWf = await choose('krea2-文生图');
+    const text = await run();
+    return { imageWf, image, textWf, text };
+  })()`);
+  check('读图工作流自动把当前节点图片填进 LoadImage',
+    /Vosr/.test(ownImageBinding.imageWf) && ownImageBinding.image.submitted
+      && ownImageBinding.image.uploads.length === 1
+      && ownImageBinding.image.loads.includes('e2e-own-image.png'),
+    JSON.stringify(ownImageBinding.image));
+  check('同一图片节点改用文生图工作流时不上传节点图片',
+    /文生图/.test(ownImageBinding.textWf) && ownImageBinding.text.submitted
+      && ownImageBinding.text.uploads.length === 0 && ownImageBinding.text.loads.length === 0,
+    JSON.stringify(ownImageBinding.text));
+
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。
   // 这里先验确认条，再真的关一次——e2e 起的就是个临时实例，关掉正好把收尾也验了。
