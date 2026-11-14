@@ -4030,14 +4030,14 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 /* 没选中就别吃指针：第一下点在图上是「选中这个节点」，不是「落一个标记」 */
 .node:not(.selected) .thumb .sm-cv { pointer-events: none; }
-/* 文字标记的就地输入框：出现在点的位置，深底浅字 */
+/* 文字标记的就地输入框：出现在点的位置，就是一个普通文本框（深底浅字，聚焦有蓝边）。
+   宽高都写死（宽度由 JS 按图算），不靠 min/max 撑——撑出去会被 .thumb 裁掉。 */
 .node.image .thumb .sm-textin {
   position: absolute; z-index: 4;
-  min-width: 120px; max-width: 70%;
-  padding: 2px 6px;
+  height: 26px; padding: 0 7px;
   border: 1px solid var(--accent); border-radius: 6px;
-  background: rgba(10, 14, 20, 0.94); color: #fff;
-  font: inherit; font-size: 12px; outline: none;
+  background: rgba(12, 15, 20, 0.96); color: #fff;
+  font: inherit; font-size: 12.5px; outline: none;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
 /* 工具条：**一条**，跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」。
@@ -4047,7 +4047,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 .sm-bar {
   margin: 6px 0 3px;
   padding: 4px;
-  display: flex; align-items: center; gap: 2px;
+  display: flex; align-items: center; gap: 1px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9px;
   /* 不透明：画布有一层点阵网格，半透明底会把网格漏进来，一排工具上顶着几个灰点，
@@ -4060,11 +4060,15 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
    选中不靠换颜色、靠「提亮」：一排里只有一颗是亮的，一眼看得出当前拿的是哪把工具。 */
 .sm-bar .sm-tool, .sm-bar .sm-btn {
   width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
-  display: grid; place-items: center;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   border: none; border-radius: 7px;
   background: transparent; color: var(--dim);
   cursor: pointer; transition: background 0.14s, color 0.14s;
 }
+/* 默认那颗带文字：图标是水滴（抽象），光看图标认不出是「标注」 */
+.sm-bar .sm-tool-main { width: auto; padding: 0 6px; }
+.sm-bar .sm-tool .sm-ico { display: grid; place-items: center; }
+.sm-bar .sm-tool .sm-lbl { font-size: 11px; line-height: 1; }
 .sm-bar .sm-tool svg, .sm-bar .sm-btn svg { width: 17px; height: 17px; }
 .sm-bar .sm-tool:hover, .sm-bar .sm-btn:hover { background: rgba(255, 255, 255, 0.09); color: var(--text); }
 .sm-bar .sm-tool[aria-pressed="true"] { background: rgba(255, 255, 255, 0.18); color: #fff; }

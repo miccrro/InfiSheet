@@ -7494,6 +7494,9 @@ try {
       tools: [...bar.querySelectorAll('.sm-tool')].map((b) => b.dataset.tool),
       pressed: (bar.querySelector('.sm-tool[aria-pressed="true"]') || { dataset: {} }).dataset.tool || '',
       icons: bar.querySelectorAll('.sm-tool svg').length,
+      mainLabel: (bar.querySelector('.sm-tool-main .sm-lbl') || {}).textContent || '',
+      mainW: Math.round((bar.querySelector('.sm-tool-main') || { getBoundingClientRect: () => ({ width: 0 }) })
+        .getBoundingClientRect().width),
       hasPrompt: !!document.querySelector('.gen-panel .gen-prompt'),
       cv: [cv.width, cv.height],
       box: [r.left, r.top, r.width, r.height],
@@ -7515,6 +7518,11 @@ try {
       && smartOpen.overlay === false && smartOpen.inNode === true && smartOpen.on === true,
     JSON.stringify(smartOpen && { tools: smartOpen.tools, pressed: smartOpen.pressed,
       icons: smartOpen.icons, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
+  // 默认那颗（标注）带文字：图标是一颗倒着的水滴，光看图标认不出是「标注」
+  check('默认那颗工具带文字「标注」，图标是一颗水滴（其余四颗仍是纯图标）',
+    !!smartOpen && smartOpen.mainLabel === '标注' && smartOpen.mainW > 44
+      && smartOpen.mainW < smartOpen.barH * 3,
+    smartOpen ? `label=${smartOpen.mainLabel} w=${smartOpen.mainW}` : 'none');
   // 五个工具 / 撤销·清除 / 粗细 / 计数 / 退出 必须排在**一行**里：
   // 以前是「工具一行 + 撤销那一行 + 预设一行」三层，节点下面挂了半屏的按钮。
   check('工具条整合成一条：所有控件排在同一行（条高 < 42，没有第二层）',
@@ -7575,10 +7583,36 @@ try {
   await page.drag(sAt(0.2, 0.24), sAt(0.42, 0.4), { steps: 10, settle: 250 });
   check('箭头：拖出一条指向目标的箭头', await smartCount() === '3', await smartCount());
 
-  // 文字：点一下就地输入，回车落字
+  // 文字：点一下就地开一个**普通文本框**，回车落字
   await smartTool('text');
+  const imgBefore = await page.evaluate(`(() => {
+    const im = document.querySelector('#nodes .node.image .thumb img');
+    const r = im.getBoundingClientRect();
+    return [Math.round(r.left), Math.round(r.top), Math.round(r.width)];
+  })()`);
   await page.clickAt(sAt(0.62, 0.18).x, sAt(0.62, 0.18).y, { settle: 250 });
-  const textInputShown = await page.evaluate(`!!document.querySelector('.thumb .sm-textin')`);
+  // 「写个备注，图片歪了」的回归：focus() 会顺手把最近的滚动容器滚到能看见输入框的位置，
+  // .thumb 是 overflow:hidden 的、但照样能被程序滚动，于是整张图被推开几十像素，
+  // 输入框收掉以后还留在那儿。这里同时验：没有 placeholder、不出界、滚动位还是 0。
+  const noteOpen = await page.evaluate(`(() => {
+    const i = document.querySelector('.thumb .sm-textin');
+    const th = document.querySelector('#nodes .node.image .thumb');
+    const im = th.querySelector('img');
+    const r = im.getBoundingClientRect();
+    const ir = i ? i.getBoundingClientRect() : null;
+    const tr = th.getBoundingClientRect();
+    return {
+      has: !!i, ph: i ? i.placeholder : 'x',
+      img: [Math.round(r.left), Math.round(r.top), Math.round(r.width)],
+      scroll: [th.scrollLeft, th.scrollTop],
+      inBox: !!ir && ir.left >= tr.left - 1 && ir.right <= tr.right + 1,
+    };
+  })()`);
+  check('文字：点一下开一个普通文本框（空着、没有 placeholder），图片一个像素都不动',
+    noteOpen.has === true && noteOpen.ph === '' && noteOpen.inBox === true
+      && noteOpen.scroll[0] === 0 && noteOpen.scroll[1] === 0
+      && JSON.stringify(noteOpen.img) === JSON.stringify(imgBefore),
+    JSON.stringify(noteOpen) + ' · ' + JSON.stringify(imgBefore));
   await page.evaluate(`(() => {
     const i = document.querySelector('.thumb .sm-textin');
     i.value = '换成盘子';
@@ -7586,10 +7620,9 @@ try {
   })()`);
   await new Promise((r) => setTimeout(r, 250));
   const afterText = await smartCount();
-  check('文字：就地输入框出现，回车后落成一个标记、输入框收掉',
-    textInputShown === true && afterText === '4'
-      && (await page.evaluate(`!document.querySelector('.sm-textin')`)) === true,
-    `${textInputShown} · ${afterText}`);
+  check('文字：回车后落成一个标记、输入框收掉',
+    afterText === '4' && (await page.evaluate(`!document.querySelector('.sm-textin')`)) === true,
+    afterText);
 
   // 撤销回到上一步
   await page.evaluate(`document.querySelector('${smartSel} [data-act="undo"]').click()`);

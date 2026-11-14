@@ -13823,7 +13823,9 @@
   const SMART_TOOLS = [
     // 「点一下」和「圈一块」合成一个工具：抬手之前谁也说不准用户是想点还是想框，
     // 让他先选一次工具，多半会选错再返工。两种标记都编号，描述里「1 换成红色」才对得上号。
-    ['mark', 'mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）'],
+    // 第五个 true = 这颗带文字。默认工具是它，图标又是一颗抽象的水滴，
+    // 光靠图标认不出是「标注」；其余四颗保持纯图标，一行才排得下。
+    ['mark', 'mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）', true],
     ['brush', 'brush', '画笔', '自由涂出要改的范围'],
     ['arrow', 'arrow', '箭头', '从起点拖到目标，指哪改哪'],
     ['text', 'text', '文字', '在图上写一句备注（模型也看得见）'],
@@ -14075,9 +14077,10 @@
     // 只有图标，文字退到 title（节点宽度 380，五个中文词 + 这些控件一行放不下）。
     bar.innerHTML = `
       <div class="sm-tools" role="group" aria-label="标记工具">
-        ${SMART_TOOLS.map(([k, ico, label, tip], i) => `<button type="button" class="sm-tool" data-tool="${k}"
-          data-icon="${ico}" aria-pressed="${i === 0 ? 'true' : 'false'}"
-          title="${tip}" aria-label="${label}：${tip}"></button>`).join('')}
+        ${SMART_TOOLS.map(([k, ico, label, tip, main], i) => `<button type="button"
+          class="sm-tool${main ? ' sm-tool-main' : ''}" data-tool="${k}"
+          aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}"
+          ><span class="sm-ico" data-icon="${ico}"></span>${main ? `<span class="sm-lbl">${label}</span>` : ''}</button>`).join('')}
       </div>
       <span class="sm-sep" aria-hidden="true"></span>
       <button type="button" class="sm-btn" data-act="undo" data-icon="undo"
@@ -14146,12 +14149,21 @@
       inp.className = 'sm-textin';
       inp.type = 'text';
       inp.maxLength = 40;
-      inp.placeholder = '写一句备注，回车确认';
-      inp.style.left = `${Math.round(clamp(ev.clientX - r.left, 0, Math.max(0, r.width - 60)))}px`;
-      inp.style.top = `${Math.round(clamp(ev.clientY - r.top, 0, Math.max(0, r.height - 24)))}px`;
+      // 就当一个普通输入框：不写 placeholder（点了就是要写字，空框里那个光标已经说明一切）。
+      // 宽度按图算、左右各留 4px，**永远不出界**——出界会被 .thumb 的 overflow:hidden 裁掉，
+      // 看起来就像输入框跑到图片外面去了。
+      const w = Math.round(Math.min(200, Math.max(96, r.width - 8)));
+      inp.style.width = `${w}px`;
+      inp.style.left = `${Math.round(clamp(ev.clientX - r.left, 4, Math.max(4, r.width - w - 4)))}px`;
+      inp.style.top = `${Math.round(clamp(ev.clientY - r.top, 4, Math.max(4, r.height - 30)))}px`;
       thumb.appendChild(inp);
       sess.textInput = inp;
-      inp.focus();
+      // focus() 会顺手把最近的滚动容器滚到「能看见这个框」：.thumb 是 overflow:hidden 的，
+      // 但照样能被程序滚动，于是整张图被推开几十像素——输入框收掉以后还留在那儿。
+      // 用户看到的就是「写个备注，图片歪了」。preventScroll 挡住，再把滚动位归零兜底。
+      inp.focus({ preventScroll: true });
+      thumb.scrollLeft = 0;
+      thumb.scrollTop = 0;
       let closed = false;
       const done = (commit) => {
         if (closed) return;
@@ -14159,6 +14171,8 @@
         const text = inp.value.trim();
         inp.remove();
         sess.textInput = null;
+        thumb.scrollLeft = 0;
+        thumb.scrollTop = 0;
         if (!commit || !text) return;
         doc.strokes.push({ kind: 'text', at: p, text, size: Math.max(24, sess.size) });
         redraw();
