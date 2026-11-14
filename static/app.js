@@ -3406,7 +3406,7 @@
     // （以前这里会直接 g.busy 崩在空指针上）。给它一句话，别让它以为点了没反应。
     if (!n.gen) { flash('这个节点只放图：点标题上的「生成」把面板打开再生成'); return; }
     const g = n.gen;
-    // 智能编辑：标记画在这张图上、要求写在这个面板里，点生成＝把「标注图」交给右边的新节点跑。
+    // 智能编辑：标记只用于屏幕定位，生成时把干净原图和位置描述交给新节点。
     // 拦在入口而不是每颗按钮上：生成键、Ctrl+Enter、标题上的药丸走的都是这一条。
     if (g.smart) { smartRun(n); return; }
     if (g.busy) return;
@@ -3537,7 +3537,7 @@
         return;
       }
     }
-    // 智能编辑：节点上的图**就是**要交给模型的那张（标记已经画在图里了），必须进去。
+    // 智能编辑只送干净原图。把标记画进模型输入，模型会把它当成画面内容复现。
     // 和上面「节点自己的图不当参考图」不矛盾——那是为了防止「没连线也偷偷图生图」，
     // 而这里进模型是用户刚刚在编辑器里明确要求的。走的是和扩图同一条路：
     // 一张临时上传的源图，unshift 成第一张（提示词里的「图1」指的就是它）。
@@ -3546,7 +3546,7 @@
         const name = await uploadImageData(n.dataURL, `${n.id}-edit.png`);
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
-        flash(`标注图上传失败：${err.message}`);
+        flash(`编辑原图上传失败：${err.message}`);
         bail();
         return;
       }
@@ -3579,8 +3579,9 @@
       // 这时提示词里的 @ 引用照样摘掉——不能给模型指一张它根本没拿到的图。
       const cap = refCapacity(a);
       const use = cap > 0 ? picked.slice(0, cap) : [];
-      const prompt = refMarks(promptText, use);   // @[甲] → 图1，和送进去的顺序一一对应
+      let prompt = refMarks(promptText, use);   // @[甲] → 图1，和送进去的顺序一一对应
       if (!prompt) throw new Error('提示词里只有 @ 引用，没有文字');
+      if (g.smartHint) prompt = `${prompt}\n【位置参考】${g.smartHint}`;
       stage = '构建参数';
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
         { mode: g.seedMode, value: g.seed }, a.autogrow);
@@ -3711,17 +3712,23 @@
           // 反过来做的话，迁移会把这次刚出的图当成「更早的一次」，和下面 pushRun 那条重复——
           // 一次生成就在角标上写成「2 次」（实测踩到过：历史里两条指向同一个 krea2_0002x.png）。
           runsOf(n);
-          // 节点上**本来就没有图**（纯文生图的空节点，或图被清空过）：直接把结果填进它自己，
-          // 不再另起一个节点——空节点本身就是这块结果的落点，凭空多一个空壳节点只会让人以为
-          // 「生成没生效」。节点上已经有初始图时才另起节点，把原图留着不动。
-          const hadImage = !!n.dataURL;
+          // 空节点和智能编辑的临时节点都由结果直接填入；智能编辑的原图仍在源节点。
+          const smartReplace = !!g.smartReplace;
+          const hadImage = !!n.dataURL && !smartReplace;
           let batchItems = imgs.map((x) => ({ url: artifactURL(x), filename: x.filename, subfolder: x.subfolder, type: x.type }));
           // 裁切重绘：模型出的是「那一小块」，得贴回原图原位才是一张完整的图。
-          // 单张贴不回去（解码失败、ComfyUI 断了）就退回原样——宁可给一张没贴的局部图，
-          // 也不能因为贴图这一步把整次生成丢掉。
+          // 贴回失败时不能把局部图当整图交付，也不能报「已贴回原位」。
           if (cropRect) {
-            batchItems = await Promise.all(batchItems.map(
-              (it) => storeStitched(n, it, cropRect, mdoc, srcURL).catch(() => it)));
+            try {
+              batchItems = await Promise.all(batchItems.map(
+                (it) => storeStitched(n, it, cropRect, mdoc, srcURL)));
+            } catch (err) {
+              clearProgress(n);
+              setGenError(n, err, '贴回原图');
+              finishJob(g.job, 'error', '贴图失败');
+              refreshGenPanel(n);
+              return;
+            }
           }
           // 工作流可能忽略面板尺寸，按产物的真实像素决定画布上的显示宽度。
           const resultSizes = await Promise.all(batchItems.map(async (it) => {
@@ -3742,6 +3749,10 @@
             n.dataURL = batchItems[0].url;
             n.uploaded = null;
             n.w = generatedNodeWidth(resultSizes[0]);
+            if (smartReplace) {
+              delete g.smartReplace;
+              delete g.smartHint;
+            }
           }
           // 每生成一次留一条历史。以前 gallery 是覆盖式的，试到第 5 版就再也回不到第 4 版；
           // 这里记的是「这次用的什么参数、出了哪几张」。原节点的图不再被这一批顶掉，
@@ -3779,6 +3790,8 @@
             flash(cropRect
               ? `重绘结果已贴回原图原位，另存 ${born.length} 个图片节点（在右侧，原节点保留原图）`
               : `已生成 ${born.length} 个图片节点（在右侧，原节点保留原图）`);
+          } else if (smartReplace && !short) {
+            flash('智能编辑已完成，结果已放进编辑节点（原图保留）');
           }
         });
     } catch (err) {
@@ -8602,6 +8615,9 @@
           // 智能编辑的标记：矢量的几笔，和遮罩一样小。存下来刷新后标记还在图上，
           // 能接着改；不存的话一刷新就只剩一张光图，用户以为刚才白标了
           smart: n.gen.smart && n.gen.smart.strokes ? n.gen.smart : undefined,
+          smartDraft: n.gen.smartDraft && n.gen.smartDraft.strokes ? n.gen.smartDraft : undefined,
+          smartHint: n.gen.smartHint || undefined,
+          smartReplace: !!n.gen.smartReplace || undefined,
         } : null,
         // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
         // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
@@ -11380,13 +11396,10 @@
     // 盖住的那块点下去命中的是工具条（实测点标题点出了「旋转」菜单），用户会以为
     // 「这个节点点不中」。所以下面按「先挑横向位置、再挑纵向位置」的顺序找空位。
     //
-    // 横向：默认居中对齐这个节点；居中会被视口夹住时（节点贴着屏幕左/右边缘）改成和
-    // 节点左/右边缘对齐，让整条朝画布空白的那一侧展开。这几个候选位置都算「贴着自己」。
+    // 横向：先居中，再试两侧对齐；居中即使没被视口夹住，也可能压住邻居标题。
     const want = ref.left + ref.width / 2 - w / 2;
-    const lefts = [clamp(want, minL, maxL)];
-    if (Math.abs(lefts[0] - want) > 1) {
-      lefts.push(clamp(ref.left, minL, maxL), clamp(ref.right - w, minL, maxL));
-    }
+    const lefts = [clamp(want, minL, maxL),
+      clamp(ref.left, minL, maxL), clamp(ref.right - w, minL, maxL)];
     const topBar = document.getElementById('topBar');
     const floor = (topBar ? topBar.offsetHeight : 44) + 6;
     const title = el.querySelector('.node-title');
@@ -11396,20 +11409,28 @@
       let y = Math.max(8, ref.top - h - 8);
       let place = 'above';
       for (let i = 0; i < 3; i++) {
-        const hit = otherTitleTops(n.id, left, left + w, y, y + h);
+        const hit = otherTitleBounds(n.id, left, left + w, y, y + h);
         if (hit == null) break;
-        const next = Math.max(floor, Math.min(y, hit - h - 6));
+        const next = Math.max(floor, Math.min(y, hit.top - h - 6));
         if (next === y) break;      // 已经顶到上限，再抬不动了
         y = next;
       }
-      if (otherTitleTops(n.id, left, left + w, y, y + h) == null) return { left, y, place, clear: true };
+      if (otherTitleBounds(n.id, left, left + w, y, y + h) == null) return { left, y, place, clear: true };
       // 抬到顶栏底下还是压着人（节点本来就贴着屏幕上方）→ 改为压在自己这张图的上沿。
       // 翻到节点下方试过：图片节点下面紧跟着生成面板，那条会盖住「上传 / 素材库 / 清空 / 风格」，
       // 还是「点了没反应」。压在自己图上则谁也挡不着——这张图本来就是选中的那张，
       // 点它只会重新选中它，不丢任何操作。
       y = Math.min((title ? title.getBoundingClientRect().bottom : nb.top + 28) + 6, window.innerHeight - h - 8);
       place = 'over';
-      return { left, y, place, clear: otherTitleTops(n.id, left, left + w, y, y + h) == null };
+      const maxY = Math.min(ref.bottom - h - 8, window.innerHeight - h - 8);
+      for (let i = 0; i < 6; i++) {
+        const hit = otherTitleBounds(n.id, left, left + w, y, y + h);
+        if (hit == null) break;
+        const next = Math.min(maxY, hit.bottom + 6);
+        if (next <= y) break;
+        y = next;
+      }
+      return { left, y, place, clear: otherTitleBounds(n.id, left, left + w, y, y + h) == null };
     };
     // 按候选顺序试，取第一个真的不压别人标题的；都不行就用第一个（宁可压在自己图上）
     let best = null;
@@ -11423,19 +11444,20 @@
     bar.style.top = `${Math.round(best.y)}px`;
   }
 
-  // 工具条横向范围内，其它节点标题的最高一条顶边；没有重叠返回 null。
+  // 工具条横向范围内，其它节点标题的纵向边界；没有重叠返回 null。
   // 只量标题，不量整个节点：盖住图片本身无所谓（工具条本来就浮在画布上），盖住标题才会挡点击。
-  function otherTitleTops(selfId, l, r, t, b) {
-    let best = null;
+  function otherTitleBounds(selfId, l, r, t, b) {
+    let bounds = null;
     nodesEl.querySelectorAll('.node').forEach((el) => {
       if (el.dataset.id === selfId) return;
       const title = el.querySelector('.node-title');
       if (!title) return;
       const q = title.getBoundingClientRect();
       if (q.right < l || q.left > r || q.bottom < t || q.top > b) return;
-      if (best == null || q.top < best) best = q.top;
+      if (bounds == null) bounds = { top: q.top, bottom: q.bottom };
+      else { bounds.top = Math.min(bounds.top, q.top); bounds.bottom = Math.max(bounds.bottom, q.bottom); }
     });
-    return best;
+    return bounds;
   }
 
   function updateImgTools() {
@@ -12539,6 +12561,10 @@
   // 点「扩图」= 开关。开着再点一次就收起（不烘、不改图、把尺寸档还回去）。
   function toggleOutpaint(n) {
     if (outpaintOn(n)) { closeOutpaint(n); return; }
+    // 两个都要在图上落笔的模式不能同时开着：扩图改的是画布，智能编辑的标记是原图坐标，
+    // 叠在一起锚点会被标记层盖住、拖不动。进这个就把那边的标记草稿清掉（等价于点它的「退出」），
+    // 后面这一次 rerenderNode 会把两边的状态一起重画，高亮也就不会停在「亮着但其实没开」。
+    if (smartOn(n)) delete n.gen.smart;
     const im = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .thumb img`);
     const w = im && im.naturalWidth, h = im && im.naturalHeight;
     if (!w || !h) {
@@ -13828,24 +13854,52 @@
     ['mark', 'mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）', true],
     ['brush', 'brush', '画笔', '自由涂出要改的范围'],
     ['arrow', 'arrow', '箭头', '从起点拖到目标，指哪改哪'],
-    ['text', 'text', '文字', '在图上写一句备注（模型也看得见）'],
+    ['text', 'text', '文字', '在图上写备注，另用标注或画笔圈出编辑区域'],
     ['eraser', 'eraser', '橡皮', '擦掉标错的地方'],
   ];
-  // 标记一律「白线 + 深色描边」。单色标记总有一种底图会吃掉它：纯白在雪地 / 白墙上消失，
-  // 纯红在暖色皮肤上糊成一片。白线外面套一圈深色，深底上白线跳出来、浅底上深边托住轮廓。
-  const MARK_INK = '#ffffff';
-  const MARK_HALO = 'rgba(8, 10, 14, 0.55)';       // 白线外面那道深色描边
-  const MARK_WASH = 'rgba(255, 255, 255, 0.12)';   // 框里那层淡白，圈出来的范围一眼看得见
-  const MARK_SOFT = 'rgba(255, 255, 255, 0.66)';   // 画笔：半透明，别把底下的内容整个盖住
+  // 标记的颜色可以自己挑（工具条上那颗色块）。
+  // 默认用参考图那个蓝：比 UI 上的浅蓝饱和得多，压在照片上不会和背景糊在一起
+  // （用户最早说的「标记点不明显」，一半原因是白色，一半是浅色）。
+  // 第二个预设是扩图 / 裁剪选框用的浅蓝，想要和那套完全一致时选它。
+  // 颜色存在 n.gen.smart.color 里，跟着画布一起存档。
+  const MARK_DEFAULT = '#3d5afe';
+  // 预设色：「自然场景里很少出现、又彼此分得开」的几档。红不在里面——红色留给「危险」。
+  const SMART_COLORS = ['#3d5afe', '#6ea8fe', '#ff3d8b', '#22d3ee', '#a3e635', '#fbbf24'];
+  const MARK_HALO = 'rgba(8, 10, 14, 0.62)';       // 主色外面那道深色描边
+  // #rgb / #rrggbb → rgba()。给画笔算半透明主色用；认不出来就退回默认蓝。
+  function inkAlpha(hex, a) {
+    const h = String(hex || '').replace('#', '');
+    const s = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const v = /^[0-9a-f]{6}$/i.test(s) ? parseInt(s, 16) : NaN;
+    if (!Number.isFinite(v)) return inkAlpha(MARK_DEFAULT, a);
+    return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${a})`;
+  }
 
-  // 标注图是当「源图」送进去的，所以要挑**只吃图、不吃遮罩**的那种工作流：
-  // 吃遮罩的那份拿不到遮罩（alpha 不透明 → mask 全 0），送进去等于什么都没改。
-  // takes_image 和 takes_alpha_mask 是两个独立标记，局部重绘两个都占——所以不能只看 image。
+  // 优先使用普通图像编辑工作流做裁切重绘；只有遮罩工作流时走原生 alpha 遮罩。
   function annotateWorkflow() {
     const all = wfOptions();
     const def = all.find((o) => o.id === wfDefaultId('img2img'));
     const plain = all.filter((o) => o.image && !o.alphaMask);
-    return (def && def.image && !def.alphaMask ? def : null) || plain[0] || null;
+    return (def && def.image && !def.alphaMask ? def : null) || plain[0] || maskWorkflow();
+  }
+
+  function smartMask(doc) {
+    const radius = Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
+    const strokes = [];
+    for (const s of doc.strokes) {
+      const kind = strokeKind(s);
+      if (kind === 'rect' && s.rect && s.rect[2] > 0 && s.rect[3] > 0) {
+        strokes.push({ tool: 'rect', rect: s.rect.slice() });
+      } else if (kind === 'dot' && s.at) {
+        strokes.push({ tool: 'brush', size: Math.max(radius * 2, (s.r || 0) * 2), pts: [s.at.slice()] });
+      } else if (kind === 'arrow' && s.to) {
+        strokes.push({ tool: 'brush', size: radius * 2, pts: [s.to.slice()] });
+      } else if ((kind === 'brush' || kind === 'eraser') && s.pts && s.pts.length) {
+        strokes.push({ tool: kind, size: s.size, pts: s.pts.map((p) => p.slice()) });
+      }
+    }
+    const mask = { w: doc.w, h: doc.h, strokes };
+    return maskBBox(mask) ? mask : null;
   }
 
   // 标记存在节点自己身上（n.gen.smart）：它是这张图的草稿，节点重建、切走再切回来都还在，
@@ -13866,16 +13920,27 @@
     }
     // 两个都要在图上落笔的模式同时开着会互相打架：进这个就把那个收起来
     if (maskSession) closeMaskEditor();
+    // 扩图同理：它的八个锚点会被标记层盖住，画布坐标也和标记的原图坐标对不上。
+    // closeOutpaint 会顺手把尺寸档还原，所以进标记模式前先把它完整收掉。
+    if (outpaintOn(n)) closeOutpaint(n);
     loadImageEl(n.dataURL).then((img) => {
       const W = img.naturalWidth || 1024;
       const H = img.naturalHeight || 1024;
       // 纯图片节点没有生成面板，也就没有写要求的地方：先给它一块（和扩图同一个处理）
       if (n.plain) delete n.plain;
       n.gen = n.gen || {};
-      // 每次都从空白开始：这些标记属于「这一次操作」，不沿用上一次
-      n.gen.smart = { w: W, h: H, strokes: [] };
+      // 上次提交失败或要继续调整时恢复草稿；图片尺寸变了就从空白开始。
+      const draft = n.gen.smartDraft;
+      n.gen.smart = draft && draft.w === W && draft.h === H
+        ? JSON.parse(JSON.stringify(draft)) : { w: W, h: H, strokes: [] };
       rerenderNode(n.id, true);
-      const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
+      const panel = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
+      const ta = panel ? panel.querySelector('.gen-prompt') : null;
+      // rerender 是整块重建，提示词和参考图都靠 buildGenPanel 重新贴回去。正常路径没问题，
+      // 但框停在空状态、数据却还在 n.gen 里是能出现的不一致（用户看到的就是「点一下词全没了」）。
+      // 这里只在「框空 + 有数据」时补一次，正常路径一个字都不会动。
+      if (ta && !promptText(ta).trim() && String(n.gen.prompt || '').trim()) fillPrompt(ta, n.gen.prompt, n);
+      renderRefs(n);
       if (ta) ta.focus();
       flash('在图上标出要改的地方，再在下面的提示词框里写一句要求，点生成');
     }).catch(() => flash('图片加载失败，没法编辑'));
@@ -13888,23 +13953,38 @@
     queueSave();
   }
 
-  // 所有标记画到 ctx 上（不含底图）。屏幕上显示的、和最终送进模型的是同一份绘制，
-  // 所以「我看到的」和「模型看到的」不可能对不上。
+  // 框的八个锚点位置，从左上开始顺时针（左上 / 上中 / 右上 / 右中 / 右下 / 下中 / 左下 / 左中）。
+  // 绘制和「拖锚点改大小」的命中测试共用这一份——各写一份迟早会改了一边忘了另一边。
+  function markHandles(x, y, w, h) {
+    return [[x, y], [x + w / 2, y], [x + w, y],
+      [x + w, y + h / 2], [x + w, y + h],
+      [x + w / 2, y + h], [x, y + h], [x, y + h / 2]];
+  }
+
+  // 所有标记只画到屏幕上的 ctx（不含底图），不会进入模型输入。
   // 顺序就是落笔顺序：橡皮靠 destination-out 擦掉它**之前**的标记，和手感一致。
   function paintAnnotations(ctx, doc) {
-    ctx.clearRect(0, 0, doc.w, doc.h);
+    const W = Math.max(1, doc.w), H = Math.max(1, doc.h);
+    // 屏幕上的标记层按**显示尺寸**绘制（见 buildSmartInline 里设的 canvas.width/height），
+    // 逻辑坐标仍然是图片像素，屏幕上按显示尺寸绘制得更锐利。
+    ctx.setTransform(ctx.canvas.width / W, 0, 0, ctx.canvas.height / H, 0, 0);
+    ctx.clearRect(0, 0, W, H);
     // 线宽跟着图片分辨率走：2000px 的图上用固定 2px 会细成一根丝，缩到 25% 就看不见了
-    const k = Math.max(0.6, doc.w / 900);
+    const k = Math.max(0.6, W / 900);
+    // UI 尺寸换算：选框上那颗 11px 的方块，在 512 的图和 2048 的图上看起来一样大
+    const u = Math.max(1, Math.min(W, H) / 480);
+    const INK = doc.color || MARK_DEFAULT;
+    const SOFT = inkAlpha(INK, 0.72);
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    // 同一段路径描两遍：先粗的深色垫底，再压上细的白线。路径不用重建，
-    // 所以两条线严丝合缝，看起来是「白线带一道黑边」而不是两层。
+    // 同一段路径描两遍：先粗的深色垫底，再压上细的主色线。路径不用重建，
+    // 所以两条线严丝合缝，看起来是「主色线带一道黑边」而不是两层。
     const ink = (w) => {
       ctx.strokeStyle = MARK_HALO;
       ctx.lineWidth = w + 2.6 * k;
       ctx.stroke();
-      ctx.strokeStyle = MARK_INK;
+      ctx.strokeStyle = INK;
       ctx.lineWidth = w;
       ctx.stroke();
     };
@@ -13914,7 +13994,7 @@
       if (pts.length === 1) {
         ctx.beginPath();
         ctx.arc(pts[0][0], pts[0][1], Math.max(1, size / 2), 0, Math.PI * 2);
-        ctx.fillStyle = MARK_SOFT;
+        ctx.fillStyle = SOFT;
         ctx.fill();
         ctx.strokeStyle = MARK_HALO;
         ctx.lineWidth = 2 * k;
@@ -13924,11 +14004,11 @@
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      // 画笔是半透明的，描边也淡一档：给它配一条和白线一样重的黑边会变成一根管子
+      // 画笔是半透明的，描边也淡一档：给它配一条和主色线一样重的黑边会变成一根管子
       ctx.strokeStyle = 'rgba(8, 10, 14, 0.32)';
       ctx.lineWidth = w + 2 * k;
       ctx.stroke();
-      ctx.strokeStyle = MARK_SOFT;
+      ctx.strokeStyle = SOFT;
       ctx.lineWidth = w;
       ctx.stroke();
     };
@@ -13943,27 +14023,75 @@
       ctx.arcTo(x, y, x + w, y, rr);
       ctx.closePath();
     };
-    // 序号：白底深字的圆牌。点和框共用一套编号（按落笔顺序），
-    // 这样描述里写「1 换成红色、2 去掉」时，两个编号指的是同一件事。
-    // 白底比红底安静，但在深色画面上更亮——编号是唯一能把「描述里的 1」和「图上的 1」
-    // 对上的东西，宁可抢眼也不能看不清。
-    const badge = (x, y, no, r) => {
+    // 倒水滴（地图针）：尖端落在要改的位置上，**序号就写在水滴里**。
+    // 比例照着参考图来：尖端到圆心 1.6r，整体宽高约 1:1.3 —— 圆头够大才装得下数字，
+    // 尖又足够短，一眼看出「指着下面这一点」而不是一根细针。
+    // 点标记用它，框的序号也用它（小一号、尖端压在框的左上角）——两种标记的编号长一个样。
+    const pin = (x, y, no, r) => {
+      // 贴着画面边缘时整枚针会跑出去、只剩一个尖：把尖端夹进来，针才能完整露出来
+      const tipX = clamp(x, r, Math.max(r, W - r));
+      const tip = clamp(y, r * 2.6, Math.max(r * 2.6, H - 2));
+      const cy = tip - r * 1.6;                  // 圆头的圆心
       ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = MARK_INK;
+      ctx.moveTo(tipX, tip);
+      ctx.bezierCurveTo(tipX - r * 0.3, tip - r * 0.78, tipX - r, cy + r * 0.55, tipX - r, cy);
+      ctx.arc(tipX, cy, r, Math.PI, 0, false);   // 圆头：左 → 上方 → 右
+      ctx.bezierCurveTo(tipX + r, cy + r * 0.55, tipX + r * 0.3, tip - r * 0.78, tipX, tip);
+      ctx.closePath();
+      ctx.fillStyle = INK;
       ctx.fill();
-      ctx.strokeStyle = MARK_HALO;
-      ctx.lineWidth = 2.4 * k;
+      // 一圈白边：水滴压在照片上，底下可能是深色衣服也可能是亮背景，
+      // 纯色块在浅色区会「化」进去。白描边把它和画面隔开，看着也更像矢量图标。
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(1.6, r * 0.16);
       ctx.stroke();
-      ctx.fillStyle = '#12161c';
-      ctx.font = `700 ${Math.round(r * 1.02)}px system-ui, sans-serif`;
+      // 白字。居中按**字形包围盒**算，不是按 em 框——
+      // textBaseline='middle' 对的是 em 框中心，数字的字形比 em 框偏上，
+      // 直接用 middle 会看着往上飘（用户就是先说「文案没有居中」）。
+      const txt = String(no);
+      ctx.fillStyle = '#fff';
+      ctx.font = `700 ${Math.round(r * 0.98)}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(no), x, y + r * 0.04);
+      ctx.textBaseline = 'alphabetic';
+      const m = ctx.measureText(txt);
+      // 基线放在「让字形竖直中心落在 cy」的位置，水平同理用实际左右边界修正
+      const dx = (m.actualBoundingBoxLeft - m.actualBoundingBoxRight) / 2;
+      const dy = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+      ctx.fillText(txt, tipX + dx, cy + dy);
       ctx.textAlign = 'start';
       ctx.textBaseline = 'alphabetic';
     };
-    const badgeR = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
+    // 框的序号比点标记小一号：它只是「这块是几号」的标签，不该盖住框里的内容
+    const numPinR = () => Math.max(9, Math.round(Math.min(W, H) * 0.024));
+    // 选框：虚线 + 八个锚点。锚点**八个都是同一个空心小方块**，白底 + 主色描边——
+    // 空心才看得见框里那一片到底圈住了什么。
+    // 尺寸只比线宽大一圈：它是「这里能拖」的把手，不是装饰，画大了会盖住框里的内容。
+    const anchor = (cx, cy, half) => {
+      roundRect(cx - half, cy - half, half * 2, half * 2, half * 0.34);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2.2 * k;
+      ctx.stroke();
+    };
+    const frame = (x, y, w, h) => {
+      // 框里**不填色**：填一层半透明会把那片像素整体染色，
+      // 模型看到的「这一块原来长什么样」就被改掉了，人也判断不出圈得准不准。
+      // 线用**虚线**：实线在纹理密的照片上会和画面本身的边缘混在一起，
+      // 虚线一眼就是「叠加上去的一层」，不抢内容。
+      ctx.save();
+      ctx.setLineDash([7 * u, 5.5 * u]);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 3.2 * k;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+      const half = 4.6 * u;
+      const hs = markHandles(x, y, w, h);
+      // 左上角那颗不画：序号水滴的尖正好扎在这儿，方块和尖会糊成一坨。
+      // 水滴自己就是那个角的把手，命中测试照样认它。
+      for (let i = 1; i < hs.length; i++) anchor(hs[i][0], hs[i][1], half);
+    };
+    const badgeR = () => Math.max(12, Math.round(Math.min(W, H) * 0.035));
     let no = 0;
     for (const s of doc.strokes || []) {
       const kind = strokeKind(s);
@@ -13977,16 +14105,10 @@
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
         no += 1;
-        // 实线 + 淡底，不用虚线：虚线在密集的背景纹理上会碎成一段一段，
-        // 远看像画面本身的噪点；一圈干净的实线加一层薄白才是「我圈住了这块」。
-        roundRect(r[0], r[1], r[2], r[3], Math.min(r[2], r[3]) * 0.08 + 6 * k);
-        ctx.fillStyle = MARK_WASH;
-        ctx.fill();
-        ink(2.2 * k);
-        // 编号贴在框的左上角（夹在画面内，免得贴着边缘时被裁掉半个）
-        const br = badgeR();
-        badge(clamp(r[0], br + 2, Math.max(br + 2, doc.w - br - 2)),
-          clamp(r[1], br + 2, Math.max(br + 2, doc.h - br - 2)), s.n || no, br);
+        frame(r[0], r[1], r[2], r[3]);
+        // 序号：和点标记同一个水滴，小一号。尖端**正好扎在框的左上角**——
+        // 那个角的方块不画（见 frame），所以尖和方块不会糊在一起。
+        pin(r[0], r[1], s.n || no, numPinR());
       } else if (kind === 'arrow') {
         const from = s.from || [];
         const to = s.to || [];
@@ -13999,13 +14121,13 @@
         ctx.moveTo(from[0], from[1]);
         ctx.lineTo(to[0] - head * 0.7 * Math.cos(ang), to[1] - head * 0.7 * Math.sin(ang));
         ink(w);
-        // 箭头：白色实心三角 + 深色描边，和杆子同一套配色
+        // 箭头：主色实心三角 + 深色描边，和杆子同一套配色
         ctx.beginPath();
         ctx.moveTo(to[0], to[1]);
         ctx.lineTo(to[0] - head * Math.cos(ang - 0.42), to[1] - head * Math.sin(ang - 0.42));
         ctx.lineTo(to[0] - head * Math.cos(ang + 0.42), to[1] - head * Math.sin(ang + 0.42));
         ctx.closePath();
-        ctx.fillStyle = MARK_INK;
+        ctx.fillStyle = INK;
         ctx.fill();
         ctx.strokeStyle = MARK_HALO;
         ctx.lineWidth = 2 * k;
@@ -14014,34 +14136,70 @@
         no += 1;
         const at = s.at || [];
         if (at.length < 2) continue;
-        badge(at[0], at[1], s.n || no, Math.max(1, s.r || badgeR()));
+        pin(at[0], at[1], s.n || no, Math.max(1, s.r || badgeR()));
       } else if (kind === 'text') {
         const box = markTextBox(ctx, s);
         const pad = 6 * k;
-        // 先垫一层暗底：照片上什么颜色都有，白字直接写上去十次有三次看不清
+        // 先垫一层暗底：照片上什么颜色都有，主色字直接写上去十次有三次看不清
         roundRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2, 5 * k);
         ctx.fillStyle = 'rgba(8, 10, 14, 0.72)';
         ctx.fill();
-        ctx.strokeStyle = MARK_INK;
+        ctx.strokeStyle = INK;
         ctx.lineWidth = 1.6 * k;
         ctx.stroke();
         ctx.font = markFont(Math.max(12, s.size || 24));
-        ctx.fillStyle = MARK_INK;
+        ctx.fillStyle = INK;
         ctx.fillText(String(s.text || ''), box[0], box[1] + box[3] * 0.78);
       }
     }
     ctx.restore();
   }
 
-  // 底图 + 标记 = 送进模型的那张。尺寸必须和原图一致：
-  // 模型是按这张图的比例去理解「箭头指的是哪儿」的。
-  function annotatedDataURL(img, doc) {
-    const cv = canvasOf(doc.w, doc.h);
-    cv.getContext('2d').drawImage(img, 0, 0, doc.w, doc.h);
-    const layer = canvasOf(doc.w, doc.h);
-    paintAnnotations(layer.getContext('2d'), doc);
-    cv.getContext('2d').drawImage(layer, 0, 0);
-    return cv.toDataURL('image/png');
+  // 每个**带编号**的标记在图上占的那一块（图片像素坐标）。
+  // 编号的递增规则必须和 paintAnnotations 里一模一样：框、点各占一个号，箭头和文字不占号。
+  // 缩略图、生成时裁的小图、图上那个数字，三样都靠它对齐——错一处，
+  // 「1 换成红色」指的就不是同一块了。
+  function markBoxes(doc) {
+    const W = Math.max(1, doc.w), H = Math.max(1, doc.h);
+    const defR = Math.max(12, Math.round(Math.min(W, H) * 0.035));
+    const out = [];
+    let no = 0;
+    for (const s of doc.strokes || []) {
+      const kind = strokeKind(s);
+      if (kind === 'rect') {
+        const r = s.rect || [];
+        if (!(r[2] > 0 && r[3] > 0)) continue;
+        no += 1;
+        out.push({ no: s.n || no, x: r[0], y: r[1], w: r[2], h: r[3] });
+      } else if (kind === 'dot') {
+        no += 1;
+        const at = s.at || [];
+        if (at.length < 2) continue;
+        const r = Math.max(1, s.r || defR);
+        // 和 pin() 一样：贴着上沿时尖端会被压下来，包围盒得跟着压过的位置算
+        const tip = clamp(at[1], r * 2.6, Math.max(r * 2.6, H - 2));
+        const cy = tip - r * 1.6;
+        out.push({ no: s.n || no, x: at[0] - r, y: cy - r, w: r * 2, h: tip - (cy - r) });
+      }
+    }
+    return out;
+  }
+
+  // 缩略图 / 近景要裁的那一块：在标记包围盒外面再放一圈**上下文**。
+  // 只裁包围盒的话，一个点标记裁出来就是一片纯色的天空，模型看了也不知道这是哪儿；
+  // 放一圈之后能看见「太阳旁边」「地面和天空的交界」这种可辨识的东西，指代才有意义。
+  // 另外给一个下限（短边的 34%）：点标记本身只有几十像素，光裁它放大全是色块。
+  function shotBox(doc, b) {
+    const W = Math.max(1, doc.w), H = Math.max(1, doc.h);
+    const size = Math.max(Math.max(b.w, b.h) * 1.7, Math.min(W, H) * 0.34);
+    const w = Math.min(W, size), h = Math.min(H, size);
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    return {
+      no: b.no,
+      x: clamp(cx - w / 2, 0, Math.max(0, W - w)),
+      y: clamp(cy - h / 2, 0, Math.max(0, H - h)),
+      w, h,
+    };
   }
 
   // 标记层和工具条都长在节点里（和扩图把参数条并进面板同一个理由）：
@@ -14091,13 +14249,26 @@
       <label class="sm-size" title="标记的粗细 48（[ ] 也能调）">
         <input type="range" min="8" max="200" step="1" value="48" aria-label="标记粗细"></label>
       <span class="sm-sep" aria-hidden="true"></span>
+      <button type="button" class="sm-btn sm-color" data-act="color"
+        title="标记的颜色" aria-label="标记颜色"><i class="sm-swatch"></i></button>
+      <span class="sm-sep" aria-hidden="true"></span>
       <button type="button" class="sm-btn sm-exit" data-act="exit" data-icon="close"
-        title="退出标记模式（Esc）" aria-label="退出"></button>`;
+        title="退出标记模式（Esc）" aria-label="退出"></button>
+      <div class="sm-palette hidden" role="group" aria-label="标记颜色">
+        ${SMART_COLORS.map((c) => `<button type="button" class="sm-c" data-c="${c}"
+          style="--c:${c}" title="${c}" aria-label="用 ${c}"></button>`).join('')}
+        <label class="sm-custom" title="自定义颜色">
+          <input type="color" value="${MARK_DEFAULT}" aria-label="自定义标记颜色" /></label>
+      </div>`;
     // 点工具条不能把节点选丢了
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     panel.parentElement.insertBefore(bar, panel);
     // 图标是 data-icon 挂上去的（和首页、底栏同一套），插进 DOM 之后再水合
     if (window.hydrateIcons) window.hydrateIcons(bar);
+
+    // 条的宽度/位置全交给 CSS（`width: max-content` 按内容包裹 + `margin-inline: auto` 居中）。
+    // 以前这里按 thumb 的世界宽度写 --sm-w、再手算左右 margin，是为了让条和图片**等宽**；
+    // 现在要求反过来了（条只包住那排图标），那套量宽逻辑一并删掉。
 
     const undoBtn = bar.querySelector('[data-act="undo"]');
     const sizeEl = bar.querySelector('.sm-size input');
@@ -14119,12 +14290,104 @@
     const focused = () => alive() && state.selected.has(n.id);
 
     const redraw = () => paintAnnotations(ctx, doc);
+
+    // 标记区域缩略图：每个带编号的标记裁一小块，摆在提示词框正上方。
+    // 写「1 换成红色」时可以对照缩略图；生成时编号位置改为文字提示。
+    // 用 <img> + 绝对定位裁，不用 CSS background-image：同一个 dataURL 只解析一次，
+    // 八个标记就是八个 <img> 共用一张解码结果，不是八份 base64。
+    const strip = document.createElement('div');
+    strip.className = 'sm-thumbs hidden';
+    strip.setAttribute('aria-label', '标记区域');
+    if (ta && ta.parentElement) ta.parentElement.insertBefore(strip, ta);
+    const renderThumbs = () => {
+      const boxes = markBoxes(doc).map((b) => shotBox(doc, b));
+      strip.classList.toggle('hidden', !boxes.length);
+      if (!boxes.length) { strip.innerHTML = ''; return; }
+      const BOX = 48;
+      strip.innerHTML = boxes.map((b) => {
+        // contain：整块都得看见（长条形的框不能被裁成正方形），按短边定比例再居中
+        const s = Math.min(BOX / Math.max(1, b.w), BOX / Math.max(1, b.h));
+        const left = Math.round((BOX - b.w * s) / 2 - b.x * s);
+        const top = Math.round((BOX - b.h * s) / 2 - b.y * s);
+        return `<div class="sm-thumb" title="${b.no} 号标记的区域">
+          <img src="${esc(n.dataURL)}" alt="" draggable="false"
+            style="width:${Math.round(doc.w * s)}px;height:${Math.round(doc.h * s)}px;left:${left}px;top:${top}px" />
+          <span class="sm-thumb-n">${b.no}</span></div>`;
+      }).join('');
+    };
+
+    // 颜色：主色自己挑，存在这张图的草稿里（n.gen.smart.color），跟着画布一起存档。
+    const swatchEl = bar.querySelector('.sm-swatch');
+    const paletteEl = bar.querySelector('.sm-palette');
+    const colorBtn = bar.querySelector('[data-act="color"]');
+    const customEl = paletteEl.querySelector('input[type="color"]');
+    const paintSwatch = () => {
+      const c = doc.color || MARK_DEFAULT;
+      if (swatchEl) swatchEl.style.background = c;
+      const low = String(c).toLowerCase();
+      paletteEl.querySelectorAll('[data-c]').forEach((b) => {
+        b.setAttribute('aria-pressed', b.dataset.c.toLowerCase() === low ? 'true' : 'false');
+      });
+      if (customEl && /^#[0-9a-f]{6}$/i.test(c)) customEl.value = c;
+    };
+    const setColor = (hex) => {
+      if (!hex) return;
+      doc.color = hex;
+      paintSwatch();
+      redraw();
+      renderThumbs();
+      queueSave();
+    };
+    colorBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      paletteEl.classList.toggle('hidden');
+    };
+    paletteEl.querySelectorAll('[data-c]').forEach((b) => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        setColor(b.dataset.c);
+        paletteEl.classList.add('hidden');
+      };
+    });
+    customEl.oninput = () => setColor(customEl.value);
+    // 点到工具条以外就收起来（工具条自己内部的点击不算）
+    document.addEventListener('pointerdown', (ev) => {
+      if (paletteEl.classList.contains('hidden') || bar.contains(ev.target)) return;
+      paletteEl.classList.add('hidden');
+    }, { signal: ac.signal });
+    paintSwatch();
+
+    // 标记层按**显示尺寸**铺像素：canvas 内部固定成原图像素的话，画布一放大就是一张
+    // 被拉伸的位图，线全是糊的。按显示尺寸 × dpr 重建之后，逻辑坐标仍是图片像素
+    // （paintAnnotations 开头统一 setTransform），位置一点不动，只是线条更锐利。
+    const syncRes = () => {
+      const r = cv.getBoundingClientRect();
+      // 下限给到 2 倍：普通屏（dpr=1）如果按 1:1 铺，1~2px 的框线在抗锯齿下会被稀释成
+      // 一条发灰的线；渲染 2 倍再缩回来，线才是实心的。上限 3 倍，别为 4K 屏白烧内存。
+      const dpr = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+      const w = Math.max(1, Math.round((r.width || doc.w) * dpr));
+      const h = Math.max(1, Math.round((r.height || doc.h) * dpr));
+      if (cv.width === w && cv.height === h) return;
+      cv.width = w;          // 改尺寸会清空画布，所以紧跟着重画
+      cv.height = h;
+      redraw();
+    };
+    syncRes();
+    requestAnimationFrame(syncRes);       // 首次调用时节点还没进文档，量不到显示尺寸
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(syncRes);   // 画布缩放 / 窗口变化 / 换图，都跟着重铺
+      ro.observe(cv);
+      ac.signal.addEventListener('abort', () => ro.disconnect());
+    }
+
     // 不摆「N 处」的计数：这一行只有 320px，一个计数胶囊就把滑杆挤成一条缝。
     // 图上的编号（1、2、3…）本来就是计数，再加一遍是重复。数字挂到 data 上给测试读。
     const refresh = () => {
       const marks = doc.strokes.filter((s) => strokeKind(s) !== 'eraser').length;
       bar.dataset.marks = String(marks);
       undoBtn.disabled = !doc.strokes.length;
+      renderThumbs();          // 标记变了，缩略图那一排跟着变
       queueSave();
     };
 
@@ -14190,6 +14453,53 @@
     // 点一下（没拖开）= 一个带序号的点，拖开 = 一个带序号的框。这样就不用先选工具。
     const addDot = (p) => doc.strokes.push({ kind: 'dot', at: p, r: dotRadius() });
 
+    // ---- 框不是画完就死的：八个锚点随时能拖，改大小 ----
+    // 命中半径按**屏幕**像素给（10px 鼠标好点、手指也够），再换回图上像素：
+    // 要是直接拿图上像素当半径，4000px 的图上那几个方块小到根本点不着。
+    const HANDLE_HIT = 10;
+    const CURSOR = { 0: 'nwse-resize', 1: 'ns-resize', 2: 'nesw-resize', 3: 'ew-resize',
+      4: 'nwse-resize', 5: 'ns-resize', 6: 'nesw-resize', 7: 'ew-resize' };
+    const hitHandle = (ev) => {
+      const r = cv.getBoundingClientRect();
+      if (!(r.width > 0)) return null;
+      const sc = doc.w / r.width;                    // 屏幕 1px = 图上 sc px
+      const x = (ev.clientX - r.left) * sc;
+      const y = (ev.clientY - r.top) * sc;
+      const tol = HANDLE_HIT * sc;
+      // 倒着找：后画的压在上面，先给最上面那个
+      for (let i = doc.strokes.length - 1; i >= 0; i--) {
+        const s = doc.strokes[i];
+        if (strokeKind(s) !== 'rect') continue;
+        const b = s.rect || [];
+        if (!(b[2] > 0 && b[3] > 0)) continue;
+        const hs = markHandles(b[0], b[1], b[2], b[3]);
+        for (let h = 0; h < hs.length; h++) {
+          if (Math.abs(x - hs[h][0]) <= tol && Math.abs(y - hs[h][1]) <= tol) {
+            return { stroke: s, handle: h, rect0: b.slice() };
+          }
+        }
+      }
+      return null;
+    };
+    // 拖锚点：只动被抓住的那条边 / 那个角，其余各边钉在原地。
+    // 拖过头就卡在最小尺寸，**不翻转**——翻转那一瞬间框会整个跳一下，像把东西弄丢了。
+    const resizeBy = (d, p) => {
+      const [x0, y0, w0, h0] = d.rect0;
+      let x1 = x0, y1 = y0, x2 = x0 + w0, y2 = y0 + h0;
+      const h = d.handle;
+      if (h === 0 || h === 6 || h === 7) x1 = p[0];    // 左边
+      if (h === 2 || h === 3 || h === 4) x2 = p[0];    // 右边
+      if (h === 0 || h === 1 || h === 2) y1 = p[1];    // 上边
+      if (h === 4 || h === 5 || h === 6) y2 = p[1];    // 下边
+      const min = Math.max(6, Math.round(Math.min(doc.w, doc.h) * 0.012));
+      if (x2 - x1 < min) { if (h === 0 || h === 6 || h === 7) x1 = x2 - min; else x2 = x1 + min; }
+      if (y2 - y1 < min) { if (h === 0 || h === 1 || h === 2) y1 = y2 - min; else y2 = y1 + min; }
+      const nx1 = clamp(x1, 0, doc.w), ny1 = clamp(y1, 0, doc.h);
+      const nx2 = clamp(x2, 0, doc.w), ny2 = clamp(y2, 0, doc.h);
+      d.stroke.rect = [Math.round(nx1), Math.round(ny1),
+        Math.round(Math.max(min, nx2 - nx1)), Math.round(Math.max(min, ny2 - ny1))];
+    };
+
     cv.addEventListener('pointerdown', (ev) => {
       if (!alive()) return;
       if (ev.button !== 0) return;
@@ -14199,6 +14509,13 @@
       const p = toDoc(ev);
       if (sess.tool === 'text') { askText(ev, p); return; }
       if (sess.tool === 'mark') {
+        // 先看是不是要拖锚点改大小：命中就不新建框，不然一拖就在旧框上叠一个新框
+        const hit = hitHandle(ev);
+        if (hit) {
+          sess.draft = { kind: 'resize', stroke: hit.stroke, handle: hit.handle, rect0: hit.rect0 };
+          cv.style.cursor = CURSOR[hit.handle] || 'nwse-resize';
+          return;
+        }
         sess.draft = { kind: 'rect', origin: p, rect: [p[0], p[1], 0, 0] };
       } else if (sess.tool === 'arrow') {
         sess.draft = { kind: 'arrow', from: p, to: p.slice(), size: sess.size };
@@ -14215,9 +14532,21 @@
     window.addEventListener('pointermove', (ev) => {
       if (!alive()) return;
       const d = sess.draft;
-      if (!d) return;
+      if (!d) {
+        // 没在落笔时给个「这儿能拖」的箭头：八个方块小，光看不一定敢下手
+        if (sess.tool === 'mark') {
+          const r = cv.getBoundingClientRect();
+          const inside = ev.clientX >= r.left && ev.clientX <= r.right
+            && ev.clientY >= r.top && ev.clientY <= r.bottom;
+          const hit = inside ? hitHandle(ev) : null;
+          cv.style.cursor = hit ? (CURSOR[hit.handle] || 'nwse-resize') : 'crosshair';
+        }
+        return;
+      }
       const p = toDoc(ev);
-      if (d.kind === 'rect') {
+      if (d.kind === 'resize') {
+        resizeBy(d, p);
+      } else if (d.kind === 'rect') {
         d.rect = [
           Math.min(d.origin[0], p[0]), Math.min(d.origin[1], p[1]),
           Math.abs(p[0] - d.origin[0]), Math.abs(p[1] - d.origin[1]),
@@ -14237,6 +14566,13 @@
       const d = sess.draft;
       sess.draft = null;
       if (!d) return;
+      if (d.kind === 'resize') {
+        // 改大小不新建笔画，只重算缩略图和存档
+        redraw();
+        refresh();
+        cv.style.cursor = sess.tool === 'text' ? 'text' : 'crosshair';
+        return;
+      }
       // 阈值按**屏幕**像素算再换回图上像素：4000px 的图上「6 个图上像素」不到一个屏幕像素，
       // 手一抖就被当成框，出来一个看不见的小方块。
       const cw = cv.getBoundingClientRect().width;
@@ -14297,7 +14633,7 @@
     refresh();
   }
 
-  // 生成：把「画了标记的这张图」和提示词一起交给右边的新节点，然后**直接开跑**。
+  // 生成：只把原图和文字位置提示交给模型，屏幕标记绝不进入模型输入。
   // 不在原节点上出图：用户要的是「改一版」，原图得留着对比。
   function smartRun(n) {
     const doc = smartDocOf(n);
@@ -14307,25 +14643,47 @@
     const prompt = (ta ? promptText(ta) : String((n.gen && n.gen.prompt) || '')).trim();
     if (!doc.strokes.length) { flash('先在这张图上标出要改的地方：点一下、圈一块，或者涂一笔'); return; }
     if (!prompt) { flash('再写一句要改成什么样，比如「换成青花瓷盘」'); if (ta) ta.focus(); return; }
+    const mask = smartMask(doc);
+    if (!mask) { flash('请用标注、箭头或画笔选出编辑区域；文字备注只提供说明'); return; }
+    if (n.gen.smartSubmitting) return;
+    n.gen.smartSubmitting = true;
     const wf = annotateWorkflow();
-    loadImageEl(n.dataURL).then((img) => {
-      const dataURL = annotatedDataURL(img, doc);
-      // 这一轮的标记已经烘进新节点的图里了：源节点回到普通状态，别让旧标记留到下一次
+    loadImageEl(n.dataURL).then(() => {
+      const locations = markBoxes(doc).map((b) => {
+        const x = Math.round((b.x + b.w / 2) / doc.w * 100);
+        const y = Math.round((b.y + b.h / 2) / doc.h * 100);
+        return `${b.no}号位于原图横向${x}%、纵向${y}%附近`;
+      });
+      const pos = (p) => `横向${Math.round(p[0] / doc.w * 100)}%、纵向${Math.round(p[1] / doc.h * 100)}%`;
+      for (const s of doc.strokes) {
+        const kind = strokeKind(s);
+        if (kind === 'arrow' && s.to) locations.push(`箭头指向原图${pos(s.to)}`);
+        if (kind === 'text' && s.at) locations.push(`“${s.text}”写在原图${pos(s.at)}附近`);
+        if (kind === 'brush' && s.pts && s.pts.length) {
+          const x = s.pts.reduce((a, p) => a + p[0], 0) / s.pts.length;
+          const y = s.pts.reduce((a, p) => a + p[1], 0) / s.pts.length;
+          locations.push(`涂画区域位于原图${pos([x, y])}附近`);
+        }
+      }
+      // 保留草稿，失败后可以重新打开智能编辑调整；源节点暂时退出标记模式。
+      n.gen.smartDraft = JSON.parse(JSON.stringify(doc));
       delete n.gen.smart;
       const made = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
-        dataURL,
+        // 节点保留原图；标记转成遮罩，生成结果只贴回选中区域。
+        dataURL: n.dataURL,
         w: nodeWidth(n),
         title: `智能编辑 · ${n.title}`,
-        // selfSource：这张图必须进模型（平时「节点自己的图不当参考图」是为了防偷偷图生图）
-        // aspectAuto：尺寸跟着这张标注图的比例走，改比例会让箭头指偏
-        gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true },
+        gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true,
+          smartHint: locations.join('；'), smartReplace: true },
       });
+      carryMask(n, made, mask);
       selectOnly(made.id);
       flash(wf
         ? '智能编辑：标记和描述都带过去了，正在生成'
         : '智能编辑：这台机器上没有能吃图的工作流，先在面板里选一个');
       if (wf) generateImage(made);
-    }).catch(() => flash('图片加载失败，没法把标记画上去'));
+    }).catch(() => flash('图片加载失败，无法创建编辑任务'))
+      .finally(() => { n.gen.smartSubmitting = false; });
   }
 
   /* ---------------- 裁剪浮层 ---------------- */

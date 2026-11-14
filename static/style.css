@@ -4043,11 +4043,43 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 /* 工具条：**一条**，跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」。
    底色只有一层中性灰。以前是「红框 + 红底 + 红胶囊」——一条工具条上三种红，
    看着像警告条；红色只该留给「危险」，工具条是常态界面。
-   宽度就是节点宽度（380），控件得省着用：工具只放图标，文字退到 title 里。 */
+   宽度按内容包裹（不再拉满节点），控件得省着用：工具只放图标，文字退到 title 里。 */
 .sm-bar {
-  margin: 6px 0 3px;
+  /* 版面高度对齐顶部那条图片工具条：4(padding) + 26(按钮) + 4 + 1(border) = 36。
+     并且**不吃画布缩放**：这条长在节点里，节点会跟着 #world 缩放，不抵消的话
+     放大到 380% 它就成了 139px 高的一条厚带子（顶部那条是屏幕坐标，永远是 36）。
+     --gp-k 是 applyView() 写进 #world 的 1/k，和 .gen-panel 用的是同一套。 */
+  height: 36px;
+  box-sizing: border-box;
+  /* 宽度按**内容**包裹（一排图标 + 滑杆 + 退出），既不拉满节点、也不去追图片的宽度。
+     拉满的时候条里只有滑杆是弹性项，多出来的宽度全被它吃掉，而它是一条 3px 的细轨道，
+     看起来就是右边空出一大块——用户圈着那块说「底部的框无法对齐」。
+     包裹之后宽度只由控件决定，缩放再怎么变都不会多出可伸缩的余量。
+     max-content 量的是**世界坐标**下的内容宽；这条的净缩放是 1（画布的 k × 自己的 1/k），
+     所以世界宽 = 屏幕宽，不用像以前那样再除以 --gp-k。 */
+  width: max-content;
+  max-width: 100%;
+  /* 水平居中交给 margin:auto：thumb 是 `min(100%, 760×--ar)` + margin:auto 居中的，
+     条在同一个容器里居中，中心线自然和图片重合（竖图也成立）。
+     transform-origin 取**水平中心**而不是 0 0：反缩之后视觉宽度（内容宽）和占位宽度
+     （内容宽 × k）对不上，以左上角为原点会整条往右偏 C(1-k)/2（缩到 40% 时差 100px 以上）；
+     以中心为原点，视觉中心永远压在布局中心上，也就永远压在图片中心上。 */
+  transform: scale(var(--gp-k, 1));
+  transform-origin: 50% 0;
+  margin-inline: auto;
+  /* 上下间距同样按屏幕像素算：世界坐标里的 6px 会被缩放放大/压小。
+     下边距要多补一段 —— transform 不占布局，反缩之后视觉高度(36)和占位(36k)
+     对不上，差多少补多少（3 + 36 - 36k，再换算回世界坐标），
+     否则放大时压住面板、缩小时留一道缝。 */
+  margin-top: calc(6px * var(--gp-k, 1));
+  margin-bottom: calc(39px * var(--gp-k, 1) - 36px);
   padding: 4px;
   display: flex; align-items: center; gap: 1px;
+  /* 调色板是绝对定位的子元素，要有个定位祖先 */
+  position: relative;
+  /* transform 会生成层叠上下文，调色板的 z-index 只在条内部生效；
+     不把条本身抬到生成面板（z-index 7）之上，调色板一展开就被面板盖住。 */
+  z-index: 8;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9px;
   /* 不透明：画布有一层点阵网格，半透明底会把网格漏进来，一排工具上顶着几个灰点，
@@ -4076,9 +4108,12 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 .sm-bar .sm-btn:disabled:hover { background: transparent; color: var(--dim); }
 /* 分组用的细分隔线：比分一个「浅一点的底」安静，也不额外占宽度 */
 .sm-bar .sm-sep { width: 1px; height: 15px; flex: 0 0 auto; margin: 0 2px; background: rgba(255, 255, 255, 0.12); }
-/* 粗细：滑杆吃掉剩余宽度（节点被拉宽时只有它该长）。数字不摆在旁边——
-   它右边紧跟着「5 处」，一行里两个裸数字看着像同一件事的两个值；数字进 title。 */
-.sm-bar .sm-size { display: flex; align-items: center; flex: 1 1 60px; min-width: 40px; padding: 0 2px; }
+/* 粗细：固定宽度，不再「吃掉剩余宽度」——条已经改成按内容包裹，没有剩余宽度可吃。
+   60px 是量出来的平衡点：五个工具 + 撤销·清除 + 三道分隔线 + 退出 约 273px，加上它一共
+   ≈333px，比默认图片(358)窄一圈，「包裹」看得出来；再宽就会顶到和图片同宽、又变回拉满。
+   shrink 留着但 min-width 兜底：节点被拖窄时先压它，别让控件溢出圆角。
+   数字不摆在旁边——它右边紧跟着「5 处」，一行里两个裸数字看着像同一件事的两个值；数字进 title。 */
+.sm-bar .sm-size { display: flex; align-items: center; flex: 0 1 60px; min-width: 40px; padding: 0 2px; }
 /* 原生 range 的滑块在 14px 高里是个大圆钮，缩到这条工具条上像颗开关。
    自己画：3px 轨道 + 10px 白色小圆点。 */
 .sm-bar .sm-size input {
@@ -4102,6 +4137,55 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 .sm-bar .sm-size input::-moz-range-thumb {
   width: 10px; height: 10px; border: none; border-radius: 50%;
   background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+/* 颜色：一颗色块。**不画成普通图标**——它要一直显示「现在用的是哪个色」，
+   所以底色由 JS 直接写在这个元素上（--sm-ink）。 */
+.sm-bar .sm-color { padding: 0; }
+.sm-bar .sm-swatch {
+  width: 15px; height: 15px; border-radius: 50%;
+  background: #3d5afe; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35) inset;
+}
+/* 调色板：贴在工具条下面。绝对定位，不占 flex 的位置，条宽还是那几个控件决定的。 */
+.sm-bar .sm-palette {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 12;
+  display: flex; gap: 5px; align-items: center;
+  padding: 6px 7px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+.sm-bar .sm-palette.hidden { display: none; }
+.sm-bar .sm-palette .sm-c {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%; cursor: pointer;
+  border: none; background: var(--c, #3d5afe);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s;
+}
+.sm-bar .sm-palette .sm-c:hover { transform: scale(1.15); }
+.sm-bar .sm-palette .sm-c[aria-pressed="true"] { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px rgba(0, 0, 0, 0.5); }
+/* 自定义：原生取色器收成和预设一样大的圆 */
+.sm-bar .sm-palette .sm-custom {
+  width: 18px; height: 18px; border-radius: 50%; overflow: hidden; cursor: pointer;
+  background: conic-gradient(#ff3d8b, #fbbf24, #a3e635, #22d3ee, #6ea8fe, #ff3d8b);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.sm-bar .sm-palette .sm-custom input {
+  width: 40px; height: 40px; margin: -11px; padding: 0; border: 0; opacity: 0; cursor: pointer;
+}
+
+/* 标记区域缩略图：每个带编号的标记裁一小块，和图上序号一一对应。
+   放在提示词框正上方——写「1 换成红色」的时候，眼睛一抬就能确认 1 号是哪块。 */
+.sm-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 7px; }
+.sm-thumbs.hidden { display: none; }
+.sm-thumb {
+  position: relative; width: 48px; height: 48px; border-radius: 7px; overflow: hidden;
+  background: #0e1116; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.sm-thumb img { position: absolute; display: block; max-width: none; }
+.sm-thumb-n {
+  position: absolute; left: 3px; top: 3px;
+  min-width: 13px; height: 13px; padding: 0 3px; box-sizing: border-box;
+  border-radius: 7px; background: #fff; color: #0b0e14;
+  font-size: 9px; font-weight: 700; line-height: 13px; text-align: center;
 }
 
 /* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
