@@ -4835,14 +4835,15 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条贴着它（上方，放不下就压在自己图上）、图标 + 文案齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/旋转/调色/遮罩/擦除/去字/扩图/抠图/高清/下载'
+      && toolBar.tools.join('/') === '裁剪/旋转/调色/智能编辑/遮罩/擦除/去字/扩图/抠图/高清/下载'
       && toolBar.attached && toolBar.inView
       && (toolBar.place === 'above' || toolBar.place === 'over')
       && toolBar.pe === 'none' && toolBar.btnPe === 'auto',
     JSON.stringify(toolBar));
-  check('工具条按「本地变换 / 涂抹 / 整图编辑 / 导出」分四段（三条分隔线，3/3/3/1）',
+  // 智能编辑归在「靠遮罩」那一段：它和遮罩 / 擦除 / 去字是同一类（先标位置，再让模型改）
+  check('工具条按「本地变换 / 涂抹 / 整图编辑 / 导出」分四段（三条分隔线，4/3/3/1）',
     toolBar.seps === 3
-      && toolBar.layout === 'crop/rotate/color/|/mask/erase/detext/|/outpaint/cutout/upscale/|/download',
+      && toolBar.layout === 'crop/rotate/color/|/smart/mask/erase/detext/|/outpaint/cutout/upscale/|/download',
     toolBar.layout);
 
   // ---- 窄屏收纳：1024 宽时把四个「整图交给模型」的工具收进「更多编辑」 ----
@@ -4866,7 +4867,7 @@ try {
       blocked };
   })()`);
   check('宽屏：工具条整条摊开，不出现「更多编辑」',
-    wideTools.narrow === false && !wideTools.toggleShown && wideTools.tools.length === 10,
+    wideTools.narrow === false && !wideTools.toggleShown && wideTools.tools.length === 11,
     JSON.stringify(wideTools));
 
   await page.setViewport(1024, 768);
@@ -4905,10 +4906,11 @@ try {
       vw: window.innerWidth,
     };
   })()`);
-  check('1024 宽：四个「整图编辑」收进「更多编辑」，核心六个还在（条从 ~590 收到 ~440）',
+  // 智能编辑也留在条上（它和遮罩同类，属于高频），所以收起来之后是 7 颗 + 「更多编辑」
+  check('1024 宽：四个「整图编辑」收进「更多编辑」，核心七颗还在（条从 ~670 收到 ~520）',
     narrowTools.narrow && narrowTools.gone
-      && narrowTools.tools.join('/') === 'crop/rotate/color/mask/outpaint/more/download'
-      && narrowTools.toggleFocusable && narrowTools.w < 520,
+      && narrowTools.tools.join('/') === 'crop/rotate/color/smart/mask/outpaint/more/download'
+      && narrowTools.toggleFocusable && narrowTools.w < 560,
     JSON.stringify(narrowTools));
   // 收纳的意义就是「腾地方」：条窄了之后，被按钮盖住的标题数不能比宽屏时更多。
   // （不要求「一个都不盖」：画布被用户拖乱之后，任何固定宽度的浮条都可能压到别人的标题，
@@ -4950,7 +4952,7 @@ try {
       tools: [...bar.querySelectorAll('.it-btn')].filter((b) => b.getClientRects().length).length };
   })()`);
   check('视口还原后工具条自己摊开（不用刷新、不用重新选中）',
-    backWide.narrow === false && backWide.tools === 10, JSON.stringify(backWide));
+    backWide.narrow === false && backWide.tools === 11, JSON.stringify(backWide));
 
   // 下载：把图存成本地文件。headless 里不真落盘（会污染下载目录），只把 <a> 的
   // click 拦下来，验「文件名取自节点标题、扩展名跟着 MIME 走」这两件真正会错的事。
@@ -7287,13 +7289,17 @@ try {
     capOffClick.shown && /工作流库/.test(capOffClick.flash) && capOffClick.sheet,
     JSON.stringify(capOffClick));
 
-  // 关掉工作流库，回起始页
+  // 关掉工作流库，回起始页。
+  // 关闭键是 `.sheet header .x`——以前这里找的是 .sheet-close / #sheetClose / [data-close]，
+  // 一个都不存在，于是弹层一直盖在画布上：后面所有 DOM 断言照过，直到第一次**真实坐标**点击
+  // 打在弹层的 tab 上才暴露（智能编辑那一段就是这么翻车的）。所以关完还要确认它真的没了。
   await page.evaluate(`(() => {
-    const x = document.querySelector('#appSettings .sheet-close, .sheet-close, #sheetClose');
+    const x = document.querySelector('#appSettings .sheet header .x') || document.querySelector('#appSettings .x');
     if (x) x.click();
-    document.querySelectorAll('[data-close]').forEach((b) => b.click());
   })()`);
-  await new Promise((r) => setTimeout(r, 400));
+  await page.waitFor(`!document.getElementById('appSettings')`, 4000).catch(() => {});
+  check('关掉工作流库：弹层真的收掉了（否则后面画布上的真实点击全打在弹层上）',
+    (await page.evaluate(`!document.getElementById('appSettings')`)) === true);
 
   // 点「图片生成」：直接放下一个图片节点 + 生成面板。
   // 图片节点自带面板（提示词 / 参考图 / 工作流胶囊 / 生成按钮），再摆「提示词 → 工作流 → 输出」
@@ -7423,6 +7429,332 @@ try {
   check('空节点生成：结果直接填进这个节点，不再凭空多出一个',
     emptyGen.clicked && emptyGen.after === emptyGen.before && !!emptyGen.src,
     JSON.stringify(emptyGen));
+
+  // ---- 智能编辑：标记画在图上，连同描述一起交给模型 ----
+  // 和「遮罩」是两件事：遮罩是二值的（改 / 不改），表达不了「这根箭头指着的那只碗」。
+  // 所以这里盯的是：标记真的画进了交给模型的那张图、原节点一个字节不动、新节点里
+  // **没有遮罩**、描述原样带走、点一次就开跑。
+  // 用 canvas-mask 夹具（512×512 的真图）：16×16 的占位图上标什么都是满屏，看不出问题。
+  seedProject(dataDir, 'canvas-mask.json', '20260101-000000-smart');
+  await page.evaluate(`document.querySelector('#projectBar [data-act="home"]').click()`);
+  await page.waitFor(`!document.getElementById('home').classList.contains('hidden')`, 8000);
+  await page.waitFor(`[...document.querySelectorAll('#recentList .proj-card')]
+    .some((x) => /遮罩夹具画布/.test(x.textContent))`, 10000);
+  await page.evaluate(`(() => {
+    const c = [...document.querySelectorAll('#recentList .proj-card')]
+      .find((x) => /遮罩夹具画布/.test(x.textContent));
+    c.querySelector('.pm').click();
+  })()`);
+  // 首页 → 立刻点最近项目：以前 showHome 的尾巴会在「退出前落盘」之后补一次「亮出来」，
+  // 把人从刚打开的画布弹回首页（表现出来是「点一次没进去，得点两次」）。
+  // 先等真的进了画布，再等一会儿确认它**没被弹回来**。
+  const openedCanvas = await page.waitFor(`(() => {
+    const h = document.getElementById('home');
+    return location.hash === '#canvas' && h.classList.contains('hidden')
+      ? { hash: location.hash, home: h.className } : null;
+  })()`, 12000).catch(() => null);
+  await new Promise((r) => setTimeout(r, 700));
+  const stayedCanvas = await page.evaluate(`location.hash === '#canvas'
+    && document.getElementById('home').classList.contains('hidden')`);
+  check('首页 → 立刻点最近项目：一次就进画布，不会被落盘后的补丁弹回首页',
+    !!openedCanvas && stayedCanvas === true, JSON.stringify({ opened: openedCanvas, stayed: stayedCanvas }));
+  // 只等「有节点」不够：上一个画布的节点还在屏幕上，条件立刻成立，读到的会是别人的图
+  await page.waitFor(`(document.getElementById('projectName') || {}).value === '遮罩夹具画布'`, 12000);
+  await page.waitFor(`(() => {
+    const im = document.querySelector('#nodes .node.image .thumb img');
+    return !!im && im.naturalWidth === 512;
+  })()`, 12000);
+
+  const smartPick = await page.evaluate(`(() => {
+    const el = document.querySelector('#nodes .node.image');
+    if (!el) return null;
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    const im = el.querySelector('.thumb img');
+    return { id: el.dataset.id, nat: [im.naturalWidth, im.naturalHeight], src: im.getAttribute('src') };
+  })()`);
+  check('智能编辑：选中一张真图（512×512 夹具）',
+    !!smartPick && smartPick.nat[0] === 512, JSON.stringify({ id: smartPick && smartPick.id, nat: smartPick && smartPick.nat }));
+
+  await page.waitFor(`!!document.querySelector('#imgTools [data-tool="smart"]')`, 8000);
+  await page.evaluate(`document.querySelector('#imgTools [data-tool="smart"]').click()`);
+  // 标记层和工具条都长在节点里：这一版特意不做「独立编辑器」，所以这里既验功能，
+  // 也验「没有那一层」——overlay 必须是 false，工具条必须在这个节点内部。
+  const smartOpen = await page.waitFor(`(() => {
+    const cv = document.querySelector('#nodes .node.image .thumb .sm-cv');
+    const bar = document.querySelector('#nodes .node.image .sm-bar');
+    if (!cv || !bar) return null;
+    const r = cv.getBoundingClientRect();
+    const btn = document.querySelector('#imgTools [data-tool="smart"]');
+    const tool = bar.querySelector('.sm-tool');
+    const rgb = (s) => (s.match(/[\\d.]+/g) || []).slice(0, 3).map(Number);
+    const neutral = (s) => { const c = rgb(s); return c.length === 3
+      && Math.abs(c[0] - c[1]) <= 2 && Math.abs(c[1] - c[2]) <= 2; };
+    return {
+      tools: [...bar.querySelectorAll('.sm-tool')].map((b) => b.dataset.tool),
+      pressed: (bar.querySelector('.sm-tool[aria-pressed="true"]') || { dataset: {} }).dataset.tool || '',
+      icons: bar.querySelectorAll('.sm-tool svg').length,
+      mainLabel: (bar.querySelector('.sm-tool-main .sm-lbl') || {}).textContent || '',
+      mainW: Math.round((bar.querySelector('.sm-tool-main') || { getBoundingClientRect: () => ({ width: 0 }) })
+        .getBoundingClientRect().width),
+      hasPrompt: !!document.querySelector('.gen-panel .gen-prompt'),
+      cv: [cv.width, cv.height],
+      box: [r.left, r.top, r.width, r.height],
+      marks: bar.dataset.marks || '',
+      barH: Math.round(bar.getBoundingClientRect().height),
+      toolH: Math.round(tool.getBoundingClientRect().height),
+      bgNeutral: neutral(getComputedStyle(bar).backgroundColor),
+      activeNeutral: neutral(getComputedStyle(bar.querySelector('.sm-tool[aria-pressed="true"]')).backgroundColor),
+      overlay: !!document.getElementById('smartEdit'),
+      inNode: bar.closest('.node') === document.querySelector('#nodes .node.image'),
+      on: !!btn && btn.classList.contains('on'),
+    };
+  })()`, 8000).catch(() => null);
+  // 「点一下」和「圈一块」合并成一个「标注」：抬手之前谁也说不准用户想点还是想框，
+  // 让他先选一次工具多半会选错再返工。两种标记都编号。
+  check('点「智能编辑」→ 一条图标工具条长在节点里：五个标记工具 + 描述框，**没有独立编辑器**',
+    !!smartOpen && smartOpen.tools.join('/') === 'mark/brush/arrow/text/eraser'
+      && smartOpen.pressed === 'mark' && smartOpen.icons === 5 && smartOpen.hasPrompt
+      && smartOpen.overlay === false && smartOpen.inNode === true && smartOpen.on === true,
+    JSON.stringify(smartOpen && { tools: smartOpen.tools, pressed: smartOpen.pressed,
+      icons: smartOpen.icons, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
+  // 默认那颗（标注）带文字：图标是一颗倒着的水滴，光看图标认不出是「标注」
+  check('默认那颗工具带文字「标注」，图标是一颗水滴（其余四颗仍是纯图标）',
+    !!smartOpen && smartOpen.mainLabel === '标注' && smartOpen.mainW > 44
+      && smartOpen.mainW < smartOpen.barH * 3,
+    smartOpen ? `label=${smartOpen.mainLabel} w=${smartOpen.mainW}` : 'none');
+  // 五个工具 / 撤销·清除 / 粗细 / 计数 / 退出 必须排在**一行**里：
+  // 以前是「工具一行 + 撤销那一行 + 预设一行」三层，节点下面挂了半屏的按钮。
+  check('工具条整合成一条：所有控件排在同一行（条高 < 42，没有第二层）',
+    !!smartOpen && smartOpen.barH < 42 && smartOpen.barH >= smartOpen.toolH,
+    smartOpen ? `bar=${smartOpen.barH} tool=${smartOpen.toolH}` : 'none');
+  // 底色统一成中性灰，不再有红色：红框 + 红底 + 红胶囊那版看着像警告条，
+  // 红色在这个 app 里只留给「危险」（删除 / 关闭服务）。
+  check('工具条底色是中性灰，选中的工具也不靠红色（红色只留给危险操作）',
+    !!smartOpen && smartOpen.bgNeutral === true && smartOpen.activeNeutral === true,
+    JSON.stringify({ bg: smartOpen && smartOpen.bgNeutral, active: smartOpen && smartOpen.activeNeutral }));
+  check('智能编辑：canvas 内部尺寸 = 原图像素（不然标记整体错位）',
+    !!smartOpen && smartOpen.cv[0] === smartPick.nat[0] && smartOpen.cv[1] === smartPick.nat[1],
+    smartOpen ? `cv=${smartOpen.cv} img=${smartPick.nat}` : 'none');
+  // 计数不进工具条（320px 里塞一个胶囊就把滑杆挤成一条缝），挂在 data-marks 上给断言读；
+  // 图上那串 1、2、3… 本来就是计数
+  check('智能编辑：一打开是空的（这些标记属于这一次操作，不沿用上次）',
+    !!smartOpen && smartOpen.marks === '0', smartOpen && smartOpen.marks);
+
+  const sb = smartOpen.box;
+  const sAt = (fx, fy) => ({ x: sb[0] + sb[2] * fx, y: sb[1] + sb[3] * fy });
+  const smartSel = '#nodes .node.image .sm-bar';
+  const smartCount = () => page.evaluate(`document.querySelector('${smartSel}').dataset.marks || ''`);
+  const smartTool = (k) => page.evaluate(`document.querySelector('${smartSel} [data-tool="${k}"]').click()`);
+  const promptSel = `.gen-panel[data-panel-for="${smartPick.id}"] .gen-prompt`;
+
+  // 点击：一个带序号的点
+  const beforeClick = await page.evaluate(`(() => {
+    const cv = document.querySelector('#nodes .node.image .thumb .sm-cv');
+    const r = cv.getBoundingClientRect();
+    const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+    const e = document.elementFromPoint(cx, cy);
+    return {
+      nodeCls: document.querySelector('#nodes .node.image').className,
+      hit: e ? e.tagName + '.' + e.className : null,
+      pe: getComputedStyle(cv).pointerEvents,
+      same: e === cv,
+      center: [cx, cy],
+      nodes: document.querySelectorAll('#nodes .node').length,
+      bars: document.querySelectorAll('.sm-bar').length,
+      vw: innerWidth, vh: innerHeight,
+    };
+  })()`);
+  // 先确认「点下去真的会落在标记层上」：被别的浮层盖住时，后面的点击会静默无效，
+  // 只报「还没有标记」根本看不出原因（工作流库弹层没关就是这么翻车的）。
+  check('智能编辑：标记层在最上面（命中它，而不是被浮层挡住）',
+    beforeClick.same === true && beforeClick.pe !== 'none' && beforeClick.bars === 1,
+    JSON.stringify(beforeClick));
+  await page.clickAt(sAt(0.5, 0.5).x, sAt(0.5, 0.5).y, { settle: 220 });
+  check('点击：点一下就有一个带编号的标记', await smartCount() === '1',
+    `${await smartCount()} · ${JSON.stringify(beforeClick)}`);
+  // 同一个「标注」工具，拖一下就变成框——不用先换工具，框也带编号（1、2 连着排）
+  await page.drag(sAt(0.2, 0.62), sAt(0.5, 0.84), { steps: 10, settle: 250 });
+  check('框选：同一个「标注」工具拖一下就圈住一块（框也带编号）',
+    await smartCount() === '2', await smartCount());
+
+  // 箭头：指哪改哪
+  await smartTool('arrow');
+  await page.drag(sAt(0.2, 0.24), sAt(0.42, 0.4), { steps: 10, settle: 250 });
+  check('箭头：拖出一条指向目标的箭头', await smartCount() === '3', await smartCount());
+
+  // 文字：点一下就地开一个**普通文本框**，回车落字
+  await smartTool('text');
+  const imgBefore = await page.evaluate(`(() => {
+    const im = document.querySelector('#nodes .node.image .thumb img');
+    const r = im.getBoundingClientRect();
+    return [Math.round(r.left), Math.round(r.top), Math.round(r.width)];
+  })()`);
+  await page.clickAt(sAt(0.62, 0.18).x, sAt(0.62, 0.18).y, { settle: 250 });
+  // 「写个备注，图片歪了」的回归：focus() 会顺手把最近的滚动容器滚到能看见输入框的位置，
+  // .thumb 是 overflow:hidden 的、但照样能被程序滚动，于是整张图被推开几十像素，
+  // 输入框收掉以后还留在那儿。这里同时验：没有 placeholder、不出界、滚动位还是 0。
+  const noteOpen = await page.evaluate(`(() => {
+    const i = document.querySelector('.thumb .sm-textin');
+    const th = document.querySelector('#nodes .node.image .thumb');
+    const im = th.querySelector('img');
+    const r = im.getBoundingClientRect();
+    const ir = i ? i.getBoundingClientRect() : null;
+    const tr = th.getBoundingClientRect();
+    return {
+      has: !!i, ph: i ? i.placeholder : 'x',
+      img: [Math.round(r.left), Math.round(r.top), Math.round(r.width)],
+      scroll: [th.scrollLeft, th.scrollTop],
+      inBox: !!ir && ir.left >= tr.left - 1 && ir.right <= tr.right + 1,
+    };
+  })()`);
+  check('文字：点一下开一个普通文本框（空着、没有 placeholder），图片一个像素都不动',
+    noteOpen.has === true && noteOpen.ph === '' && noteOpen.inBox === true
+      && noteOpen.scroll[0] === 0 && noteOpen.scroll[1] === 0
+      && JSON.stringify(noteOpen.img) === JSON.stringify(imgBefore),
+    JSON.stringify(noteOpen) + ' · ' + JSON.stringify(imgBefore));
+  await page.evaluate(`(() => {
+    const i = document.querySelector('.thumb .sm-textin');
+    i.value = '换成盘子';
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const afterText = await smartCount();
+  check('文字：回车后落成一个标记、输入框收掉',
+    afterText === '4' && (await page.evaluate(`!document.querySelector('.sm-textin')`)) === true,
+    afterText);
+
+  // 撤销回到上一步
+  await page.evaluate(`document.querySelector('${smartSel} [data-act="undo"]').click()`);
+  check('撤销：撤掉最后一笔', await smartCount() === '3', await smartCount());
+
+  // 预设那一排撤了：五个常用句子占掉整行，写要求本来就是在下面的提示词框里写。
+  // 这里改成确认它真的没了——留一条「不会再长回来」的回归。
+  check('预设那一排已经撤掉（工具条只剩一行图标控件）',
+    (await page.evaluate(`document.querySelectorAll('${smartSel} .sm-preset').length`)) === 0,
+    'presets');
+
+  // 没写描述就点生成：拦住，标记不丢（模式不退出）
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('${promptSel}');
+    ta.innerHTML = '';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('${promptSel}').closest('.gen-panel').querySelector('.gen-run').click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const smartNoPrompt = await page.evaluate(`(() => ({
+    still: !!document.querySelector('${smartSel}'),
+    flash: (document.getElementById('queueBadge') || {}).textContent || '',
+    shown: !document.getElementById('queueBadge').classList.contains('hidden'),
+  }))()`);
+  check('没写描述就点生成：拦住并说清缺什么，标记还在（没退出模式）',
+    smartNoPrompt.still === true && smartNoPrompt.shown && /改成什么样/.test(smartNoPrompt.flash),
+    JSON.stringify(smartNoPrompt));
+
+  // 写上描述 → 生成：新节点 + 图里真的带标记 + 没有遮罩 + 直接开跑
+  const smartGen = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const hits = [];
+    let upName = '', upSize = null, upDot = null, upArrow = null, upCorner = null, upRect = null;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/upload')) {
+        // 交给 ComfyUI 的那张就是这里收到的字节：直接采样，比看 DOM 可靠
+        const f = opts && opts.body && opts.body.get ? opts.body.get('image') : null;
+        if (!f) return json({ ok: false, error: 'offline' });
+        upName = f.name;
+        const bm = await createImageBitmap(f);
+        upSize = [bm.width, bm.height];
+        const cv = document.createElement('canvas');
+        cv.width = bm.width; cv.height = bm.height;
+        const c = cv.getContext('2d');
+        c.drawImage(bm, 0, 0);
+        const px = (x, y) => { const d = c.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; };
+        // 点击在 (50%,50%)，编号牌半径 18：取圈内偏右一点，避开中间那个深色的「1」
+        upDot = px(Math.round(bm.width * 0.5) + 10, Math.round(bm.height * 0.5));
+        // 箭头从 (20%,24%) 拖到 (42%,40%)：沿线中点应该压着白线
+        upArrow = px(Math.round(bm.width * 0.31), Math.round(bm.height * 0.32));
+        // 框的编号徽章：框从 (20%,62%) 拖开，序号画在框左上角、半径 18。
+        // 取 (+12,+8) 这个点：在圆内、避开中间那个深色的「2」，也避开圆边本身。
+        // 这一格在图上本来是棕色地面，白了只可能是编号牌。
+        upRect = px(Math.round(bm.width * 0.2) + 12, Math.round(bm.height * 0.62) + 8);
+        // 没标过的角落：必须和原图一模一样（否则说明整张被涂了）
+        upCorner = px(4, 4);
+        return json({ ok: true, image: f.name, subfolder: '', type: 'input' });
+      }
+      if (u.startsWith('/api/run')) { hits.push(u); return json({ ok: true, prompt_id: 'smart-1' }); }
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/job') && u.includes('smart-1')) {
+        return json({ ok: true, status: 'success', progress: 100, artifacts: [
+          { kind: 'image', filename: 'smart_out.png', subfolder: '', type: 'output' }] });
+      }
+      return real(url, opts);
+    };
+    // 原图左上角那个像素：用来验「没标的地方一个字节都没变」
+    const srcImg = document.querySelector('#nodes .node.image .thumb img');
+    const scv = document.createElement('canvas');
+    scv.width = srcImg.naturalWidth; scv.height = srcImg.naturalHeight;
+    scv.getContext('2d').drawImage(srcImg, 0, 0);
+    const sd = scv.getContext('2d').getImageData(4, 4, 1, 1).data;
+    const srcCorner = [sd[0], sd[1], sd[2]];
+
+    const before = document.querySelectorAll('#nodes .node').length;
+    const ta = document.querySelector('${promptSel}');
+    ta.innerHTML = '';
+    ta.appendChild(document.createTextNode('把标记区域里的球换成青花瓷盘，其他不要动'));
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.closest('.gen-panel').querySelector('.gen-run').click();
+    // 点一次会多两个节点：承载标注图的那个 + 出图的那个（结果另起一个，和擦除 / 去字一致）
+    for (let k = 0; k < 80; k++) {
+      await sleep(100);
+      if (document.querySelectorAll('#nodes .node').length >= before + 2) break;
+    }
+    await sleep(500);
+    window.fetch = real;
+    const made = [...document.querySelectorAll('#nodes .node.image')]
+      .find((e) => /智能编辑/.test((e.querySelector('.node-title') || {}).textContent || ''));
+    const srcAfter = document.querySelector('#nodes .node.image .thumb img');
+    return {
+      before, after: document.querySelectorAll('#nodes .node').length,
+      barGone: !document.querySelector('.sm-bar'),
+      title: made ? made.querySelector('.node-title').textContent.trim() : '',
+      prompt: made ? (made.querySelector('.gen-prompt') || {}).textContent || '' : '',
+      wf: made ? (made.querySelector('.wfsel .gm-btn') || {}).textContent || '' : '',
+      maskPill: made ? !!made.querySelector('.n-mask') : null,
+      upName, upSize, upDot, upArrow, upCorner, upRect, srcCorner,
+      srcSrc: srcAfter ? srcAfter.getAttribute('src') : '',
+      runs: hits.length,
+    };
+  })()`);
+  check('点生成：标记模式收起，多出「智能编辑 · 图片」承载节点 + 一个出图节点',
+    smartGen.barGone && smartGen.after === smartGen.before + 2 && /智能编辑/.test(smartGen.title),
+    JSON.stringify({ barGone: smartGen.barGone, before: smartGen.before, after: smartGen.after, title: smartGen.title }));
+  check('智能编辑：描述原样带进新节点', /青花瓷盘/.test(smartGen.prompt), smartGen.prompt.slice(0, 40));
+  // 标注图是当「源图」送进去的：吃遮罩的那种拿不到遮罩（mask 全 0），送进去等于什么都没改
+  check('智能编辑：挑的是**只吃图**的工作流（不是吃遮罩的局部重绘）',
+    !!smartGen.wf && !/局部重绘/.test(smartGen.wf), smartGen.wf);
+  // 这条是整个功能的立论：交给模型的是**画了标记的那张图**，不是遮罩
+  // 标记是「白线 + 深色描边」：单色标记总有一种底图会吃掉它，所以这里验的是白色本身
+  check('智能编辑：传给模型的是标注图（点 / 箭头位置是白的，没标的地方原样）',
+    smartGen.upSize && smartGen.upSize[0] === 512
+      && smartGen.upDot && smartGen.upDot[0] > 235 && smartGen.upDot[1] > 235 && smartGen.upDot[2] > 235
+      && smartGen.upArrow && smartGen.upArrow[0] > 235 && smartGen.upArrow[1] > 235 && smartGen.upArrow[2] > 235
+      && JSON.stringify(smartGen.upCorner) === JSON.stringify(smartGen.srcCorner),
+    JSON.stringify({ size: smartGen.upSize, dot: smartGen.upDot, arrow: smartGen.upArrow,
+      corner: smartGen.upCorner, srcCorner: smartGen.srcCorner }));
+  // 框也带编号：点和框共用一套序号，描述里写「1 换成红色、2 去掉」才对得上号
+  check('框选：框的左上角也画了编号（白底深字，就在交给模型的那张图上）',
+    smartGen.upRect && smartGen.upRect[0] > 235 && smartGen.upRect[1] > 235 && smartGen.upRect[2] > 235,
+    JSON.stringify(smartGen.upRect));
+  check('智能编辑：上传的是标注图本身（<节点id>-edit.png，不是 -mask.png）',
+    /^.+-edit\.png$/.test(smartGen.upName || '') && !/-mask\.png$/.test(smartGen.upName || ''),
+    smartGen.upName);
+  check('智能编辑：新节点上**没有遮罩**（这条路不走遮罩）', smartGen.maskPill === false, String(smartGen.maskPill));
+  check('智能编辑：原节点的图一个字节都没动', smartGen.srcSrc === smartPick.src,
+    `${(smartPick.src || '').slice(0, 40)} → ${(smartGen.srcSrc || '').slice(0, 40)}`);
+  check('智能编辑：一条龙——不用再点一次生成，已经提交了', smartGen.runs >= 1, String(smartGen.runs));
 
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。

@@ -2523,7 +2523,7 @@ button.primary { border-radius: 999px; }
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。
    底栏的 .dock-btn 也是：它现在是「图标 + 文字」的宽按钮，要的是 10px 圆角矩形，
    做成 999px 会变成一颗药丸。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -4019,6 +4019,90 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   opacity: 0; transition: opacity 0.2s;
 }
 #maskEditor .me-frame:hover .me-hint { opacity: 1; }
+
+/* ---------- 智能编辑：标记画在节点这张图上，工具条长在节点里 ----------
+   没有独立编辑器：不弹全屏、不切走画布。标记层盖在节点图片上（和遮罩预览同一套对齐），
+   工具条插在图片和生成面板之间，要求就写在这个节点自己的提示词框里。
+   全屏编辑器那一版的问题很直接：改一块局部要顶掉整个画布，改完还得自己找回到哪儿了。 */
+.node.image .thumb .sm-cv {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  z-index: 3; cursor: crosshair; touch-action: none;
+}
+/* 没选中就别吃指针：第一下点在图上是「选中这个节点」，不是「落一个标记」 */
+.node:not(.selected) .thumb .sm-cv { pointer-events: none; }
+/* 文字标记的就地输入框：出现在点的位置，就是一个普通文本框（深底浅字，聚焦有蓝边）。
+   宽高都写死（宽度由 JS 按图算），不靠 min/max 撑——撑出去会被 .thumb 裁掉。 */
+.node.image .thumb .sm-textin {
+  position: absolute; z-index: 4;
+  height: 26px; padding: 0 7px;
+  border: 1px solid var(--accent); border-radius: 6px;
+  background: rgba(12, 15, 20, 0.96); color: #fff;
+  font: inherit; font-size: 12.5px; outline: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+/* 工具条：**一条**，跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」。
+   底色只有一层中性灰。以前是「红框 + 红底 + 红胶囊」——一条工具条上三种红，
+   看着像警告条；红色只该留给「危险」，工具条是常态界面。
+   宽度就是节点宽度（380），控件得省着用：工具只放图标，文字退到 title 里。 */
+.sm-bar {
+  margin: 6px 0 3px;
+  padding: 4px;
+  display: flex; align-items: center; gap: 1px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  /* 不透明：画布有一层点阵网格，半透明底会把网格漏进来，一排工具上顶着几个灰点，
+     看着像图标画脏了 */
+  background: var(--panel-2);
+}
+.node:not(.selected) .sm-bar { display: none; }
+.sm-bar .sm-tools { display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }
+/* 工具和动作共用一种方按钮：26×26、7px 圆角、透明底。
+   选中不靠换颜色、靠「提亮」：一排里只有一颗是亮的，一眼看得出当前拿的是哪把工具。 */
+.sm-bar .sm-tool, .sm-bar .sm-btn {
+  width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  border: none; border-radius: 7px;
+  background: transparent; color: var(--dim);
+  cursor: pointer; transition: background 0.14s, color 0.14s;
+}
+/* 默认那颗带文字：图标是水滴（抽象），光看图标认不出是「标注」 */
+.sm-bar .sm-tool-main { width: auto; padding: 0 6px; }
+.sm-bar .sm-tool .sm-ico { display: grid; place-items: center; }
+.sm-bar .sm-tool .sm-lbl { font-size: 11px; line-height: 1; }
+.sm-bar .sm-tool svg, .sm-bar .sm-btn svg { width: 17px; height: 17px; }
+.sm-bar .sm-tool:hover, .sm-bar .sm-btn:hover { background: rgba(255, 255, 255, 0.09); color: var(--text); }
+.sm-bar .sm-tool[aria-pressed="true"] { background: rgba(255, 255, 255, 0.18); color: #fff; }
+.sm-bar .sm-btn:disabled { opacity: 0.3; cursor: default; }
+.sm-bar .sm-btn:disabled:hover { background: transparent; color: var(--dim); }
+/* 分组用的细分隔线：比分一个「浅一点的底」安静，也不额外占宽度 */
+.sm-bar .sm-sep { width: 1px; height: 15px; flex: 0 0 auto; margin: 0 2px; background: rgba(255, 255, 255, 0.12); }
+/* 粗细：滑杆吃掉剩余宽度（节点被拉宽时只有它该长）。数字不摆在旁边——
+   它右边紧跟着「5 处」，一行里两个裸数字看着像同一件事的两个值；数字进 title。 */
+.sm-bar .sm-size { display: flex; align-items: center; flex: 1 1 60px; min-width: 40px; padding: 0 2px; }
+/* 原生 range 的滑块在 14px 高里是个大圆钮，缩到这条工具条上像颗开关。
+   自己画：3px 轨道 + 10px 白色小圆点。 */
+.sm-bar .sm-size input {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; min-width: 0; height: 14px; margin: 0;
+  /* 全局 input 有 1px 边框 + 7px 圆角，不清掉的话滑杆外面会多一个空胶囊 */
+  border: 0; border-radius: 0; background: none; cursor: pointer;
+}
+.sm-bar .sm-size input::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.18);
+}
+.sm-bar .sm-size input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px; margin-top: -3.5px;
+  border: none; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.sm-bar .sm-size input::-moz-range-track {
+  height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.18);
+}
+.sm-bar .sm-size input::-moz-range-thumb {
+  width: 10px; height: 10px; border: none; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
 
 /* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
    z-index 压在「查看大图」按钮下面，免得挡住它。 */

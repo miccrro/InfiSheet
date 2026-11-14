@@ -726,6 +726,9 @@
         // 两样都在节点里，节点一平移/缩放它们就跟着走——早先是屏幕坐标的浮条，
         // 用户的原话是「无法跟随」：节点在右边、条却钉在屏幕左下角。
         if (outpaintOn(n)) buildOutpaintFrame(n, thumb, panel);
+        // 智能编辑：标记层盖在图上、工具条插在图片和面板之间，也都在节点里。
+        // 要求写在这个面板的提示词框里，生成还是那颗生成键（generateImage 里拦一道）。
+        if (smartOn(n)) buildSmartInline(n, thumb, panel);
       }
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
@@ -3403,6 +3406,9 @@
     // （以前这里会直接 g.busy 崩在空指针上）。给它一句话，别让它以为点了没反应。
     if (!n.gen) { flash('这个节点只放图：点标题上的「生成」把面板打开再生成'); return; }
     const g = n.gen;
+    // 智能编辑：标记画在这张图上、要求写在这个面板里，点生成＝把「标注图」交给右边的新节点跑。
+    // 拦在入口而不是每颗按钮上：生成键、Ctrl+Enter、标题上的药丸走的都是这一条。
+    if (g.smart) { smartRun(n); return; }
     if (g.busy) return;
     // **立刻置位**，别等真正提交（原来在下面 60 行之后才 busy = true）。
     // 中间那一串 await 是上传参考图 / 烘焙遮罩 / 读风格，一次几秒；这期间按钮还是可点的，
@@ -3527,6 +3533,20 @@
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
         flash(`扩图源图上传失败：${err.message}`);
+        bail();
+        return;
+      }
+    }
+    // 智能编辑：节点上的图**就是**要交给模型的那张（标记已经画在图里了），必须进去。
+    // 和上面「节点自己的图不当参考图」不矛盾——那是为了防止「没连线也偷偷图生图」，
+    // 而这里进模型是用户刚刚在编辑器里明确要求的。走的是和扩图同一条路：
+    // 一张临时上传的源图，unshift 成第一张（提示词里的「图1」指的就是它）。
+    if (g.selfSource && !needMask) {
+      try {
+        const name = await uploadImageData(n.dataURL, `${n.id}-edit.png`);
+        if (name) picked.unshift({ node: n, name, label: labelOf(n) });
+      } catch (err) {
+        flash(`标注图上传失败：${err.message}`);
         bail();
         return;
       }
@@ -8579,6 +8599,9 @@
           // 风格只存指针 {cat,i,cn}，不存那句四百字的英文模板：模板在 static/styles/ 里，
           // 存副本的话改了风格库，老画布还按旧句子出图，对不上号
           style: n.gen.style || null,
+          // 智能编辑的标记：矢量的几笔，和遮罩一样小。存下来刷新后标记还在图上，
+          // 能接着改；不存的话一刷新就只剩一张光图，用户以为刚才白标了
+          smart: n.gen.smart && n.gen.smart.strokes ? n.gen.smart : undefined,
         } : null,
         // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
         // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
@@ -10579,17 +10602,25 @@
     closeQueue();                      // 顶栏的任务队列面板
   }
 
+  // 导航代次：showHome 里有 await（退出编辑器前先落盘），落盘那几百毫秒里用户可能已经点开
+  // 另一个画布。那时候再无条件把首页亮出来，就是把人从刚打开的画布弹回首页——表现出来是
+  // 「点一次没进去，得点两次」。所以进 showHome 先记一代，await 回来发现换过代就收手。
+  let navSeq = 0;
+
   async function showHome() {
     const home = document.getElementById('home');
     if (!home) return;
+    const seq = ++navSeq;
     leaveCanvasChrome();                        // 先收浮层：点了立刻有反应，不必等落盘
     if (state.hydrated) await saveToServer();   // 退出编辑器先落盘，再刷新列表
+    if (seq !== navSeq) return;                 // 落盘期间已经导航走了，首页不该再亮
     home.classList.remove('hidden');
     await initHome();
     if (location.hash !== '#home') history.replaceState(null, '', '#home');
   }
 
   function showCanvas() {
+    navSeq += 1;                                // 让还在路上的 showHome 作废
     const home = document.getElementById('home');
     if (home) home.classList.add('hidden');
     applyView();
@@ -11202,6 +11233,7 @@
     ['crop', '裁剪', 'crop', '拖一个框，裁出一张新的图片节点'],
     ['rotate', '旋转', 'rotate', '旋转 90° / 180°，或水平 / 垂直翻转'],
     ['color', '调色', 'palette', '亮度 / 对比度 / 饱和度 / 色温，实时预览'],
+    ['smart', '智能编辑', 'magic', '标出要改的地方 + 写一句要求，只改那里'],
     ['mask', '遮罩', 'brush', '涂出要重绘的区域，只改涂过的地方'],
     ['erase', '擦除', 'eraser', '涂掉不想要的东西，让模型用周围内容补全'],
     ['detext', '去字', 'text', '涂掉画面里的文字水印，用背景纹理补全'],
@@ -11212,7 +11244,7 @@
   ];
   // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
   // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
-  const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint', 'download']);
+  const IMG_TOOL_BREAKS = new Set(['smart', 'outpaint', 'download']);
   // 窄屏收纳：这四个都是「整张交给模型重做一遍」，用得少、名字又长，宽度不够时收进
   // 「更多编辑」。裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载始终留在条上——它们是高频且
   // 一眼能认出图标的那几个。收起的按钮不做成 display:none 就完事：菜单里要能用 Tab 走到。
@@ -11225,6 +11257,7 @@
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
   // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
   // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
+  // 智能编辑不在表里——它的提示词是用户在编辑器里自己写的，模板会把它盖掉。
   const EDIT_TPL = {
     upscale: '以这张图为参考，输出分辨率更高、细节更精细的版本：补充皮肤、发丝、材质与织物的纹理，'
       + '构图、人物、光线与色调保持完全一致。',
@@ -11432,6 +11465,9 @@
       // 「扩图」是个开关：开着的时候按钮亮着，再点一次收起
       const ob = bar.querySelector('[data-tool="outpaint"]');
       if (ob) ob.classList.toggle('on', outpaintOn(n));
+      // 「智能编辑」也是开关：亮着＝这个节点正在标记模式，再点一次退出
+      const sb = bar.querySelector('[data-tool="smart"]');
+      if (sb) sb.classList.toggle('on', smartOn(n));
       fitImgTools();
       positionImgTools();
     }
@@ -11446,6 +11482,7 @@
     if (kind === 'rotate') { openRotateMenu(n, btn); return; }
     if (kind === 'color') { openColorPanel(n); return; }
     if (kind === 'outpaint') { toggleOutpaint(n); return; }
+    if (kind === 'smart') { startSmartEdit(n); return; }
     if (kind === 'mask') { openMaskEditor(n); return; }
     if (kind === 'erase' || kind === 'detext') { openMaskEditor(n, { intent: kind }); return; }
     if (kind === 'download') { downloadImage(n); return; }
@@ -11960,25 +11997,27 @@
   // 挑工作流只看服务端扫出来的分类（server.py: graph_category），不看名字：
   // 按名字匹配时选中过 Moss_图像编辑 —— 那是个纯文生图流程，参考图根本没进图，
   // 高清出来的是一张全新的画。
+  // 吃遮罩那一档该用哪份工作流：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 → 随便一份能吃图的。
+  // 中间这层必须有：用户明明设了默认，擦除 / 智能编辑却挑了列表里第一份吃图的，
+  // 看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能改。
+  function maskWorkflow() {
+    const all = wfOptions();
+    const def = all.find((o) => o.id === wfDefaultId('img2img'));
+    return all.find((o) => o.alphaMask) || def || all.find((o) => o.image) || null;
+  }
+
   function createEditNode(src, kind, maskDoc) {
     const prompt = EDIT_TPL[kind] || '';
     // 挑工作流看用途：高清要「放大」那一类；抠图有专门抠像工作流就用它，没有就退回图像编辑；
-    // 擦除 / 去字要**能吃图**的：吃遮罩的走原生（只重绘涂过的地方，最准），
+    // 擦除 / 去字 / 智能编辑要**能吃图**的：吃遮罩的走原生（只重绘涂过的地方，最准），
     // 只吃图的走裁切局部重绘（裁出涂的范围单独跑，出图贴回原位）——两条都算对。
     // 只在**真同类**里挑；这台机器上没有同类就留空——以前 pickWorkflow 会退到
     // 「第一个能用的」，于是点「高清放大」可能拿到纯文生图，出来是一张全新的画，
     // 用户以为高清坏了。
     const want = EDIT_WF[kind] || 'img2img';
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
-    // 吃遮罩那一档（擦除 / 去字）的挑法：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 →
-    // 随便一份能吃图的。中间这层必须有：用户明明设了默认，擦除却挑了列表里第一份吃图的
-    // 工作流，看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能擦。
-    const all = wfOptions();
-    const defHit = all.find((o) => o.id === wfDefaultId('img2img'));
-    const maskWf = ((all.find((o) => o.alphaMask) || {}).id || '')
-      || (defHit ? defHit.id : '')
-      || (((all.find((o) => o.image)) || {}).id || '');
-    const wf = hint || (want === 'mask' ? maskWf : pickWorkflow(want));
+    const maskHit = maskWorkflow();
+    const wf = hint || (want === 'mask' ? (maskHit ? maskHit.id : '') : pickWorkflow(want));
     const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
@@ -13257,15 +13296,36 @@
 
   // solid=false：半透明预览（画在浮层和节点缩略图上给人看，颜色/透明度跟着本地偏好走）
   // solid=true ：全黑不透明（烘 alpha 与统计覆盖率用——destination-out 只看 alpha）
+  // 标记的种类。老存档里只有 tool（brush / eraser / rect），智能编辑又加了
+  // dot（点击）/ arrow（箭头）/ text（文字）。两种字段并存，别在每个渲染分支里各猜一次。
+  function strokeKind(s) {
+    if (!s) return 'brush';
+    if (s.kind) return s.kind;
+    return s.tool === 'rect' ? 'rect' : s.tool === 'eraser' ? 'eraser' : 'brush';
+  }
+  // 文字标记的字号直接跟着「粗细」走：再多一套数字，用户会觉得「调粗细」时灵时不灵
+  const markFont = (size) => `600 ${Math.max(12, size)}px system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif`;
+  // 文字标记的外接框：编辑器里画暗底和边框都按这块算，和真正写上去的字同一个尺寸
+  function markTextBox(ctx, s) {
+    const size = Math.max(12, s.size || 24);
+    ctx.save();
+    ctx.font = markFont(size);
+    const w = Math.max(size * 0.8, ctx.measureText(String(s.text || '')).width);
+    ctx.restore();
+    const at = s.at || [0, 0];
+    return [at[0], at[1], w, Math.round(size * 1.4)];
+  }
+
   function paintStrokes(ctx, doc, solid, style) {
     ctx.clearRect(0, 0, doc.w, doc.h);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     const ink = solid ? MASK_SOLID : maskPaint(style);
     for (const s of doc.strokes || []) {
+      const kind = strokeKind(s);
       // 矩形遮罩：MCP 的 set_mask 用它（AI 涂不了笔，但能圈一块区域）。
       // 和笔画共用同一份数据，所以浏览器打开时能看到 AI 圈的那块，也能接着改。
-      if (s.tool === 'rect') {
+      if (kind === 'rect') {
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
         ctx.globalCompositeOperation = 'source-over';
@@ -13275,9 +13335,9 @@
       }
       // 橡皮走 destination-out，颜色无关、只看 alpha，所以必须用不透明色：
       // 拿 55% 的蓝去擦只能擦掉 55%，越擦越花
-      ctx.strokeStyle = s.tool === 'eraser' || solid ? MASK_SOLID : ink;
+      ctx.strokeStyle = kind === 'eraser' || solid ? MASK_SOLID : ink;
       ctx.fillStyle = ctx.strokeStyle;
-      ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+      ctx.globalCompositeOperation = kind === 'eraser' ? 'destination-out' : 'source-over';
       ctx.lineWidth = s.size;
       const pts = s.pts || [];
       if (!pts.length) continue;
@@ -13750,6 +13810,522 @@
     document.body.appendChild(root);
     redraw();
     refresh();
+  }
+
+  /* ---------------- 智能编辑：标记直接画在节点这张图上 ---------------- */
+  // 三件事都在节点里做完：在图上标位置、在节点自己的提示词框里写要求、点节点自己的「生成」。
+  // 不弹独立编辑器——一个「改这一块」的动作不该把整个画布顶掉，改完还得自己找回到哪儿了。
+  //
+  // **不走遮罩**：遮罩是二值的（改 / 不改），它说不清「这根箭头指着的那只碗」。
+  // 画上去的箭头、圈、序号是模型看得懂的指示，和描述里那句「换成青花瓷盘」一起才构成完整要求。
+  // 每颗按钮只有图标：这条工具条长在节点里，宽度就是节点的宽度（380），
+  // 五个中文词 + 撤销 / 清除 / 滑杆 / 退出 挤不进一行。文字退到 title 和 aria-label。
+  const SMART_TOOLS = [
+    // 「点一下」和「圈一块」合成一个工具：抬手之前谁也说不准用户是想点还是想框，
+    // 让他先选一次工具，多半会选错再返工。两种标记都编号，描述里「1 换成红色」才对得上号。
+    // 第五个 true = 这颗带文字。默认工具是它，图标又是一颗抽象的水滴，
+    // 光靠图标认不出是「标注」；其余四颗保持纯图标，一行才排得下。
+    ['mark', 'mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）', true],
+    ['brush', 'brush', '画笔', '自由涂出要改的范围'],
+    ['arrow', 'arrow', '箭头', '从起点拖到目标，指哪改哪'],
+    ['text', 'text', '文字', '在图上写一句备注（模型也看得见）'],
+    ['eraser', 'eraser', '橡皮', '擦掉标错的地方'],
+  ];
+  // 标记一律「白线 + 深色描边」。单色标记总有一种底图会吃掉它：纯白在雪地 / 白墙上消失，
+  // 纯红在暖色皮肤上糊成一片。白线外面套一圈深色，深底上白线跳出来、浅底上深边托住轮廓。
+  const MARK_INK = '#ffffff';
+  const MARK_HALO = 'rgba(8, 10, 14, 0.55)';       // 白线外面那道深色描边
+  const MARK_WASH = 'rgba(255, 255, 255, 0.12)';   // 框里那层淡白，圈出来的范围一眼看得见
+  const MARK_SOFT = 'rgba(255, 255, 255, 0.66)';   // 画笔：半透明，别把底下的内容整个盖住
+
+  // 标注图是当「源图」送进去的，所以要挑**只吃图、不吃遮罩**的那种工作流：
+  // 吃遮罩的那份拿不到遮罩（alpha 不透明 → mask 全 0），送进去等于什么都没改。
+  // takes_image 和 takes_alpha_mask 是两个独立标记，局部重绘两个都占——所以不能只看 image。
+  function annotateWorkflow() {
+    const all = wfOptions();
+    const def = all.find((o) => o.id === wfDefaultId('img2img'));
+    const plain = all.filter((o) => o.image && !o.alphaMask);
+    return (def && def.image && !def.alphaMask ? def : null) || plain[0] || null;
+  }
+
+  // 标记存在节点自己身上（n.gen.smart）：它是这张图的草稿，节点重建、切走再切回来都还在，
+  // 也跟着画布一起存。`w/h` 记着画的时候的像素尺寸——图被换过就作废（坐标空间变了，留着必然错位）。
+  function smartDocOf(n) {
+    const d = n && n.gen && n.gen.smart;
+    return d && Array.isArray(d.strokes) ? d : null;
+  }
+  function smartOn(n) { return !!smartDocOf(n); }
+
+  function startSmartEdit(n) {
+    if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再来编辑'); return; }
+    if (smartOn(n)) { exitSmartEdit(n); return; }     // 再点一次＝退出
+    const wf = annotateWorkflow();
+    if (!wf) {
+      flash('这台机器上没有「只吃图」的工作流：先去「工作流库」导入一个图像编辑（Qwen / Krea 编辑这类）');
+      return;
+    }
+    // 两个都要在图上落笔的模式同时开着会互相打架：进这个就把那个收起来
+    if (maskSession) closeMaskEditor();
+    loadImageEl(n.dataURL).then((img) => {
+      const W = img.naturalWidth || 1024;
+      const H = img.naturalHeight || 1024;
+      // 纯图片节点没有生成面板，也就没有写要求的地方：先给它一块（和扩图同一个处理）
+      if (n.plain) delete n.plain;
+      n.gen = n.gen || {};
+      // 每次都从空白开始：这些标记属于「这一次操作」，不沿用上一次
+      n.gen.smart = { w: W, h: H, strokes: [] };
+      rerenderNode(n.id, true);
+      const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
+      if (ta) ta.focus();
+      flash('在图上标出要改的地方，再在下面的提示词框里写一句要求，点生成');
+    }).catch(() => flash('图片加载失败，没法编辑'));
+  }
+
+  function exitSmartEdit(n) {
+    if (!n || !n.gen || !n.gen.smart) return;
+    delete n.gen.smart;
+    rerenderNode(n.id, true);
+    queueSave();
+  }
+
+  // 所有标记画到 ctx 上（不含底图）。屏幕上显示的、和最终送进模型的是同一份绘制，
+  // 所以「我看到的」和「模型看到的」不可能对不上。
+  // 顺序就是落笔顺序：橡皮靠 destination-out 擦掉它**之前**的标记，和手感一致。
+  function paintAnnotations(ctx, doc) {
+    ctx.clearRect(0, 0, doc.w, doc.h);
+    // 线宽跟着图片分辨率走：2000px 的图上用固定 2px 会细成一根丝，缩到 25% 就看不见了
+    const k = Math.max(0.6, doc.w / 900);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    // 同一段路径描两遍：先粗的深色垫底，再压上细的白线。路径不用重建，
+    // 所以两条线严丝合缝，看起来是「白线带一道黑边」而不是两层。
+    const ink = (w) => {
+      ctx.strokeStyle = MARK_HALO;
+      ctx.lineWidth = w + 2.6 * k;
+      ctx.stroke();
+      ctx.strokeStyle = MARK_INK;
+      ctx.lineWidth = w;
+      ctx.stroke();
+    };
+    const line = (pts, size) => {
+      if (!pts.length) return;
+      const w = Math.max(2, size);
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0][0], pts[0][1], Math.max(1, size / 2), 0, Math.PI * 2);
+        ctx.fillStyle = MARK_SOFT;
+        ctx.fill();
+        ctx.strokeStyle = MARK_HALO;
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
+        return;
+      }
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      // 画笔是半透明的，描边也淡一档：给它配一条和白线一样重的黑边会变成一根管子
+      ctx.strokeStyle = 'rgba(8, 10, 14, 0.32)';
+      ctx.lineWidth = w + 2 * k;
+      ctx.stroke();
+      ctx.strokeStyle = MARK_SOFT;
+      ctx.lineWidth = w;
+      ctx.stroke();
+    };
+    // 圆角矩形：用 arcTo 手画，半径按短边收（框很小时别缩成椭圆）
+    const roundRect = (x, y, w, h, r) => {
+      const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    };
+    // 序号：白底深字的圆牌。点和框共用一套编号（按落笔顺序），
+    // 这样描述里写「1 换成红色、2 去掉」时，两个编号指的是同一件事。
+    // 白底比红底安静，但在深色画面上更亮——编号是唯一能把「描述里的 1」和「图上的 1」
+    // 对上的东西，宁可抢眼也不能看不清。
+    const badge = (x, y, no, r) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = MARK_INK;
+      ctx.fill();
+      ctx.strokeStyle = MARK_HALO;
+      ctx.lineWidth = 2.4 * k;
+      ctx.stroke();
+      ctx.fillStyle = '#12161c';
+      ctx.font = `700 ${Math.round(r * 1.02)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(no), x, y + r * 0.04);
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+    };
+    const badgeR = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
+    let no = 0;
+    for (const s of doc.strokes || []) {
+      const kind = strokeKind(s);
+      if (kind === 'brush' || kind === 'eraser') {
+        ctx.globalCompositeOperation = kind === 'eraser' ? 'destination-out' : 'source-over';
+        line(s.pts || [], s.size || 12);
+        ctx.globalCompositeOperation = 'source-over';
+        continue;
+      }
+      if (kind === 'rect') {
+        const r = s.rect || [];
+        if (!(r[2] > 0 && r[3] > 0)) continue;
+        no += 1;
+        // 实线 + 淡底，不用虚线：虚线在密集的背景纹理上会碎成一段一段，
+        // 远看像画面本身的噪点；一圈干净的实线加一层薄白才是「我圈住了这块」。
+        roundRect(r[0], r[1], r[2], r[3], Math.min(r[2], r[3]) * 0.08 + 6 * k);
+        ctx.fillStyle = MARK_WASH;
+        ctx.fill();
+        ink(2.2 * k);
+        // 编号贴在框的左上角（夹在画面内，免得贴着边缘时被裁掉半个）
+        const br = badgeR();
+        badge(clamp(r[0], br + 2, Math.max(br + 2, doc.w - br - 2)),
+          clamp(r[1], br + 2, Math.max(br + 2, doc.h - br - 2)), s.n || no, br);
+      } else if (kind === 'arrow') {
+        const from = s.from || [];
+        const to = s.to || [];
+        if (from.length < 2 || to.length < 2) continue;
+        const w = Math.max(2.4 * k, (s.size || 12) * 0.42);
+        const ang = Math.atan2(to[1] - from[1], to[0] - from[0]);
+        const head = Math.max(16 * k, w * 3.2);
+        // 杆子缩进一个箭头长：不然线头的圆帽会从三角尖端戳出来一小截
+        ctx.beginPath();
+        ctx.moveTo(from[0], from[1]);
+        ctx.lineTo(to[0] - head * 0.7 * Math.cos(ang), to[1] - head * 0.7 * Math.sin(ang));
+        ink(w);
+        // 箭头：白色实心三角 + 深色描边，和杆子同一套配色
+        ctx.beginPath();
+        ctx.moveTo(to[0], to[1]);
+        ctx.lineTo(to[0] - head * Math.cos(ang - 0.42), to[1] - head * Math.sin(ang - 0.42));
+        ctx.lineTo(to[0] - head * Math.cos(ang + 0.42), to[1] - head * Math.sin(ang + 0.42));
+        ctx.closePath();
+        ctx.fillStyle = MARK_INK;
+        ctx.fill();
+        ctx.strokeStyle = MARK_HALO;
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
+      } else if (kind === 'dot') {
+        no += 1;
+        const at = s.at || [];
+        if (at.length < 2) continue;
+        badge(at[0], at[1], s.n || no, Math.max(1, s.r || badgeR()));
+      } else if (kind === 'text') {
+        const box = markTextBox(ctx, s);
+        const pad = 6 * k;
+        // 先垫一层暗底：照片上什么颜色都有，白字直接写上去十次有三次看不清
+        roundRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2, 5 * k);
+        ctx.fillStyle = 'rgba(8, 10, 14, 0.72)';
+        ctx.fill();
+        ctx.strokeStyle = MARK_INK;
+        ctx.lineWidth = 1.6 * k;
+        ctx.stroke();
+        ctx.font = markFont(Math.max(12, s.size || 24));
+        ctx.fillStyle = MARK_INK;
+        ctx.fillText(String(s.text || ''), box[0], box[1] + box[3] * 0.78);
+      }
+    }
+    ctx.restore();
+  }
+
+  // 底图 + 标记 = 送进模型的那张。尺寸必须和原图一致：
+  // 模型是按这张图的比例去理解「箭头指的是哪儿」的。
+  function annotatedDataURL(img, doc) {
+    const cv = canvasOf(doc.w, doc.h);
+    cv.getContext('2d').drawImage(img, 0, 0, doc.w, doc.h);
+    const layer = canvasOf(doc.w, doc.h);
+    paintAnnotations(layer.getContext('2d'), doc);
+    cv.getContext('2d').drawImage(layer, 0, 0);
+    return cv.toDataURL('image/png');
+  }
+
+  // 标记层和工具条都长在节点里（和扩图把参数条并进面板同一个理由）：
+  // 节点一平移 / 缩放它们跟着走，不像屏幕坐标的浮条那样「不跟随」。
+  function buildSmartInline(n, thumb, panel) {
+    const doc = smartDocOf(n);
+    if (!doc || !panel) return;
+    const cv = document.createElement('canvas');
+    cv.className = 'sm-cv';
+    cv.width = Math.max(1, doc.w || 1);
+    cv.height = Math.max(1, doc.h || 1);
+    cv.setAttribute('aria-label', '在图上标出要改的地方');
+    thumb.classList.add('sm-mode');
+    thumb.appendChild(cv);
+    const ctx = cv.getContext('2d');
+
+    // 图被换过（尺寸对不上）就把笔画丢掉：拉伸的标记比没有更误导
+    const im = thumb.querySelector('img');
+    if (im && im.naturalWidth && (im.naturalWidth !== doc.w || im.naturalHeight !== doc.h)) {
+      doc.w = im.naturalWidth;
+      doc.h = im.naturalHeight;
+      doc.strokes.length = 0;
+      cv.width = doc.w;
+      cv.height = doc.h;
+    }
+
+    const bar = document.createElement('div');
+    bar.className = 'sm-bar';
+    bar.dataset.smartFor = n.id;
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', '智能编辑的标记工具');
+    // 一条到底：五个标记工具 / 撤销·清除 / 粗细 / 退出，中间用细分隔线分组。
+    // 只有图标，文字退到 title（节点宽度 380，五个中文词 + 这些控件一行放不下）。
+    bar.innerHTML = `
+      <div class="sm-tools" role="group" aria-label="标记工具">
+        ${SMART_TOOLS.map(([k, ico, label, tip, main], i) => `<button type="button"
+          class="sm-tool${main ? ' sm-tool-main' : ''}" data-tool="${k}"
+          aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}"
+          ><span class="sm-ico" data-icon="${ico}"></span>${main ? `<span class="sm-lbl">${label}</span>` : ''}</button>`).join('')}
+      </div>
+      <span class="sm-sep" aria-hidden="true"></span>
+      <button type="button" class="sm-btn" data-act="undo" data-icon="undo"
+        title="撤销上一笔（Ctrl+Z）" aria-label="撤销"></button>
+      <button type="button" class="sm-btn" data-act="clear" data-icon="clear"
+        title="清空全部标记" aria-label="清除"></button>
+      <span class="sm-sep" aria-hidden="true"></span>
+      <label class="sm-size" title="标记的粗细 48（[ ] 也能调）">
+        <input type="range" min="8" max="200" step="1" value="48" aria-label="标记粗细"></label>
+      <span class="sm-sep" aria-hidden="true"></span>
+      <button type="button" class="sm-btn sm-exit" data-act="exit" data-icon="close"
+        title="退出标记模式（Esc）" aria-label="退出"></button>`;
+    // 点工具条不能把节点选丢了
+    bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    panel.parentElement.insertBefore(bar, panel);
+    // 图标是 data-icon 挂上去的（和首页、底栏同一套），插进 DOM 之后再水合
+    if (window.hydrateIcons) window.hydrateIcons(bar);
+
+    const undoBtn = bar.querySelector('[data-act="undo"]');
+    const sizeEl = bar.querySelector('.sm-size input');
+    const sizeLabel = bar.querySelector('.sm-size');
+    const ta = panel.querySelector('.gen-prompt');
+    // 空着的时候换一句「这里该写什么」：这个框平时是「生图提示词」，此刻是「要改成什么样」
+    if (ta && !promptText(ta).trim()) ta.dataset.ph = '要改成什么样？例如：换成青花瓷盘，其他不要动';
+
+    const ac = new AbortController();
+    const sess = { tool: 'mark', size: 48, draft: null, textInput: null };
+    // 节点被重建（换图 / 改尺寸 / 生成回来）时这块 DOM 就没了，挂在 window 上的监听要跟着摘：
+    // 否则下一笔会同时落到新旧两个会话上，旧的那个还在改一份已经不在屏幕上的笔画。
+    const alive = () => {
+      if (cv.isConnected) return true;
+      try { ac.abort(); } catch { /* 已经 abort 过 */ }
+      return false;
+    };
+    // 只有选中的那个节点收键盘：两个节点都开着标记模式时，Ctrl+Z 不该把两个都撤掉
+    const focused = () => alive() && state.selected.has(n.id);
+
+    const redraw = () => paintAnnotations(ctx, doc);
+    // 不摆「N 处」的计数：这一行只有 320px，一个计数胶囊就把滑杆挤成一条缝。
+    // 图上的编号（1、2、3…）本来就是计数，再加一遍是重复。数字挂到 data 上给测试读。
+    const refresh = () => {
+      const marks = doc.strokes.filter((s) => strokeKind(s) !== 'eraser').length;
+      bar.dataset.marks = String(marks);
+      undoBtn.disabled = !doc.strokes.length;
+      queueSave();
+    };
+
+    // 落笔只在显示层换算一次：canvas 内部是原图像素，CSS 上铺满这个框
+    const toDoc = (ev) => {
+      const r = cv.getBoundingClientRect();
+      const k = r.width > 0 ? doc.w / r.width : 1;
+      return [
+        Math.round(clamp((ev.clientX - r.left) * k, 0, doc.w)),
+        Math.round(clamp((ev.clientY - r.top) * k, 0, doc.h)),
+      ];
+    };
+    // 点击的圈大小按短边算：800 的图上 28px 是个圈，4000 的图上还是「一小块」
+    const dotRadius = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
+
+    // 文字标记：不用 window.prompt（它会挡住整屏、还没法定位）。
+    // 就地开一个 input，回车落字、Esc 取消、失焦算确认。
+    const askText = (ev, p) => {
+      if (sess.textInput) return;
+      const r = thumb.getBoundingClientRect();
+      const inp = document.createElement('input');
+      inp.className = 'sm-textin';
+      inp.type = 'text';
+      inp.maxLength = 40;
+      // 就当一个普通输入框：不写 placeholder（点了就是要写字，空框里那个光标已经说明一切）。
+      // 宽度按图算、左右各留 4px，**永远不出界**——出界会被 .thumb 的 overflow:hidden 裁掉，
+      // 看起来就像输入框跑到图片外面去了。
+      const w = Math.round(Math.min(200, Math.max(96, r.width - 8)));
+      inp.style.width = `${w}px`;
+      inp.style.left = `${Math.round(clamp(ev.clientX - r.left, 4, Math.max(4, r.width - w - 4)))}px`;
+      inp.style.top = `${Math.round(clamp(ev.clientY - r.top, 4, Math.max(4, r.height - 30)))}px`;
+      thumb.appendChild(inp);
+      sess.textInput = inp;
+      // focus() 会顺手把最近的滚动容器滚到「能看见这个框」：.thumb 是 overflow:hidden 的，
+      // 但照样能被程序滚动，于是整张图被推开几十像素——输入框收掉以后还留在那儿。
+      // 用户看到的就是「写个备注，图片歪了」。preventScroll 挡住，再把滚动位归零兜底。
+      inp.focus({ preventScroll: true });
+      thumb.scrollLeft = 0;
+      thumb.scrollTop = 0;
+      let closed = false;
+      const done = (commit) => {
+        if (closed) return;
+        closed = true;
+        const text = inp.value.trim();
+        inp.remove();
+        sess.textInput = null;
+        thumb.scrollLeft = 0;
+        thumb.scrollTop = 0;
+        if (!commit || !text) return;
+        doc.strokes.push({ kind: 'text', at: p, text, size: Math.max(24, sess.size) });
+        redraw();
+        refresh();
+      };
+      inp.onkeydown = (e) => {
+        e.stopPropagation();       // Esc 不能穿到「退出标记模式」那条上
+        if (e.key === 'Enter') { e.preventDefault(); done(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      };
+      inp.onblur = () => done(true);
+    };
+
+    // 落笔：一律先按「框」起草，抬手时才知道用户是点还是拖——
+    // 点一下（没拖开）= 一个带序号的点，拖开 = 一个带序号的框。这样就不用先选工具。
+    const addDot = (p) => doc.strokes.push({ kind: 'dot', at: p, r: dotRadius() });
+
+    cv.addEventListener('pointerdown', (ev) => {
+      if (!alive()) return;
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();        // 不让画布顺手拖节点 / 平移
+      if (sess.textInput) return;  // 正在写备注：先让它收尾
+      const p = toDoc(ev);
+      if (sess.tool === 'text') { askText(ev, p); return; }
+      if (sess.tool === 'mark') {
+        sess.draft = { kind: 'rect', origin: p, rect: [p[0], p[1], 0, 0] };
+      } else if (sess.tool === 'arrow') {
+        sess.draft = { kind: 'arrow', from: p, to: p.slice(), size: sess.size };
+      } else {
+        sess.draft = { kind: sess.tool, size: sess.size, pts: [p] };
+      }
+      doc.strokes.push(sess.draft);
+      redraw();
+    }, { signal: ac.signal });
+    // 双击图片进大图这件事在标记模式下要停掉：正连着点两下是「标两处」
+    cv.addEventListener('dblclick', (ev) => ev.stopPropagation(), { signal: ac.signal });
+
+    // 走笔挂在 window 上：挂在 canvas 上一快就划出边界，后面的 move 全丢
+    window.addEventListener('pointermove', (ev) => {
+      if (!alive()) return;
+      const d = sess.draft;
+      if (!d) return;
+      const p = toDoc(ev);
+      if (d.kind === 'rect') {
+        d.rect = [
+          Math.min(d.origin[0], p[0]), Math.min(d.origin[1], p[1]),
+          Math.abs(p[0] - d.origin[0]), Math.abs(p[1] - d.origin[1]),
+        ];
+      } else if (d.kind === 'arrow') {
+        d.to = p;
+      } else {
+        const last = d.pts[d.pts.length - 1];
+        if (last && Math.abs(last[0] - p[0]) + Math.abs(last[1] - p[1]) < 1) return;
+        d.pts.push(p);
+      }
+      redraw();
+    }, { signal: ac.signal });
+
+    const endMark = () => {
+      if (!alive()) return;
+      const d = sess.draft;
+      sess.draft = null;
+      if (!d) return;
+      // 阈值按**屏幕**像素算再换回图上像素：4000px 的图上「6 个图上像素」不到一个屏幕像素，
+      // 手一抖就被当成框，出来一个看不见的小方块。
+      const cw = cv.getBoundingClientRect().width;
+      const px = cw > 0 ? doc.w / cw : 1;
+      if (d.kind === 'rect' && d.rect[2] < 6 * px && d.rect[3] < 6 * px) {
+        // 没拖开 = 用户想「点一下」：换成一个带序号的点，比留个看不见的框有用
+        doc.strokes.pop();
+        addDot(d.origin);
+      } else if (d.kind === 'arrow' && Math.hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]) < 8 * px) {
+        // 手抖点一下不该留下一个没有方向的箭头
+        doc.strokes.pop();
+      }
+      delete d.origin;
+      redraw();
+      refresh();
+    };
+    window.addEventListener('pointerup', endMark, { signal: ac.signal });
+    window.addEventListener('pointercancel', endMark, { signal: ac.signal });
+
+    const setTool = (k) => {
+      sess.tool = k;
+      bar.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.tool === k)));
+      cv.style.cursor = k === 'text' ? 'text' : 'crosshair';
+    };
+    bar.querySelectorAll('[data-tool]').forEach((b) => { b.onclick = () => setTool(b.dataset.tool); });
+
+    const setSize = (v) => {
+      sess.size = Math.round(clamp(v, 8, 200));
+      sizeEl.value = sess.size;
+      // 数字放进 title：滑杆旁边再挤一个「48」，一行里第二个裸数字，
+      // 和右边的工具图标不是一个量级的东西，看着像标签掉了
+      sizeLabel.title = `标记的粗细 ${sess.size}（[ ] 也能调）`;
+    };
+    sizeEl.oninput = () => setSize(Number(sizeEl.value));
+
+    const undo = () => { doc.strokes.pop(); redraw(); refresh(); };
+    undoBtn.onclick = undo;
+    bar.querySelector('[data-act="clear"]').onclick = () => {
+      if (!doc.strokes.length) return;
+      doc.strokes.length = 0;
+      redraw();
+      refresh();
+    };
+    bar.querySelector('[data-act="exit"]').onclick = () => exitSmartEdit(n);
+
+    window.addEventListener('keydown', (ev) => {
+      if (!focused()) return;
+      // 焦点在提示词框里时键盘归那个框：Ctrl+Z 该撤文字，Esc 不该把标记清掉
+      if (ev.target && panel.contains(ev.target)) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); exitSmartEdit(n); return; }
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
+      if (ev.key === '[') { ev.preventDefault(); setSize(sess.size - 4); }
+      if (ev.key === ']') { ev.preventDefault(); setSize(sess.size + 4); }
+    }, { signal: ac.signal });
+
+    setTool('mark');
+    redraw();
+    refresh();
+  }
+
+  // 生成：把「画了标记的这张图」和提示词一起交给右边的新节点，然后**直接开跑**。
+  // 不在原节点上出图：用户要的是「改一版」，原图得留着对比。
+  function smartRun(n) {
+    const doc = smartDocOf(n);
+    if (!doc) return;
+    const panel = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
+    const ta = panel ? panel.querySelector('.gen-prompt') : null;
+    const prompt = (ta ? promptText(ta) : String((n.gen && n.gen.prompt) || '')).trim();
+    if (!doc.strokes.length) { flash('先在这张图上标出要改的地方：点一下、圈一块，或者涂一笔'); return; }
+    if (!prompt) { flash('再写一句要改成什么样，比如「换成青花瓷盘」'); if (ta) ta.focus(); return; }
+    const wf = annotateWorkflow();
+    loadImageEl(n.dataURL).then((img) => {
+      const dataURL = annotatedDataURL(img, doc);
+      // 这一轮的标记已经烘进新节点的图里了：源节点回到普通状态，别让旧标记留到下一次
+      delete n.gen.smart;
+      const made = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
+        dataURL,
+        w: nodeWidth(n),
+        title: `智能编辑 · ${n.title}`,
+        // selfSource：这张图必须进模型（平时「节点自己的图不当参考图」是为了防偷偷图生图）
+        // aspectAuto：尺寸跟着这张标注图的比例走，改比例会让箭头指偏
+        gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true },
+      });
+      selectOnly(made.id);
+      flash(wf
+        ? '智能编辑：标记和描述都带过去了，正在生成'
+        : '智能编辑：这台机器上没有能吃图的工作流，先在面板里选一个');
+      if (wf) generateImage(made);
+    }).catch(() => flash('图片加载失败，没法把标记画上去'));
   }
 
   /* ---------------- 裁剪浮层 ---------------- */
