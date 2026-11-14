@@ -7426,9 +7426,10 @@ try {
     emptyGen.clicked && emptyGen.after === emptyGen.before && !!emptyGen.src,
     JSON.stringify(emptyGen));
 
-  // ---- 智能编辑：标位置 + 说要求，一个界面里做完 ----
-  // 以前「遮罩」要分三步：涂 → 关掉 → 去面板写提示词 → 再点生成，而提示词框离那块区域
-  // 隔着半屏。这段盯的是「三步变一步」：六种标记落在同一块遮罩上、描述原样带走、点一次就开跑。
+  // ---- 智能编辑：标记画在图上，连同描述一起交给模型 ----
+  // 和「遮罩」是两件事：遮罩是二值的（改 / 不改），表达不了「这根箭头指着的那只碗」。
+  // 所以这里盯的是：标记真的画进了交给模型的那张图、原节点一个字节不动、新节点里
+  // **没有遮罩**、描述原样带走、点一次就开跑。
   // 用 canvas-mask 夹具（512×512 的真图）：16×16 的占位图上标什么都是满屏，看不出问题。
   seedProject(dataDir, 'canvas-mask.json', '20260101-000000-smart');
   await page.evaluate(`document.querySelector('#projectBar [data-act="home"]').click()`);
@@ -7453,17 +7454,17 @@ try {
     el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
     el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
     const im = el.querySelector('.thumb img');
-    return { id: el.dataset.id, nat: im ? [im.naturalWidth, im.naturalHeight] : null };
+    return { id: el.dataset.id, nat: [im.naturalWidth, im.naturalHeight], src: im.getAttribute('src') };
   })()`);
   check('智能编辑：选中一张真图（512×512 夹具）',
-    !!smartPick && smartPick.nat && smartPick.nat[0] === 512, JSON.stringify(smartPick));
+    !!smartPick && smartPick.nat[0] === 512, JSON.stringify({ id: smartPick && smartPick.id, nat: smartPick && smartPick.nat }));
 
   await page.waitFor(`!!document.querySelector('#imgTools [data-tool="smart"]')`, 8000);
   await page.evaluate(`document.querySelector('#imgTools [data-tool="smart"]').click()`);
   const smartOpen = await page.waitFor(`(() => {
     const root = document.getElementById('smartEdit');
     if (!root) return null;
-    const cv = root.querySelector('.se-mark');
+    const cv = root.querySelector('.se-cv');
     const img = root.querySelector('.se-img');
     const r = cv.getBoundingClientRect();
     return {
@@ -7487,7 +7488,10 @@ try {
   check('智能编辑：canvas 内部尺寸 = 原图像素（不然标记整体错位）',
     !!smartOpen && smartOpen.cv[0] === smartOpen.nat[0] && smartOpen.cv[1] === smartOpen.nat[1],
     smartOpen ? `cv=${smartOpen.cv} img=${smartOpen.nat}` : 'none');
-  check('智能编辑：一打开是空的（这块区域属于这一次操作，不沿用上次）',
+  // 标注图是当「源图」送进去的：吃遮罩的那种拿不到遮罩（mask 全 0），送进去等于什么都没改
+  check('智能编辑：挑的是**只吃图**的工作流（不是吃遮罩的局部重绘）',
+    !!smartOpen && !!smartOpen.wf && !/局部重绘/.test(smartOpen.wf), smartOpen && smartOpen.wf);
+  check('智能编辑：一打开是空的（这些标记属于这一次操作，不沿用上次）',
     !!smartOpen && /还没有标记/.test(smartOpen.count), smartOpen && smartOpen.count);
 
   const sb = smartOpen.box;
@@ -7524,7 +7528,7 @@ try {
       && (await page.evaluate(`!document.querySelector('#smartEdit .se-textin')`)) === true,
     `${textInputShown} · ${afterText}`);
 
-  // 撤销回到三步之前
+  // 撤销回到上一步
   await page.evaluate(`document.querySelector('#smartEdit [data-act="undo"]').click()`);
   check('撤销：撤掉最后一笔', /标记 3 处/.test(await smartCount()), await smartCount());
 
@@ -7549,19 +7553,34 @@ try {
     smartNoPrompt.still === true && smartNoPrompt.shown && /改成什么样/.test(smartNoPrompt.flash),
     JSON.stringify(smartNoPrompt));
 
-  // 写上描述 → 生成：新节点 + 遮罩搬过去 + 直接开跑
+  // 写上描述 → 生成：新节点 + 图里真的带标记 + 没有遮罩 + 直接开跑
   const smartGen = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const real = window.fetch.bind(window);
     const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const hits = [];
+    let upName = '', upSize = null, upDot = null, upArrow = null, upCorner = null;
     window.fetch = async (url, opts) => {
       const u = String(url);
       if (u.startsWith('/api/upload')) {
-        // 遮罩必须能传上去：传不上去整轮生成会在「烘 alpha」那步就被拦下来
+        // 交给 ComfyUI 的那张就是这里收到的字节：直接采样，比看 DOM 可靠
         const f = opts && opts.body && opts.body.get ? opts.body.get('image') : null;
-        if (f && /-mask\\.png$/.test(f.name)) return json({ ok: true, image: f.name, subfolder: '', type: 'input' });
-        return json({ ok: false, error: 'offline' });
+        if (!f) return json({ ok: false, error: 'offline' });
+        upName = f.name;
+        const bm = await createImageBitmap(f);
+        upSize = [bm.width, bm.height];
+        const cv = document.createElement('canvas');
+        cv.width = bm.width; cv.height = bm.height;
+        const c = cv.getContext('2d');
+        c.drawImage(bm, 0, 0);
+        const px = (x, y) => { const d = c.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; };
+        // 点击在 (50%,50%)，半径 18：取圈内偏右一点，避开中间那个白色的「1」
+        upDot = px(Math.round(bm.width * 0.5) + 10, Math.round(bm.height * 0.5));
+        // 箭头从 (20%,24%) 拖到 (42%,40%)：沿线中点应该压着红线
+        upArrow = px(Math.round(bm.width * 0.31), Math.round(bm.height * 0.32));
+        // 没标过的角落：必须和原图一模一样（否则说明整张被涂了）
+        upCorner = px(4, 4);
+        return json({ ok: true, image: f.name, subfolder: '', type: 'input' });
       }
       if (u.startsWith('/api/run')) { hits.push(u); return json({ ok: true, prompt_id: 'smart-1' }); }
       if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
@@ -7571,6 +7590,14 @@ try {
       }
       return real(url, opts);
     };
+    // 原图左上角那个像素：用来验「没标的地方一个字节都没变」
+    const srcImg = document.querySelector('#nodes .node.image .thumb img');
+    const scv = document.createElement('canvas');
+    scv.width = srcImg.naturalWidth; scv.height = srcImg.naturalHeight;
+    scv.getContext('2d').drawImage(srcImg, 0, 0);
+    const sd = scv.getContext('2d').getImageData(4, 4, 1, 1).data;
+    const srcCorner = [sd[0], sd[1], sd[2]];
+
     const before = document.querySelectorAll('#nodes .node').length;
     document.querySelector('#sePrompt').value = '把标记区域里的球换成青花瓷盘，其他不要动';
     document.querySelector('#smartEdit [data-act="run"]').click();
@@ -7578,8 +7605,7 @@ try {
       await sleep(100);
       if (!document.getElementById('smartEdit')) break;
     }
-    // 点一次会多两个节点：承载标记的那个（编辑器刚建）+ 出图的那个（结果另起一个，
-    // 和擦除 / 去字一致）。等结果节点真的落地再数，否则读到的是「刚建完还没出图」。
+    // 点一次会多两个节点：承载标注图的那个 + 出图的那个（结果另起一个，和擦除 / 去字一致）
     for (let k = 0; k < 80; k++) {
       await sleep(100);
       if (document.querySelectorAll('#nodes .node').length >= before + 2) break;
@@ -7588,12 +7614,15 @@ try {
     window.fetch = real;
     const made = [...document.querySelectorAll('#nodes .node.image')]
       .find((e) => /智能编辑/.test((e.querySelector('.node-title') || {}).textContent || ''));
+    const srcAfter = document.querySelector('#nodes .node.image .thumb img');
     return {
       before, after: document.querySelectorAll('#nodes .node').length,
       closed: !document.getElementById('smartEdit'),
       title: made ? made.querySelector('.node-title').textContent.trim() : '',
       prompt: made ? (made.querySelector('.gen-prompt') || {}).textContent || '' : '',
-      pill: made ? (made.querySelector('.n-mask') || {}).textContent || '' : '',
+      maskPill: made ? !!made.querySelector('.n-mask') : null,
+      upName, upSize, upDot, upArrow, upCorner, srcCorner,
+      srcSrc: srcAfter ? srcAfter.getAttribute('src') : '',
       runs: hits.length,
     };
   })()`);
@@ -7601,7 +7630,20 @@ try {
     smartGen.closed && smartGen.after === smartGen.before + 2 && /智能编辑/.test(smartGen.title),
     JSON.stringify({ closed: smartGen.closed, before: smartGen.before, after: smartGen.after, title: smartGen.title }));
   check('智能编辑：描述原样带进新节点', /青花瓷盘/.test(smartGen.prompt), smartGen.prompt.slice(0, 40));
-  check('智能编辑：标记跟着搬过去（节点上挂遮罩药丸）', /遮罩\s*\d+%/.test(smartGen.pill), smartGen.pill);
+  // 这条是整个功能的立论：交给模型的是**画了标记的那张图**，不是遮罩
+  check('智能编辑：传给模型的是标注图（点 / 箭头位置是红的，没标的地方原样）',
+    smartGen.upSize && smartGen.upSize[0] === 512
+      && smartGen.upDot && smartGen.upDot[0] > 180 && smartGen.upDot[1] < 130
+      && smartGen.upArrow && smartGen.upArrow[0] > 150 && smartGen.upArrow[1] < 140
+      && JSON.stringify(smartGen.upCorner) === JSON.stringify(smartGen.srcCorner),
+    JSON.stringify({ size: smartGen.upSize, dot: smartGen.upDot, arrow: smartGen.upArrow,
+      corner: smartGen.upCorner, srcCorner: smartGen.srcCorner }));
+  check('智能编辑：上传的是标注图本身（<节点id>-edit.png，不是 -mask.png）',
+    /^.+-edit\.png$/.test(smartGen.upName || '') && !/-mask\.png$/.test(smartGen.upName || ''),
+    smartGen.upName);
+  check('智能编辑：新节点上**没有遮罩**（这条路不走遮罩）', smartGen.maskPill === false, String(smartGen.maskPill));
+  check('智能编辑：原节点的图一个字节都没动', smartGen.srcSrc === smartPick.src,
+    `${(smartPick.src || '').slice(0, 40)} → ${(smartGen.srcSrc || '').slice(0, 40)}`);
   check('智能编辑：一条龙——不用再点一次生成，已经提交了', smartGen.runs >= 1, String(smartGen.runs));
 
   // ---- 关闭服务：设置里的「服务」分组 ----

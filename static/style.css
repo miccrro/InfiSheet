@@ -4089,13 +4089,11 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   background: #000;
 }
 #smartEdit .se-img { display: block; width: 100%; height: 100%; object-fit: fill; }
-/* 两层画布：底下那层是半透明遮罩（范围），上面那层是彩色标注（箭头 / 序号 / 文字）。
-   只有最上面那层收指针事件，底下两层纯显示。 */
+/* 一层画布：底图是 <img>，标记画在这层上。它既是给人看的，也是最终交给模型的那张。 */
 #smartEdit .se-cv {
   position: absolute; inset: 0; width: 100%; height: 100%;
-  pointer-events: none;
+  cursor: pointer; touch-action: none;
 }
-#smartEdit .se-mark { pointer-events: auto; cursor: pointer; touch-action: none; }
 #smartEdit .se-hint {
   position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
   padding: 5px 12px; border-radius: 999px;
