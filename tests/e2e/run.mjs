@@ -7289,13 +7289,17 @@ try {
     capOffClick.shown && /工作流库/.test(capOffClick.flash) && capOffClick.sheet,
     JSON.stringify(capOffClick));
 
-  // 关掉工作流库，回起始页
+  // 关掉工作流库，回起始页。
+  // 关闭键是 `.sheet header .x`——以前这里找的是 .sheet-close / #sheetClose / [data-close]，
+  // 一个都不存在，于是弹层一直盖在画布上：后面所有 DOM 断言照过，直到第一次**真实坐标**点击
+  // 打在弹层的 tab 上才暴露（智能编辑那一段就是这么翻车的）。所以关完还要确认它真的没了。
   await page.evaluate(`(() => {
-    const x = document.querySelector('#appSettings .sheet-close, .sheet-close, #sheetClose');
+    const x = document.querySelector('#appSettings .sheet header .x') || document.querySelector('#appSettings .x');
     if (x) x.click();
-    document.querySelectorAll('[data-close]').forEach((b) => b.click());
   })()`);
-  await new Promise((r) => setTimeout(r, 400));
+  await page.waitFor(`!document.getElementById('appSettings')`, 4000).catch(() => {});
+  check('关掉工作流库：弹层真的收掉了（否则后面画布上的真实点击全打在弹层上）',
+    (await page.evaluate(`!document.getElementById('appSettings')`)) === true);
 
   // 点「图片生成」：直接放下一个图片节点 + 生成面板。
   // 图片节点自带面板（提示词 / 参考图 / 工作流胶囊 / 生成按钮），再摆「提示词 → 工作流 → 输出」
@@ -7441,6 +7445,19 @@ try {
       .find((x) => /遮罩夹具画布/.test(x.textContent));
     c.querySelector('.pm').click();
   })()`);
+  // 首页 → 立刻点最近项目：以前 showHome 的尾巴会在「退出前落盘」之后补一次「亮出来」，
+  // 把人从刚打开的画布弹回首页（表现出来是「点一次没进去，得点两次」）。
+  // 先等真的进了画布，再等一会儿确认它**没被弹回来**。
+  const openedCanvas = await page.waitFor(`(() => {
+    const h = document.getElementById('home');
+    return location.hash === '#canvas' && h.classList.contains('hidden')
+      ? { hash: location.hash, home: h.className } : null;
+  })()`, 12000).catch(() => null);
+  await new Promise((r) => setTimeout(r, 700));
+  const stayedCanvas = await page.evaluate(`location.hash === '#canvas'
+    && document.getElementById('home').classList.contains('hidden')`);
+  check('首页 → 立刻点最近项目：一次就进画布，不会被落盘后的补丁弹回首页',
+    !!openedCanvas && stayedCanvas === true, JSON.stringify({ opened: openedCanvas, stayed: stayedCanvas }));
   // 只等「有节点」不够：上一个画布的节点还在屏幕上，条件立刻成立，读到的会是别人的图
   await page.waitFor(`(document.getElementById('projectName') || {}).value === '遮罩夹具画布'`, 12000);
   await page.waitFor(`(() => {
@@ -7461,63 +7478,87 @@ try {
 
   await page.waitFor(`!!document.querySelector('#imgTools [data-tool="smart"]')`, 8000);
   await page.evaluate(`document.querySelector('#imgTools [data-tool="smart"]').click()`);
+  // 标记层和工具条都长在节点里：这一版特意不做「独立编辑器」，所以这里既验功能，
+  // 也验「没有那一层」——overlay 必须是 false，工具条必须在这个节点内部。
   const smartOpen = await page.waitFor(`(() => {
-    const root = document.getElementById('smartEdit');
-    if (!root) return null;
-    const cv = root.querySelector('.se-cv');
-    const img = root.querySelector('.se-img');
+    const cv = document.querySelector('#nodes .node.image .thumb .sm-cv');
+    const bar = document.querySelector('#nodes .node.image .sm-bar');
+    if (!cv || !bar) return null;
     const r = cv.getBoundingClientRect();
+    const btn = document.querySelector('#imgTools [data-tool="smart"]');
     return {
-      tools: [...root.querySelectorAll('.se-tool')].map((b) => b.textContent.trim()),
-      pressed: (root.querySelector('.se-tool[aria-pressed="true"]') || {}).textContent || '',
-      presets: root.querySelectorAll('.se-preset').length,
-      hasPrompt: !!root.querySelector('#sePrompt'),
-      wf: (root.querySelector('.se-wf b') || {}).textContent || '',
+      tools: [...bar.querySelectorAll('.sm-tool')].map((b) => b.textContent.trim()),
+      pressed: (bar.querySelector('.sm-tool[aria-pressed="true"]') || {}).textContent || '',
+      presets: bar.querySelectorAll('.sm-preset').length,
+      hasPrompt: !!document.querySelector('.gen-panel .gen-prompt'),
       cv: [cv.width, cv.height],
-      nat: [img.naturalWidth, img.naturalHeight],
       box: [r.left, r.top, r.width, r.height],
-      count: root.querySelector('.se-count').textContent.trim(),
+      count: bar.querySelector('.sm-count').textContent.trim(),
+      overlay: !!document.getElementById('smartEdit'),
+      inNode: bar.closest('.node') === document.querySelector('#nodes .node.image'),
+      on: !!btn && btn.classList.contains('on'),
     };
   })()`, 8000).catch(() => null);
-  check('点「智能编辑」→ 打开编辑器：六种标记 + 描述框 + 预设 + 工作流都在',
+  check('点「智能编辑」→ 标记层盖在节点图上：六种标记 + 描述框 + 预设都在，**没有独立编辑器**',
     !!smartOpen && smartOpen.tools.join('/') === '点击/框选/画笔/箭头/文字/橡皮'
       && smartOpen.pressed === '点击' && smartOpen.hasPrompt && smartOpen.presets === 5
-      && !!smartOpen.wf,
+      && smartOpen.overlay === false && smartOpen.inNode === true && smartOpen.on === true,
     JSON.stringify(smartOpen && { tools: smartOpen.tools, pressed: smartOpen.pressed,
-      presets: smartOpen.presets, wf: smartOpen.wf }));
+      presets: smartOpen.presets, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
   check('智能编辑：canvas 内部尺寸 = 原图像素（不然标记整体错位）',
-    !!smartOpen && smartOpen.cv[0] === smartOpen.nat[0] && smartOpen.cv[1] === smartOpen.nat[1],
-    smartOpen ? `cv=${smartOpen.cv} img=${smartOpen.nat}` : 'none');
-  // 标注图是当「源图」送进去的：吃遮罩的那种拿不到遮罩（mask 全 0），送进去等于什么都没改
-  check('智能编辑：挑的是**只吃图**的工作流（不是吃遮罩的局部重绘）',
-    !!smartOpen && !!smartOpen.wf && !/局部重绘/.test(smartOpen.wf), smartOpen && smartOpen.wf);
+    !!smartOpen && smartOpen.cv[0] === smartPick.nat[0] && smartOpen.cv[1] === smartPick.nat[1],
+    smartOpen ? `cv=${smartOpen.cv} img=${smartPick.nat}` : 'none');
   check('智能编辑：一打开是空的（这些标记属于这一次操作，不沿用上次）',
     !!smartOpen && /还没有标记/.test(smartOpen.count), smartOpen && smartOpen.count);
 
   const sb = smartOpen.box;
   const sAt = (fx, fy) => ({ x: sb[0] + sb[2] * fx, y: sb[1] + sb[3] * fy });
-  const smartCount = () => page.evaluate(`document.querySelector('#smartEdit .se-count').textContent.trim()`);
+  const smartSel = '#nodes .node.image .sm-bar';
+  const smartCount = () => page.evaluate(`document.querySelector('${smartSel} .sm-count').textContent.trim()`);
+  const smartTool = (k) => page.evaluate(`document.querySelector('${smartSel} [data-tool="${k}"]').click()`);
+  const promptSel = `.gen-panel[data-panel-for="${smartPick.id}"] .gen-prompt`;
 
   // 点击：一个带序号的点
+  const beforeClick = await page.evaluate(`(() => {
+    const cv = document.querySelector('#nodes .node.image .thumb .sm-cv');
+    const r = cv.getBoundingClientRect();
+    const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+    const e = document.elementFromPoint(cx, cy);
+    return {
+      nodeCls: document.querySelector('#nodes .node.image').className,
+      hit: e ? e.tagName + '.' + e.className : null,
+      pe: getComputedStyle(cv).pointerEvents,
+      same: e === cv,
+      center: [cx, cy],
+      nodes: document.querySelectorAll('#nodes .node').length,
+      bars: document.querySelectorAll('.sm-bar').length,
+      vw: innerWidth, vh: innerHeight,
+    };
+  })()`);
+  // 先确认「点下去真的会落在标记层上」：被别的浮层盖住时，后面的点击会静默无效，
+  // 只报「还没有标记」根本看不出原因（工作流库弹层没关就是这么翻车的）。
+  check('智能编辑：标记层在最上面（命中它，而不是被浮层挡住）',
+    beforeClick.same === true && beforeClick.pe !== 'none' && beforeClick.bars === 1,
+    JSON.stringify(beforeClick));
   await page.clickAt(sAt(0.5, 0.5).x, sAt(0.5, 0.5).y, { settle: 220 });
-  check('点击：点一下就有一个带序号的标记', /标记 1 处/.test(await smartCount()), await smartCount());
-
+  check('点击：点一下就有一个带序号的标记', /标记 1 处/.test(await smartCount()),
+    `${await smartCount()} · ${JSON.stringify(beforeClick)}`);
   // 框选：拖一个框
-  await page.evaluate(`document.querySelector('#smartEdit [data-tool="rect"]').click()`);
+  await smartTool('rect');
   await page.drag(sAt(0.2, 0.62), sAt(0.5, 0.84), { steps: 10, settle: 250 });
   check('框选：拖一下就圈住一块', /标记 2 处/.test(await smartCount()), await smartCount());
 
   // 箭头：指哪改哪
-  await page.evaluate(`document.querySelector('#smartEdit [data-tool="arrow"]').click()`);
+  await smartTool('arrow');
   await page.drag(sAt(0.2, 0.24), sAt(0.42, 0.4), { steps: 10, settle: 250 });
   check('箭头：拖出一条指向目标的箭头', /标记 3 处/.test(await smartCount()), await smartCount());
 
   // 文字：点一下就地输入，回车落字
-  await page.evaluate(`document.querySelector('#smartEdit [data-tool="text"]').click()`);
+  await smartTool('text');
   await page.clickAt(sAt(0.62, 0.18).x, sAt(0.62, 0.18).y, { settle: 250 });
-  const textInputShown = await page.evaluate(`!!document.querySelector('#smartEdit .se-textin')`);
+  const textInputShown = await page.evaluate(`!!document.querySelector('.thumb .sm-textin')`);
   await page.evaluate(`(() => {
-    const i = document.querySelector('#smartEdit .se-textin');
+    const i = document.querySelector('.thumb .sm-textin');
     i.value = '换成盘子';
     i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   })()`);
@@ -7525,31 +7566,33 @@ try {
   const afterText = await smartCount();
   check('文字：就地输入框出现，回车后落成一个标记、输入框收掉',
     textInputShown === true && /标记 4 处/.test(afterText)
-      && (await page.evaluate(`!document.querySelector('#smartEdit .se-textin')`)) === true,
+      && (await page.evaluate(`!document.querySelector('.sm-textin')`)) === true,
     `${textInputShown} · ${afterText}`);
 
   // 撤销回到上一步
-  await page.evaluate(`document.querySelector('#smartEdit [data-act="undo"]').click()`);
+  await page.evaluate(`document.querySelector('${smartSel} [data-act="undo"]').click()`);
   check('撤销：撤掉最后一笔', /标记 3 处/.test(await smartCount()), await smartCount());
 
-  // 预设：点一下把句子填进描述框
-  await page.evaluate(`document.querySelector('#smartEdit .se-preset').click()`);
-  const presetVal = await page.evaluate(`document.querySelector('#sePrompt').value`);
-  check('预设：点「换衣服」把半句填进描述框（用户再补具体的）',
-    /把标记区域里人物的衣服换成$/.test(presetVal), presetVal);
+  // 预设：点一下把句子填进**这个节点自己的**提示词框
+  await page.evaluate(`document.querySelector('${smartSel} .sm-preset').click()`);
+  const presetVal = await page.evaluate(`(document.querySelector('${promptSel}') || {}).textContent || ''`);
+  check('预设：点「换衣服」把半句填进节点的提示词框（用户再补具体的）',
+    /把标记区域里人物的衣服换成$/.test(presetVal.trim()), presetVal);
 
-  // 没写描述就点生成：拦住，编辑器不关
+  // 没写描述就点生成：拦住，标记不丢（模式不退出）
   await page.evaluate(`(() => {
-    document.querySelector('#sePrompt').value = '';
-    document.querySelector('#smartEdit [data-act="run"]').click();
+    const ta = document.querySelector('${promptSel}');
+    ta.innerHTML = '';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('${promptSel}').closest('.gen-panel').querySelector('.gen-run').click();
   })()`);
-  await new Promise((r) => setTimeout(r, 250));
+  await new Promise((r) => setTimeout(r, 300));
   const smartNoPrompt = await page.evaluate(`(() => ({
-    still: !!document.getElementById('smartEdit'),
+    still: !!document.querySelector('${smartSel}'),
     flash: (document.getElementById('queueBadge') || {}).textContent || '',
     shown: !document.getElementById('queueBadge').classList.contains('hidden'),
   }))()`);
-  check('没写描述就点生成：拦住并说清缺什么，编辑器不关',
+  check('没写描述就点生成：拦住并说清缺什么，标记还在（没退出模式）',
     smartNoPrompt.still === true && smartNoPrompt.shown && /改成什么样/.test(smartNoPrompt.flash),
     JSON.stringify(smartNoPrompt));
 
@@ -7599,37 +7642,40 @@ try {
     const srcCorner = [sd[0], sd[1], sd[2]];
 
     const before = document.querySelectorAll('#nodes .node').length;
-    document.querySelector('#sePrompt').value = '把标记区域里的球换成青花瓷盘，其他不要动';
-    document.querySelector('#smartEdit [data-act="run"]').click();
-    for (let k = 0; k < 60; k++) {
-      await sleep(100);
-      if (!document.getElementById('smartEdit')) break;
-    }
+    const ta = document.querySelector('${promptSel}');
+    ta.innerHTML = '';
+    ta.appendChild(document.createTextNode('把标记区域里的球换成青花瓷盘，其他不要动'));
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.closest('.gen-panel').querySelector('.gen-run').click();
     // 点一次会多两个节点：承载标注图的那个 + 出图的那个（结果另起一个，和擦除 / 去字一致）
     for (let k = 0; k < 80; k++) {
       await sleep(100);
       if (document.querySelectorAll('#nodes .node').length >= before + 2) break;
     }
-    await sleep(400);
+    await sleep(500);
     window.fetch = real;
     const made = [...document.querySelectorAll('#nodes .node.image')]
       .find((e) => /智能编辑/.test((e.querySelector('.node-title') || {}).textContent || ''));
     const srcAfter = document.querySelector('#nodes .node.image .thumb img');
     return {
       before, after: document.querySelectorAll('#nodes .node').length,
-      closed: !document.getElementById('smartEdit'),
+      barGone: !document.querySelector('.sm-bar'),
       title: made ? made.querySelector('.node-title').textContent.trim() : '',
       prompt: made ? (made.querySelector('.gen-prompt') || {}).textContent || '' : '',
+      wf: made ? (made.querySelector('.wfsel .gm-btn') || {}).textContent || '' : '',
       maskPill: made ? !!made.querySelector('.n-mask') : null,
       upName, upSize, upDot, upArrow, upCorner, srcCorner,
       srcSrc: srcAfter ? srcAfter.getAttribute('src') : '',
       runs: hits.length,
     };
   })()`);
-  check('点生成：编辑器关掉，多出「智能编辑 · 图片」承载节点 + 一个出图节点',
-    smartGen.closed && smartGen.after === smartGen.before + 2 && /智能编辑/.test(smartGen.title),
-    JSON.stringify({ closed: smartGen.closed, before: smartGen.before, after: smartGen.after, title: smartGen.title }));
+  check('点生成：标记模式收起，多出「智能编辑 · 图片」承载节点 + 一个出图节点',
+    smartGen.barGone && smartGen.after === smartGen.before + 2 && /智能编辑/.test(smartGen.title),
+    JSON.stringify({ barGone: smartGen.barGone, before: smartGen.before, after: smartGen.after, title: smartGen.title }));
   check('智能编辑：描述原样带进新节点', /青花瓷盘/.test(smartGen.prompt), smartGen.prompt.slice(0, 40));
+  // 标注图是当「源图」送进去的：吃遮罩的那种拿不到遮罩（mask 全 0），送进去等于什么都没改
+  check('智能编辑：挑的是**只吃图**的工作流（不是吃遮罩的局部重绘）',
+    !!smartGen.wf && !/局部重绘/.test(smartGen.wf), smartGen.wf);
   // 这条是整个功能的立论：交给模型的是**画了标记的那张图**，不是遮罩
   check('智能编辑：传给模型的是标注图（点 / 箭头位置是红的，没标的地方原样）',
     smartGen.upSize && smartGen.upSize[0] === 512

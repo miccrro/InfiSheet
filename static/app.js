@@ -726,6 +726,9 @@
         // 两样都在节点里，节点一平移/缩放它们就跟着走——早先是屏幕坐标的浮条，
         // 用户的原话是「无法跟随」：节点在右边、条却钉在屏幕左下角。
         if (outpaintOn(n)) buildOutpaintFrame(n, thumb, panel);
+        // 智能编辑：标记层盖在图上、工具条插在图片和面板之间，也都在节点里。
+        // 要求写在这个面板的提示词框里，生成还是那颗生成键（generateImage 里拦一道）。
+        if (smartOn(n)) buildSmartInline(n, thumb, panel);
       }
       // 单口，但什么都能接：文本当提示词，图片当参考图（每侧仍然只有一个点）
       const imgIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本（提示词）或图片（参考图）；可以连多张图', inPortTitle);
@@ -3403,6 +3406,9 @@
     // （以前这里会直接 g.busy 崩在空指针上）。给它一句话，别让它以为点了没反应。
     if (!n.gen) { flash('这个节点只放图：点标题上的「生成」把面板打开再生成'); return; }
     const g = n.gen;
+    // 智能编辑：标记画在这张图上、要求写在这个面板里，点生成＝把「标注图」交给右边的新节点跑。
+    // 拦在入口而不是每颗按钮上：生成键、Ctrl+Enter、标题上的药丸走的都是这一条。
+    if (g.smart) { smartRun(n); return; }
     if (g.busy) return;
     // **立刻置位**，别等真正提交（原来在下面 60 行之后才 busy = true）。
     // 中间那一串 await 是上传参考图 / 烘焙遮罩 / 读风格，一次几秒；这期间按钮还是可点的，
@@ -8593,6 +8599,9 @@
           // 风格只存指针 {cat,i,cn}，不存那句四百字的英文模板：模板在 static/styles/ 里，
           // 存副本的话改了风格库，老画布还按旧句子出图，对不上号
           style: n.gen.style || null,
+          // 智能编辑的标记：矢量的几笔，和遮罩一样小。存下来刷新后标记还在图上，
+          // 能接着改；不存的话一刷新就只剩一张光图，用户以为刚才白标了
+          smart: n.gen.smart && n.gen.smart.strokes ? n.gen.smart : undefined,
         } : null,
         // 遮罩：按「图片身份」索引的笔画列表（不是位图，也不是节点级字段）。
         // 只存矢量笔画，10 笔约 2KB；重开时精确重放，不做「从 PNG 反推」那种有损还原。
@@ -10593,17 +10602,25 @@
     closeQueue();                      // 顶栏的任务队列面板
   }
 
+  // 导航代次：showHome 里有 await（退出编辑器前先落盘），落盘那几百毫秒里用户可能已经点开
+  // 另一个画布。那时候再无条件把首页亮出来，就是把人从刚打开的画布弹回首页——表现出来是
+  // 「点一次没进去，得点两次」。所以进 showHome 先记一代，await 回来发现换过代就收手。
+  let navSeq = 0;
+
   async function showHome() {
     const home = document.getElementById('home');
     if (!home) return;
+    const seq = ++navSeq;
     leaveCanvasChrome();                        // 先收浮层：点了立刻有反应，不必等落盘
     if (state.hydrated) await saveToServer();   // 退出编辑器先落盘，再刷新列表
+    if (seq !== navSeq) return;                 // 落盘期间已经导航走了，首页不该再亮
     home.classList.remove('hidden');
     await initHome();
     if (location.hash !== '#home') history.replaceState(null, '', '#home');
   }
 
   function showCanvas() {
+    navSeq += 1;                                // 让还在路上的 showHome 作废
     const home = document.getElementById('home');
     if (home) home.classList.add('hidden');
     applyView();
@@ -11448,6 +11465,9 @@
       // 「扩图」是个开关：开着的时候按钮亮着，再点一次收起
       const ob = bar.querySelector('[data-tool="outpaint"]');
       if (ob) ob.classList.toggle('on', outpaintOn(n));
+      // 「智能编辑」也是开关：亮着＝这个节点正在标记模式，再点一次退出
+      const sb = bar.querySelector('[data-tool="smart"]');
+      if (sb) sb.classList.toggle('on', smartOn(n));
       fitImgTools();
       positionImgTools();
     }
@@ -11462,7 +11482,7 @@
     if (kind === 'rotate') { openRotateMenu(n, btn); return; }
     if (kind === 'color') { openColorPanel(n); return; }
     if (kind === 'outpaint') { toggleOutpaint(n); return; }
-    if (kind === 'smart') { openSmartEdit(n); return; }
+    if (kind === 'smart') { startSmartEdit(n); return; }
     if (kind === 'mask') { openMaskEditor(n); return; }
     if (kind === 'erase' || kind === 'detext') { openMaskEditor(n, { intent: kind }); return; }
     if (kind === 'download') { downloadImage(n); return; }
@@ -13792,14 +13812,12 @@
     refresh();
   }
 
-  /* ---------------- 智能编辑：把标记画在图上，连同描述一起交给模型 ---------------- */
-  // 「遮罩」那条路要用户分三步走：涂 → 关掉 → 去面板写提示词 → 再点生成。
-  // 提示词框离涂好的那块隔着半屏，没人会觉得这是「在编辑这一块」。
-  // 这里把三件事收进一个界面：标位置（点 / 框 / 笔 / 箭头 / 文字 / 橡皮）、写一句要求、点生成。
+  /* ---------------- 智能编辑：标记直接画在节点这张图上 ---------------- */
+  // 三件事都在节点里做完：在图上标位置、在节点自己的提示词框里写要求、点节点自己的「生成」。
+  // 不弹独立编辑器——一个「改这一块」的动作不该把整个画布顶掉，改完还得自己找回到哪儿了。
   //
-  // **不用遮罩**：标记直接画在图上，生成时把「画了标记的这张图」当源图交给模型。
-  // 遮罩是二值的（改 / 不改），它说不清「这根箭头指着的那只碗」；画上去的箭头、圈、
-  // 序号是模型看得懂的指示，和描述里那句「换成青花瓷盘」一起才构成完整的要求。
+  // **不走遮罩**：遮罩是二值的（改 / 不改），它说不清「这根箭头指着的那只碗」。
+  // 画上去的箭头、圈、序号是模型看得懂的指示，和描述里那句「换成青花瓷盘」一起才构成完整要求。
   const SMART_TOOLS = [
     ['dot', '点击', '点一下标出要改的地方（自动编号）'],
     ['rect', '框选', '拖一个框圈住它'],
@@ -13819,7 +13837,6 @@
   ];
   const MARK_COLOR = '#ff3b30';                    // 标记：红 + 阴影，深浅底上都看得见
   const MARK_SOFT = 'rgba(255, 59, 48, 0.5)';      // 画笔：半透明，别把底下的内容整个盖住
-  let smartSession = null;
 
   // 标注图是当「源图」送进去的，所以要挑**只吃图、不吃遮罩**的那种工作流：
   // 吃遮罩的那份拿不到遮罩（alpha 不透明 → mask 全 0），送进去等于什么都没改。
@@ -13831,27 +13848,47 @@
     return (def && def.image && !def.alphaMask ? def : null) || plain[0] || null;
   }
 
-  function openSmartEdit(n) {
+  // 标记存在节点自己身上（n.gen.smart）：它是这张图的草稿，节点重建、切走再切回来都还在，
+  // 也跟着画布一起存。`w/h` 记着画的时候的像素尺寸——图被换过就作废（坐标空间变了，留着必然错位）。
+  function smartDocOf(n) {
+    const d = n && n.gen && n.gen.smart;
+    return d && Array.isArray(d.strokes) ? d : null;
+  }
+  function smartOn(n) { return !!smartDocOf(n); }
+
+  function startSmartEdit(n) {
     if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再来编辑'); return; }
+    if (smartOn(n)) { exitSmartEdit(n); return; }     // 再点一次＝退出
     const wf = annotateWorkflow();
     if (!wf) {
       flash('这台机器上没有「只吃图」的工作流：先去「工作流库」导入一个图像编辑（Qwen / Krea 编辑这类）');
       return;
     }
-    if (smartSession) closeSmartEdit();
-    loadImageEl(n.dataURL)
-      .then((img) => buildSmartEdit(n, img, wf))
-      .catch(() => flash('图片加载失败，没法编辑'));
+    // 两个都要在图上落笔的模式同时开着会互相打架：进这个就把那个收起来
+    if (maskSession) closeMaskEditor();
+    loadImageEl(n.dataURL).then((img) => {
+      const W = img.naturalWidth || 1024;
+      const H = img.naturalHeight || 1024;
+      // 纯图片节点没有生成面板，也就没有写要求的地方：先给它一块（和扩图同一个处理）
+      if (n.plain) delete n.plain;
+      n.gen = n.gen || {};
+      // 每次都从空白开始：这些标记属于「这一次操作」，不沿用上一次
+      n.gen.smart = { w: W, h: H, strokes: [] };
+      rerenderNode(n.id, true);
+      const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
+      if (ta) ta.focus();
+      flash('在图上标出要改的地方，再在下面的提示词框里写一句要求，点生成');
+    }).catch(() => flash('图片加载失败，没法编辑'));
   }
 
-  function closeSmartEdit() {
-    if (!smartSession) return;
-    try { smartSession.ac.abort(); } catch { /* 已经 abort 过 */ }
-    smartSession.root.remove();
-    smartSession = null;
+  function exitSmartEdit(n) {
+    if (!n || !n.gen || !n.gen.smart) return;
+    delete n.gen.smart;
+    rerenderNode(n.id, true);
+    queueSave();
   }
 
-  // 所有标记画到 ctx 上（不含底图）。编辑器里显示的、和最终送进模型的是同一份绘制，
+  // 所有标记画到 ctx 上（不含底图）。屏幕上显示的、和最终送进模型的是同一份绘制，
   // 所以「我看到的」和「模型看到的」不可能对不上。
   // 顺序就是落笔顺序：橡皮靠 destination-out 擦掉它**之前**的标记，和手感一致。
   function paintAnnotations(ctx, doc) {
@@ -13966,113 +14003,109 @@
     return cv.toDataURL('image/png');
   }
 
-  function buildSmartEdit(n, img, wf) {
-    const W = img.naturalWidth || 1024;
-    const H = img.naturalHeight || 1024;
-    // 一次性：永远从空白开始，也不回写源节点——这些标记属于「这一次操作」，
-    // 不属于那张图（和擦除 / 去字同一个道理，否则下次打开是一片已经标满的画面）
-    const doc = { w: W, h: H, strokes: [] };
-
-    const root = document.createElement('div');
-    root.id = 'smartEdit';
-    root.innerHTML = `
-      <div class="se-bar">
-        <span class="se-title">智能编辑 · ${esc(n.title)}</span>
-        <div class="se-tools" role="group" aria-label="标记工具">
-          ${SMART_TOOLS.map(([k, label, tip], i) => `<button type="button" class="se-tool" data-tool="${k}"
-            aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}">${label}</button>`).join('')}
-        </div>
-        <label class="se-size">粗细 <input type="range" min="8" max="200" step="1" value="48"><b>48</b></label>
-        <button type="button" class="se-btn" data-act="undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
-        <button type="button" class="se-btn" data-act="clear" title="清空全部标记">清除</button>
-        <span class="se-spacer"></span>
-        <span class="se-count">还没有标记</span>
-        <button type="button" class="se-btn" data-act="cancel">取消</button>
-        <button type="button" class="se-run" data-act="run">生成</button>
-      </div>
-      <div class="se-body">
-        <div class="se-stage">
-          <div class="se-frame">
-            <img class="se-img" alt="">
-            <canvas class="se-cv"></canvas>
-            <span class="se-hint">点一下 / 圈一块 / 涂一笔，标出要改的地方</span>
-          </div>
-        </div>
-        <aside class="se-side">
-          <label class="se-lbl" for="sePrompt">要改成什么样</label>
-          <textarea id="sePrompt" class="se-prompt" placeholder="例如：换成青花瓷盘，其他不要动"></textarea>
-          <div class="se-presets">
-            ${SMART_PRESETS.map(([label, text]) => `<button type="button" class="se-preset"
-              data-text="${esc(text)}">${label}</button>`).join('')}
-          </div>
-          <div class="se-wf">
-            <span class="se-lbl">工作流</span>
-            <b>${esc(wf.label)}</b>
-          </div>
-          <p class="se-tip">标记会画在图上，和上面那句要求一起交给模型。出图落在右边新节点，原图不动。</p>
-        </aside>
-      </div>`;
-
-    const frame = root.querySelector('.se-frame');
-    const stage = root.querySelector('.se-stage');
-    const cv = root.querySelector('.se-cv');
-    const countEl = root.querySelector('.se-count');
-    const promptEl = root.querySelector('#sePrompt');
-    const runBtn = root.querySelector('[data-act="run"]');
-    const undoBtn = root.querySelector('[data-act="undo"]');
-
-    root.querySelector('.se-img').src = n.dataURL;
-    cv.width = W;
-    cv.height = H;
+  // 标记层和工具条都长在节点里（和扩图把参数条并进面板同一个理由）：
+  // 节点一平移 / 缩放它们跟着走，不像屏幕坐标的浮条那样「不跟随」。
+  function buildSmartInline(n, thumb, panel) {
+    const doc = smartDocOf(n);
+    if (!doc || !panel) return;
+    const cv = document.createElement('canvas');
+    cv.className = 'sm-cv';
+    cv.width = Math.max(1, doc.w || 1);
+    cv.height = Math.max(1, doc.h || 1);
+    cv.setAttribute('aria-label', '在图上标出要改的地方');
+    thumb.classList.add('sm-mode');
+    thumb.appendChild(cv);
     const ctx = cv.getContext('2d');
 
+    // 图被换过（尺寸对不上）就把笔画丢掉：拉伸的标记比没有更误导
+    const im = thumb.querySelector('img');
+    if (im && im.naturalWidth && (im.naturalWidth !== doc.w || im.naturalHeight !== doc.h)) {
+      doc.w = im.naturalWidth;
+      doc.h = im.naturalHeight;
+      doc.strokes.length = 0;
+      cv.width = doc.w;
+      cv.height = doc.h;
+    }
+
+    const bar = document.createElement('div');
+    bar.className = 'sm-bar';
+    bar.dataset.smartFor = n.id;
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', '智能编辑的标记工具');
+    bar.innerHTML = `
+      <div class="sm-tools" role="group" aria-label="标记工具">
+        ${SMART_TOOLS.map(([k, label, tip], i) => `<button type="button" class="sm-tool" data-tool="${k}"
+          aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}">${label}</button>`).join('')}
+      </div>
+      <div class="sm-row">
+        <button type="button" class="sm-btn" data-act="undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
+        <button type="button" class="sm-btn" data-act="clear" title="清空全部标记">清除</button>
+        <label class="sm-size" title="标记的粗细（[ ] 也能调）">
+          <input type="range" min="8" max="200" step="1" value="48" aria-label="标记粗细"><b>48</b></label>
+        <span class="sm-count">还没有标记</span>
+        <button type="button" class="sm-btn sm-exit" data-act="exit" title="退出标记模式（Esc）">退出</button>
+      </div>
+      <div class="sm-presets" role="group" aria-label="常用要求">
+        ${SMART_PRESETS.map(([label, text]) => `<button type="button" class="sm-preset"
+          data-text="${esc(text)}">${label}</button>`).join('')}
+      </div>`;
+    // 点工具条不能把节点选丢了
+    bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    panel.parentElement.insertBefore(bar, panel);
+
+    const countEl = bar.querySelector('.sm-count');
+    const undoBtn = bar.querySelector('[data-act="undo"]');
+    const sizeEl = bar.querySelector('.sm-size input');
+    const sizeNum = bar.querySelector('.sm-size b');
+    const ta = panel.querySelector('.gen-prompt');
+    // 空着的时候换一句「这里该写什么」：这个框平时是「生图提示词」，此刻是「要改成什么样」
+    if (ta && !promptText(ta).trim()) ta.dataset.ph = '要改成什么样？例如：换成青花瓷盘，其他不要动';
+
     const ac = new AbortController();
-    const sess = { n, img, wf, doc, root, frame, stage, cv, ac,
-      tool: 'dot', size: 48, draft: null, textInput: null };
-    smartSession = sess;
+    const sess = { tool: 'dot', size: 48, draft: null, textInput: null };
+    // 节点被重建（换图 / 改尺寸 / 生成回来）时这块 DOM 就没了，挂在 window 上的监听要跟着摘：
+    // 否则下一笔会同时落到新旧两个会话上，旧的那个还在改一份已经不在屏幕上的笔画。
+    const alive = () => {
+      if (cv.isConnected) return true;
+      try { ac.abort(); } catch { /* 已经 abort 过 */ }
+      return false;
+    };
+    // 只有选中的那个节点收键盘：两个节点都开着标记模式时，Ctrl+Z 不该把两个都撤掉
+    const focused = () => alive() && state.selected.has(n.id);
 
     const redraw = () => paintAnnotations(ctx, doc);
     const refresh = () => {
       const marks = doc.strokes.filter((s) => strokeKind(s) !== 'eraser').length;
       countEl.textContent = marks ? `标记 ${marks} 处` : '还没有标记';
       undoBtn.disabled = !doc.strokes.length;
+      queueSave();
     };
 
-    // 显示尺寸按 contain 算一次写进 frame；落笔只在这一层换算
-    const fit = () => {
-      const aw = stage.clientWidth - 40;
-      const ah = stage.clientHeight - 40;
-      const k = Math.min(aw / W, ah / H, 1);
-      frame.style.width = `${Math.max(80, Math.round(W * k))}px`;
-      frame.style.height = `${Math.max(80, Math.round(H * k))}px`;
-    };
-    requestAnimationFrame(fit);
-    window.addEventListener('resize', fit, { signal: ac.signal });
-
+    // 落笔只在显示层换算一次：canvas 内部是原图像素，CSS 上铺满这个框
     const toDoc = (ev) => {
       const r = cv.getBoundingClientRect();
-      const k = doc.w / r.width;
+      const k = r.width > 0 ? doc.w / r.width : 1;
       return [
         Math.round(clamp((ev.clientX - r.left) * k, 0, doc.w)),
         Math.round(clamp((ev.clientY - r.top) * k, 0, doc.h)),
       ];
     };
     // 点击的圈大小按短边算：800 的图上 28px 是个圈，4000 的图上还是「一小块」
-    const dotRadius = () => Math.max(12, Math.round(Math.min(W, H) * 0.035));
+    const dotRadius = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
 
     // 文字标记：不用 window.prompt（它会挡住整屏、还没法定位）。
     // 就地开一个 input，回车落字、Esc 取消、失焦算确认。
     const askText = (ev, p) => {
       if (sess.textInput) return;
-      const r = cv.getBoundingClientRect();
+      const r = thumb.getBoundingClientRect();
       const inp = document.createElement('input');
-      inp.className = 'se-textin';
+      inp.className = 'sm-textin';
       inp.type = 'text';
       inp.maxLength = 40;
       inp.placeholder = '写一句备注，回车确认';
-      inp.style.left = `${Math.round(ev.clientX - r.left)}px`;
-      inp.style.top = `${Math.round(ev.clientY - r.top)}px`;
-      frame.appendChild(inp);
+      inp.style.left = `${Math.round(clamp(ev.clientX - r.left, 0, Math.max(0, r.width - 60)))}px`;
+      inp.style.top = `${Math.round(clamp(ev.clientY - r.top, 0, Math.max(0, r.height - 24)))}px`;
+      thumb.appendChild(inp);
       sess.textInput = inp;
       inp.focus();
       let closed = false;
@@ -14088,7 +14121,7 @@
         refresh();
       };
       inp.onkeydown = (e) => {
-        e.stopPropagation();       // Esc 不能穿到「关掉整个编辑器」那条上
+        e.stopPropagation();       // Esc 不能穿到「退出标记模式」那条上
         if (e.key === 'Enter') { e.preventDefault(); done(true); }
         else if (e.key === 'Escape') { e.preventDefault(); done(false); }
       };
@@ -14096,9 +14129,10 @@
     };
 
     cv.addEventListener('pointerdown', (ev) => {
+      if (!alive()) return;
+      if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();        // 不让画布顺手拖节点 / 平移
-      if (ev.button !== 0) return;
       if (sess.textInput) return;  // 正在写备注：先让它收尾
       const p = toDoc(ev);
       if (sess.tool === 'dot') {
@@ -14119,9 +14153,12 @@
       doc.strokes.push(sess.draft);
       redraw();
     }, { signal: ac.signal });
+    // 双击图片进大图这件事在标记模式下要停掉：正连着点两下是「标两处」
+    cv.addEventListener('dblclick', (ev) => ev.stopPropagation(), { signal: ac.signal });
 
     // 走笔挂在 window 上：挂在 canvas 上一快就划出边界，后面的 move 全丢
     window.addEventListener('pointermove', (ev) => {
+      if (!alive()) return;
       const d = sess.draft;
       if (!d) return;
       const p = toDoc(ev);
@@ -14141,6 +14178,7 @@
     }, { signal: ac.signal });
 
     const endMark = () => {
+      if (!alive()) return;
       const d = sess.draft;
       sess.draft = null;
       if (!d) return;
@@ -14155,16 +14193,13 @@
     window.addEventListener('pointerup', endMark, { signal: ac.signal });
     window.addEventListener('pointercancel', endMark, { signal: ac.signal });
 
-    root.querySelectorAll('[data-tool]').forEach((b) => {
-      b.onclick = () => {
-        sess.tool = b.dataset.tool;
-        root.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-        cv.style.cursor = sess.tool === 'text' ? 'text' : sess.tool === 'dot' ? 'pointer' : 'crosshair';
-      };
-    });
+    const setTool = (k) => {
+      sess.tool = k;
+      bar.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.tool === k)));
+      cv.style.cursor = k === 'text' ? 'text' : k === 'dot' ? 'pointer' : 'crosshair';
+    };
+    bar.querySelectorAll('[data-tool]').forEach((b) => { b.onclick = () => setTool(b.dataset.tool); });
 
-    const sizeEl = root.querySelector('.se-size input');
-    const sizeNum = root.querySelector('.se-size b');
     const setSize = (v) => {
       sess.size = Math.round(clamp(v, 8, 200));
       sizeEl.value = sess.size;
@@ -14172,87 +14207,78 @@
     };
     sizeEl.oninput = () => setSize(Number(sizeEl.value));
 
-    root.querySelector('[data-act="undo"]').onclick = () => {
-      doc.strokes.pop();
-      redraw();
-      refresh();
-    };
-    root.querySelector('[data-act="clear"]').onclick = () => {
+    const undo = () => { doc.strokes.pop(); redraw(); refresh(); };
+    undoBtn.onclick = undo;
+    bar.querySelector('[data-act="clear"]').onclick = () => {
       if (!doc.strokes.length) return;
       doc.strokes.length = 0;
       redraw();
       refresh();
     };
-    root.querySelector('[data-act="cancel"]').onclick = () => closeSmartEdit();
-    runBtn.onclick = () => smartRun();
+    bar.querySelector('[data-act="exit"]').onclick = () => exitSmartEdit(n);
 
     // 预设接在已有内容后面：一次要改两处时，不用把前半句重打一遍
-    root.querySelectorAll('.se-preset').forEach((b) => {
+    bar.querySelectorAll('.sm-preset').forEach((b) => {
       b.onclick = () => {
         const text = b.dataset.text || '';
-        const cur = promptEl.value.trim();
-        promptEl.value = cur ? `${cur}${/[。，；！？]$/.test(cur) ? '' : '，'}${text}` : text;
-        promptEl.focus();
-        promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+        if (!ta) { flash('这个节点没有提示词框：先点标题上的「生成」把面板打开'); return; }
+        const cur = promptText(ta).trim();
+        fillPrompt(ta, cur ? `${cur}${/[。，；！？]$/.test(cur) ? '' : '，'}${text}` : text, n);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        ta.focus();
+        const r = document.createRange();
+        r.selectNodeContents(ta);
+        r.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
       };
     });
-    // Ctrl/Cmd + Enter：手不用离开输入框就能跑
-    promptEl.onkeydown = (ev) => {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); smartRun(); }
-    };
-
-    // 滚轮调粗细：在图上滚轮不该去缩放画布；侧栏里滚轮是滚文字，别调笔刷
-    root.addEventListener('wheel', (ev) => {
-      if (ev.target === promptEl) return;
-      ev.preventDefault();
-      setSize(sess.size + (ev.deltaY < 0 ? 4 : -4));
-    }, { passive: false, signal: ac.signal });
 
     window.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape') { ev.preventDefault(); closeSmartEdit(); return; }
-      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
-        ev.preventDefault();
-        doc.strokes.pop();
-        redraw();
-        refresh();
-        return;
-      }
+      if (!focused()) return;
+      // 焦点在提示词框里时键盘归那个框：Ctrl+Z 该撤文字，Esc 不该把标记清掉
+      if (ev.target && panel.contains(ev.target)) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); exitSmartEdit(n); return; }
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
       if (ev.key === '[') { ev.preventDefault(); setSize(sess.size - 4); }
       if (ev.key === ']') { ev.preventDefault(); setSize(sess.size + 4); }
     }, { signal: ac.signal });
 
-    document.body.appendChild(root);
+    setTool('dot');
     redraw();
     refresh();
   }
 
-  // 生成：把「画了标记的图」和描述一起交给新节点，然后**直接开跑**。
-  // 描述已经在编辑器里写完了，再让用户回到面板点一次「生成」纯属多一步。
-  function smartRun() {
-    const s = smartSession;
-    if (!s) return;
-    const prompt = String(s.root.querySelector('#sePrompt').value || '').trim();
-    if (!s.doc.strokes.length) { flash('先标出要改的地方：点一下、圈一块，或者涂一笔'); return; }
-    if (!prompt) { flash('再写一句要改成什么样，比如「换成青花瓷盘」'); s.root.querySelector('#sePrompt').focus(); return; }
-    const src = s.n;
-    const wf = s.wf;
-    const dataURL = annotatedDataURL(s.img, s.doc);
-    closeSmartEdit();
-    // 新节点的图就是**画了标记的那张**：原节点一个字节都不动，
-    // 而且面板里能直接看到「我交给模型的是什么」。
-    const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
-      dataURL,
-      w: nodeWidth(src),
-      title: `智能编辑 · ${src.title}`,
-      // selfSource：这张图必须进模型（平时「节点自己的图不当参考图」是为了防偷偷图生图）
-      // aspectAuto：尺寸跟着这张标注图的比例走，改比例会让箭头指偏
-      gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true },
-    });
-    selectOnly(n.id);
-    flash(wf
-      ? '智能编辑：标记和描述都带过去了，正在生成'
-      : '智能编辑：这台机器上没有能吃图的工作流，先在面板里选一个');
-    if (wf) generateImage(n);
+  // 生成：把「画了标记的这张图」和提示词一起交给右边的新节点，然后**直接开跑**。
+  // 不在原节点上出图：用户要的是「改一版」，原图得留着对比。
+  function smartRun(n) {
+    const doc = smartDocOf(n);
+    if (!doc) return;
+    const panel = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
+    const ta = panel ? panel.querySelector('.gen-prompt') : null;
+    const prompt = (ta ? promptText(ta) : String((n.gen && n.gen.prompt) || '')).trim();
+    if (!doc.strokes.length) { flash('先在这张图上标出要改的地方：点一下、圈一块，或者涂一笔'); return; }
+    if (!prompt) { flash('再写一句要改成什么样，比如「换成青花瓷盘」'); if (ta) ta.focus(); return; }
+    const wf = annotateWorkflow();
+    loadImageEl(n.dataURL).then((img) => {
+      const dataURL = annotatedDataURL(img, doc);
+      // 这一轮的标记已经烘进新节点的图里了：源节点回到普通状态，别让旧标记留到下一次
+      delete n.gen.smart;
+      const made = addImageNode(n.x + nodeWidth(n) + 60, n.y, {
+        dataURL,
+        w: nodeWidth(n),
+        title: `智能编辑 · ${n.title}`,
+        // selfSource：这张图必须进模型（平时「节点自己的图不当参考图」是为了防偷偷图生图）
+        // aspectAuto：尺寸跟着这张标注图的比例走，改比例会让箭头指偏
+        gen: { wf: wf ? wf.id : '', prompt, selfSource: true, aspectAuto: true },
+      });
+      selectOnly(made.id);
+      flash(wf
+        ? '智能编辑：标记和描述都带过去了，正在生成'
+        : '智能编辑：这台机器上没有能吃图的工作流，先在面板里选一个');
+      if (wf) generateImage(made);
+    }).catch(() => flash('图片加载失败，没法把标记画上去'));
   }
 
   /* ---------------- 裁剪浮层 ---------------- */

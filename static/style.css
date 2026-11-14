@@ -4020,134 +4020,73 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 #maskEditor .me-frame:hover .me-hint { opacity: 1; }
 
-/* ---------- 智能编辑：标位置 + 说要求，一个界面里做完 ----------
-   和遮罩编辑器同一套外壳（全屏深色 + 顶部一条 bar），区别是右边多一栏写描述：
-   「涂哪儿」和「改成什么样」必须在同一屏里，否则用户又得记住自己刚涂了什么。 */
-#smartEdit {
-  position: fixed; inset: 0; z-index: 230;
-  display: flex; flex-direction: column;
-  background: rgba(8, 10, 14, 0.95);
-  backdrop-filter: blur(6px);
-  animation: meIn 0.16s ease-out;
-}
-#smartEdit .se-bar {
-  flex: 0 0 auto;
-  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-  padding: 10px 14px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-}
-#smartEdit .se-title {
-  font-size: 12px; color: var(--muted); margin-right: 4px;
-  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-#smartEdit .se-tools { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: var(--panel-2); }
-#smartEdit .se-tool {
-  height: 28px; padding: 0 11px;
-  border: 1px solid transparent; border-radius: 7px;
-  background: none; color: var(--text);
-  font: inherit; font-size: 12px; cursor: pointer;
-  transition: background 0.14s, color 0.14s, border-color 0.14s;
-}
-#smartEdit .se-tool:hover { background: rgba(255, 255, 255, 0.07); }
-#smartEdit .se-tool[aria-pressed="true"] {
-  background: var(--accent); color: #0b1220; border-color: var(--accent);
-}
-#smartEdit .se-btn {
-  height: 28px; padding: 0 11px;
-  border: 1px solid var(--line); border-radius: 7px;
-  background: none; color: var(--text);
-  font: inherit; font-size: 12px; cursor: pointer;
-}
-#smartEdit .se-btn:hover { background: rgba(255, 255, 255, 0.07); }
-#smartEdit .se-btn:disabled { opacity: 0.35; cursor: default; }
-#smartEdit .se-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-#smartEdit .se-size input { width: 100px; accent-color: var(--accent); }
-#smartEdit .se-size b { min-width: 28px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-#smartEdit .se-spacer { flex: 1 1 auto; }
-#smartEdit .se-count {
-  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
-  min-width: 96px; text-align: right;
-}
-#smartEdit .se-run {
-  height: 30px; padding: 0 18px; border-radius: 8px;
-  border: 1px solid var(--accent); background: var(--accent); color: #0b1220;
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-#smartEdit .se-run:hover { filter: brightness(1.08); }
-
-#smartEdit .se-body { flex: 1 1 auto; min-height: 0; display: flex; }
-#smartEdit .se-stage {
-  flex: 1 1 auto; min-width: 0;
-  display: flex; align-items: center; justify-content: center;
-  padding: 18px; overflow: hidden;
-}
-#smartEdit .se-frame {
-  position: relative; flex: 0 0 auto;
-  border-radius: 6px; overflow: hidden;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
-  background: #000;
-}
-#smartEdit .se-img { display: block; width: 100%; height: 100%; object-fit: fill; }
-/* 一层画布：底图是 <img>，标记画在这层上。它既是给人看的，也是最终交给模型的那张。 */
-#smartEdit .se-cv {
+/* ---------- 智能编辑：标记画在节点这张图上，工具条长在节点里 ----------
+   没有独立编辑器：不弹全屏、不切走画布。标记层盖在节点图片上（和遮罩预览同一套对齐），
+   工具条插在图片和生成面板之间，要求就写在这个节点自己的提示词框里。
+   全屏编辑器那一版的问题很直接：改一块局部要顶掉整个画布，改完还得自己找回到哪儿了。 */
+.node.image .thumb .sm-cv {
   position: absolute; inset: 0; width: 100%; height: 100%;
-  cursor: pointer; touch-action: none;
+  z-index: 3; cursor: crosshair; touch-action: none;
 }
-#smartEdit .se-hint {
-  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
-  padding: 5px 12px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.62); color: #dfe6f2;
-  font-size: 11.5px; white-space: nowrap; pointer-events: none;
-  opacity: 0; transition: opacity 0.2s;
-}
-#smartEdit .se-frame:hover .se-hint { opacity: 1; }
-/* 文字标记的就地输入框：出现在点的位置，宽一点好写，深底浅字 */
-#smartEdit .se-textin {
-  position: absolute; z-index: 2;
-  min-width: 160px; max-width: 70%;
-  padding: 3px 7px;
+/* 没选中就别吃指针：第一下点在图上是「选中这个节点」，不是「落一个标记」 */
+.node:not(.selected) .thumb .sm-cv { pointer-events: none; }
+/* 文字标记的就地输入框：出现在点的位置，深底浅字 */
+.node.image .thumb .sm-textin {
+  position: absolute; z-index: 4;
+  min-width: 120px; max-width: 70%;
+  padding: 2px 6px;
   border: 1px solid var(--accent); border-radius: 6px;
-  background: rgba(10, 14, 20, 0.92); color: #fff;
+  background: rgba(10, 14, 20, 0.94); color: #fff;
   font: inherit; font-size: 12px; outline: none;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
-
-#smartEdit .se-side {
-  flex: 0 0 clamp(260px, 26vw, 340px);
-  display: flex; flex-direction: column; gap: 9px;
-  padding: 14px;
-  border-left: 1px solid var(--line);
-  background: var(--panel);
-  overflow-y: auto;
+/* 工具条：跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」 */
+.sm-bar {
+  margin: 6px 0 3px;
+  padding: 6px;
+  display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid rgba(255, 59, 48, 0.34);
+  border-radius: 9px;
+  background: rgba(255, 59, 48, 0.07);
 }
-#smartEdit .se-lbl { font-size: 12px; color: var(--muted); }
-#smartEdit .se-prompt {
-  width: 100%; box-sizing: border-box;
-  min-height: 118px; max-height: 40vh; resize: vertical;
-  padding: 9px 10px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--panel-2); color: var(--text);
-  font: inherit; font-size: 12.5px; line-height: 1.6;
+.node:not(.selected) .sm-bar { display: none; }
+.sm-bar .sm-tools {
+  display: flex; gap: 3px; padding: 3px;
+  border-radius: 8px; background: rgba(255, 255, 255, 0.05);
 }
-#smartEdit .se-prompt:focus { outline: none; border-color: var(--accent); }
-#smartEdit .se-presets { display: flex; flex-wrap: wrap; gap: 6px; }
-#smartEdit .se-preset {
-  height: 26px; padding: 0 10px; border-radius: 999px;
-  border: 1px solid var(--line); background: none; color: var(--text);
+.sm-bar .sm-tool {
+  flex: 1 1 auto; height: 24px; padding: 0 4px;
+  border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--text);
+  font: inherit; font-size: 11.5px; cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.sm-bar .sm-tool:hover { background: rgba(255, 255, 255, 0.08); }
+.sm-bar .sm-tool[aria-pressed="true"] { background: #ff3b30; border-color: #ff3b30; color: #fff; }
+.sm-bar .sm-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sm-bar .sm-btn {
+  height: 24px; padding: 0 7px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: none; color: var(--text);
   font: inherit; font-size: 11.5px; cursor: pointer;
 }
-#smartEdit .se-preset:hover { border-color: var(--accent); color: var(--accent); }
-#smartEdit .se-wf {
-  display: flex; align-items: center; gap: 8px;
-  padding-top: 9px; border-top: 1px solid var(--line);
-  font-size: 12px; color: var(--muted);
+.sm-bar .sm-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.sm-bar .sm-btn:disabled { opacity: 0.35; cursor: default; }
+/* 粗细只留滑杆 + 数字：节点面板只有 320 来像素，加「粗细」两个字就把「退出」挤到下一行 */
+.sm-bar .sm-size { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); }
+.sm-bar .sm-size input { width: 54px; accent-color: #ff3b30; }
+.sm-bar .sm-size b { min-width: 18px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sm-bar .sm-count {
+  margin-left: auto; font-size: 11.5px; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-#smartEdit .se-wf b {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text); font-weight: 500;
+.sm-bar .sm-presets { display: flex; flex-wrap: wrap; gap: 5px; }
+.sm-bar .sm-preset {
+  height: 22px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: none; color: var(--text);
+  font: inherit; font-size: 11px; cursor: pointer;
 }
-#smartEdit .se-tip { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.sm-bar .sm-preset:hover { border-color: #ff3b30; color: #ff8a80; }
 
 /* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
    z-index 压在「查看大图」按钮下面，免得挡住它。 */
