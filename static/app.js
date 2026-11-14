@@ -11202,6 +11202,7 @@
     ['crop', '裁剪', 'crop', '拖一个框，裁出一张新的图片节点'],
     ['rotate', '旋转', 'rotate', '旋转 90° / 180°，或水平 / 垂直翻转'],
     ['color', '调色', 'palette', '亮度 / 对比度 / 饱和度 / 色温，实时预览'],
+    ['smart', '智能编辑', 'magic', '标出要改的地方 + 写一句要求，只改那里'],
     ['mask', '遮罩', 'brush', '涂出要重绘的区域，只改涂过的地方'],
     ['erase', '擦除', 'eraser', '涂掉不想要的东西，让模型用周围内容补全'],
     ['detext', '去字', 'text', '涂掉画面里的文字水印，用背景纹理补全'],
@@ -11212,7 +11213,7 @@
   ];
   // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
   // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
-  const IMG_TOOL_BREAKS = new Set(['mask', 'outpaint', 'download']);
+  const IMG_TOOL_BREAKS = new Set(['smart', 'outpaint', 'download']);
   // 窄屏收纳：这四个都是「整张交给模型重做一遍」，用得少、名字又长，宽度不够时收进
   // 「更多编辑」。裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载始终留在条上——它们是高频且
   // 一眼能认出图标的那几个。收起的按钮不做成 display:none 就完事：菜单里要能用 Tab 走到。
@@ -11222,9 +11223,10 @@
   const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成' };
   // 低于这个宽度就收起（1024×768 那档是主要目标：整条 640px 会横着压掉半个画布）
   const IMG_NARROW_W = 1200;
-  const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
+  const EDIT_LABEL = { smart: '智能编辑', upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
   // 这些工具都是「拿这张图当参考，让编辑工作流改一版」：提示词先给出可用的骨架，
   // 【】里的内容由用户替换。空着提示词点生成只会得到一张几乎一样的图，所以必须带模板。
+  // 智能编辑不在表里——它的提示词是用户在编辑器里自己写的，模板会把它盖掉。
   const EDIT_TPL = {
     upscale: '以这张图为参考，输出分辨率更高、细节更精细的版本：补充皮肤、发丝、材质与织物的纹理，'
       + '构图、人物、光线与色调保持完全一致。',
@@ -11234,7 +11236,7 @@
     detext: '把涂过区域里的文字、水印和标识去掉，用背景纹理和光影自然补全，保持画面干净、不留痕迹。',
   };
   // 每类工具该挑哪一类工作流。'mask' = 吃遮罩的那张（涂了才有效）。
-  const EDIT_WF = { upscale: 'upscale', cutout: 'img2img', erase: 'mask', detext: 'mask' };
+  const EDIT_WF = { smart: 'mask', upscale: 'upscale', cutout: 'img2img', erase: 'mask', detext: 'mask' };
   // 抠图有专门的抠像工作流时优先用它（名字命中即可）；没有就退回普通图像编辑
   const CUTOUT_HINTS = ['rembg', 'removebg', '抠图', '抠像', 'matting', 'birefnet', 'inspyrenet', 'segment'];
 
@@ -11446,6 +11448,7 @@
     if (kind === 'rotate') { openRotateMenu(n, btn); return; }
     if (kind === 'color') { openColorPanel(n); return; }
     if (kind === 'outpaint') { toggleOutpaint(n); return; }
+    if (kind === 'smart') { openSmartEdit(n); return; }
     if (kind === 'mask') { openMaskEditor(n); return; }
     if (kind === 'erase' || kind === 'detext') { openMaskEditor(n, { intent: kind }); return; }
     if (kind === 'download') { downloadImage(n); return; }
@@ -11960,25 +11963,28 @@
   // 挑工作流只看服务端扫出来的分类（server.py: graph_category），不看名字：
   // 按名字匹配时选中过 Moss_图像编辑 —— 那是个纯文生图流程，参考图根本没进图，
   // 高清出来的是一张全新的画。
-  function createEditNode(src, kind, maskDoc) {
-    const prompt = EDIT_TPL[kind] || '';
+  // 吃遮罩那一档该用哪份工作流：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 → 随便一份能吃图的。
+  // 中间这层必须有：用户明明设了默认，擦除 / 智能编辑却挑了列表里第一份吃图的，
+  // 看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能改。
+  function maskWorkflow() {
+    const all = wfOptions();
+    const def = all.find((o) => o.id === wfDefaultId('img2img'));
+    return all.find((o) => o.alphaMask) || def || all.find((o) => o.image) || null;
+  }
+
+  // opts.prompt：自带描述（智能编辑在编辑器里已经问过用户了，不该再拿模板盖掉）
+  function createEditNode(src, kind, maskDoc, opts = {}) {
+    const prompt = opts.prompt != null ? String(opts.prompt) : (EDIT_TPL[kind] || '');
     // 挑工作流看用途：高清要「放大」那一类；抠图有专门抠像工作流就用它，没有就退回图像编辑；
-    // 擦除 / 去字要**能吃图**的：吃遮罩的走原生（只重绘涂过的地方，最准），
+    // 擦除 / 去字 / 智能编辑要**能吃图**的：吃遮罩的走原生（只重绘涂过的地方，最准），
     // 只吃图的走裁切局部重绘（裁出涂的范围单独跑，出图贴回原位）——两条都算对。
     // 只在**真同类**里挑；这台机器上没有同类就留空——以前 pickWorkflow 会退到
     // 「第一个能用的」，于是点「高清放大」可能拿到纯文生图，出来是一张全新的画，
     // 用户以为高清坏了。
     const want = EDIT_WF[kind] || 'img2img';
     const hint = kind === 'cutout' ? pickWorkflowByHint(CUTOUT_HINTS) : '';
-    // 吃遮罩那一档（擦除 / 去字）的挑法：真吃 alpha 遮罩的 → 「图生图 / 编辑」的默认 →
-    // 随便一份能吃图的。中间这层必须有：用户明明设了默认，擦除却挑了列表里第一份吃图的
-    // 工作流，看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能擦。
-    const all = wfOptions();
-    const defHit = all.find((o) => o.id === wfDefaultId('img2img'));
-    const maskWf = ((all.find((o) => o.alphaMask) || {}).id || '')
-      || (defHit ? defHit.id : '')
-      || (((all.find((o) => o.image)) || {}).id || '');
-    const wf = hint || (want === 'mask' ? maskWf : pickWorkflow(want));
+    const maskHit = maskWorkflow();
+    const wf = hint || (want === 'mask' ? (maskHit ? maskHit.id : '') : pickWorkflow(want));
     const gen = { wf, prompt };
     const n = addImageNode(src.x + nodeWidth(src) + 60, src.y, {
       dataURL: src.dataURL,
@@ -11994,18 +12000,24 @@
     // 会直接跳过重建（保护打字焦点），而下面刚把光标放进新节点的提示词框——
     // 那时候再搬遮罩，DOM 不会刷新，节点上既没有药丸也没有预览，看着像没搬过去。
     if (maskDoc) carryMask(src, n, maskDoc);
-    const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
-    if (ta) {
-      ta.focus();
-      const r = document.createRange();
-      r.selectNodeContents(ta);
-      r.collapse(false);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(r);
+    // 自带描述的（智能编辑）不用再把光标塞进提示词框：用户刚写完，
+    // 而且这时候面板正跟着新节点重排，抢焦点只会把画布滚一下
+    if (opts.prompt == null) {
+      const ta = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"] .gen-prompt`);
+      if (ta) {
+        ta.focus();
+        const r = document.createRange();
+        r.selectNodeContents(ta);
+        r.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
     }
     flash(wf
-      ? `${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`
+      ? (opts.prompt != null
+        ? `${EDIT_LABEL[kind]}：标记和描述都带过去了，正在生成`
+        : `${EDIT_LABEL[kind]}：改掉提示词里【】的内容，再点生成`)
       : `${EDIT_LABEL[kind]}：这台机器上没有同类工作流，先在面板里选一个`);
     return n;
   }
@@ -12035,6 +12047,10 @@
         ...s,
         ...(s.pts ? { pts: s.pts.map((p) => p.slice()) } : {}),
         ...(s.rect ? { rect: s.rect.slice() } : {}),
+        // 智能编辑的三种标记：坐标都是数组，同样不能两个文档共用一份
+        ...(s.at ? { at: s.at.slice() } : {}),
+        ...(s.from ? { from: s.from.slice() } : {}),
+        ...(s.to ? { to: s.to.slice() } : {}),
       })),
     };
     queueSave();
@@ -13257,15 +13273,37 @@
 
   // solid=false：半透明预览（画在浮层和节点缩略图上给人看，颜色/透明度跟着本地偏好走）
   // solid=true ：全黑不透明（烘 alpha 与统计覆盖率用——destination-out 只看 alpha）
+  // 标记的种类。老存档里只有 tool（brush / eraser / rect），智能编辑又加了
+  // dot（点击）/ arrow（箭头）/ text（文字）。两种字段并存，别在每个渲染分支里各猜一次。
+  function strokeKind(s) {
+    if (!s) return 'brush';
+    if (s.kind) return s.kind;
+    return s.tool === 'rect' ? 'rect' : s.tool === 'eraser' ? 'eraser' : 'brush';
+  }
+  // 文字标记的字号直接跟着「粗细」走：再多一套数字，用户会觉得「调粗细」时灵时不灵
+  const markFont = (size) => `600 ${Math.max(12, size)}px system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif`;
+  // 文字标记的外接框。mask 里填的是这一整块，不是字形：
+  // 按字形填只会重绘几个笔画，出来看着像「没改」。
+  function markTextBox(ctx, s) {
+    const size = Math.max(12, s.size || 24);
+    ctx.save();
+    ctx.font = markFont(size);
+    const w = Math.max(size * 0.8, ctx.measureText(String(s.text || '')).width);
+    ctx.restore();
+    const at = s.at || [0, 0];
+    return [at[0], at[1], w, Math.round(size * 1.4)];
+  }
+
   function paintStrokes(ctx, doc, solid, style) {
     ctx.clearRect(0, 0, doc.w, doc.h);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     const ink = solid ? MASK_SOLID : maskPaint(style);
     for (const s of doc.strokes || []) {
+      const kind = strokeKind(s);
       // 矩形遮罩：MCP 的 set_mask 用它（AI 涂不了笔，但能圈一块区域）。
       // 和笔画共用同一份数据，所以浏览器打开时能看到 AI 圈的那块，也能接着改。
-      if (s.tool === 'rect') {
+      if (kind === 'rect') {
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
         ctx.globalCompositeOperation = 'source-over';
@@ -13273,11 +13311,57 @@
         ctx.fillRect(r[0], r[1], r[2], r[3]);
         continue;
       }
+      // 点击：一个小圆。用户点哪儿就是哪儿，不需要他为了「一小块」去涂满
+      if (kind === 'dot') {
+        const at = s.at || [];
+        const r = Math.max(1, s.r || 12);
+        if (at.length < 2) continue;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = ink;
+        ctx.beginPath();
+        ctx.arc(at[0], at[1], r, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+      // 箭头：一条带 + 一个三角头。只画线的话「指哪儿」在遮罩上看不出来，
+      // 而用户画箭头本来就是为了指出目标。
+      if (kind === 'arrow') {
+        const from = s.from || [];
+        const to = s.to || [];
+        if (from.length < 2 || to.length < 2) continue;
+        const lw = Math.max(2, s.size || 12);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = ink;
+        ctx.fillStyle = ink;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.moveTo(from[0], from[1]);
+        ctx.lineTo(to[0], to[1]);
+        ctx.stroke();
+        const ang = Math.atan2(to[1] - from[1], to[0] - from[0]);
+        const head = Math.max(lw * 1.8, 14);
+        ctx.beginPath();
+        ctx.moveTo(to[0], to[1]);
+        ctx.lineTo(to[0] - head * Math.cos(ang - 0.42), to[1] - head * Math.sin(ang - 0.42));
+        ctx.lineTo(to[0] - head * Math.cos(ang + 0.42), to[1] - head * Math.sin(ang + 0.42));
+        ctx.closePath();
+        ctx.fill();
+        continue;
+      }
+      // 文字：填外接框（见 markTextBox 的注释）
+      if (kind === 'text') {
+        const box = markTextBox(ctx, s);
+        if (!(box[2] > 0)) continue;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = ink;
+        ctx.fillRect(box[0], box[1], box[2], box[3]);
+        continue;
+      }
       // 橡皮走 destination-out，颜色无关、只看 alpha，所以必须用不透明色：
       // 拿 55% 的蓝去擦只能擦掉 55%，越擦越花
-      ctx.strokeStyle = s.tool === 'eraser' || solid ? MASK_SOLID : ink;
+      ctx.strokeStyle = kind === 'eraser' || solid ? MASK_SOLID : ink;
       ctx.fillStyle = ctx.strokeStyle;
-      ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+      ctx.globalCompositeOperation = kind === 'eraser' ? 'destination-out' : 'source-over';
       ctx.lineWidth = s.size;
       const pts = s.pts || [];
       if (!pts.length) continue;
@@ -13750,6 +13834,418 @@
     document.body.appendChild(root);
     redraw();
     refresh();
+  }
+
+  /* ---------------- 智能编辑：标出位置 + 说清要求 ---------------- */
+  // 「遮罩」那条路要用户分三步走：涂 → 关掉 → 去面板写提示词 → 再点生成。
+  // 提示词框离涂好的那块隔着半屏，没人会觉得这是「在编辑这一块」。
+  // 这里把三件事收进一个界面：标位置（点 / 框 / 笔 / 箭头 / 文字 / 橡皮）、写一句要求、点生成。
+  // 出图落在新节点，原图一个字节不动。
+  //
+  // 六种标记都算「这块要改」，最后合成**同一块遮罩**：dot → 圆、arrow → 带 + 三角头、
+  // text → 外接框。另有一层彩色标注单独画：遮罩只是半透明色块，不画出来就分不清
+  // 「我标的是箭头，还是随手涂了一笔」。
+  const SMART_TOOLS = [
+    ['dot', '点击', '点一下标出要改的地方（自动编号）'],
+    ['rect', '框选', '拖一个框圈住它'],
+    ['brush', '画笔', '自由涂出要改的范围'],
+    ['arrow', '箭头', '从起点拖到目标，指哪改哪'],
+    ['text', '文字', '在图上写一句备注（也决定重绘范围）'],
+    ['eraser', '橡皮', '擦掉标错的地方'],
+  ];
+  // 预设：空框最容易写出一句模型听不懂的话。点一下填进去，用户再改成具体的。
+  // 前四条故意留半句（「换成」后面等用户补），只有「删掉它」是完整指令。
+  const SMART_PRESETS = [
+    ['换衣服', '把标记区域里人物的衣服换成'],
+    ['换表情', '把标记区域里人物的表情改成'],
+    ['换背景', '把标记区域的背景换成'],
+    ['加个东西', '在标记区域加上'],
+    ['删掉它', '把标记区域里的东西去掉，用周围的背景、材质和光线自然补全，不要留下痕迹。'],
+  ];
+  const MARK_COLOR = '#ff3b30';   // 标注层：红 + 阴影，深底浅底上都看得见
+  let smartSession = null;
+
+  function openSmartEdit(n) {
+    if (!n || n.type !== 'image' || !n.dataURL) { flash('这个节点还没有图片，先出一张再来编辑'); return; }
+    const wf = maskWorkflow();
+    if (!wf) { flash('这台机器上没有能吃图的工作流：先去「工作流库」导入一个图生图 / 图像编辑'); return; }
+    if (smartSession) closeSmartEdit();
+    loadImageEl(n.dataURL)
+      .then((img) => buildSmartEdit(n, img, wf))
+      .catch(() => flash('图片加载失败，没法编辑'));
+  }
+
+  function closeSmartEdit() {
+    if (!smartSession) return;
+    try { smartSession.ac.abort(); } catch { /* 已经 abort 过 */ }
+    smartSession.root.remove();
+    smartSession = null;
+  }
+
+  // 标注层：只画标记本身（框线 / 箭头 / 序号 / 文字），范围由下面的遮罩层说明。
+  function paintMarks(ctx, doc) {
+    ctx.clearRect(0, 0, doc.w, doc.h);
+    // 线宽跟着图片分辨率走：2000px 的图上用固定 2px 会细成一根丝，缩到 25% 就看不见了
+    const k = Math.max(0.6, doc.w / 900);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 4 * k;
+    ctx.strokeStyle = MARK_COLOR;
+    ctx.fillStyle = MARK_COLOR;
+    let dots = 0;
+    for (const s of doc.strokes || []) {
+      const kind = strokeKind(s);
+      if (kind === 'rect') {
+        const r = s.rect || [];
+        if (!(r[2] > 0 && r[3] > 0)) continue;
+        ctx.lineWidth = 2 * k;
+        ctx.setLineDash([9 * k, 6 * k]);
+        ctx.strokeRect(r[0], r[1], r[2], r[3]);
+        ctx.setLineDash([]);
+      } else if (kind === 'arrow') {
+        const from = s.from || [];
+        const to = s.to || [];
+        if (from.length < 2 || to.length < 2) continue;
+        ctx.lineWidth = Math.max(2 * k, (s.size || 12) * 0.4);
+        ctx.beginPath();
+        ctx.moveTo(from[0], from[1]);
+        ctx.lineTo(to[0], to[1]);
+        ctx.stroke();
+        const ang = Math.atan2(to[1] - from[1], to[0] - from[0]);
+        const head = Math.max(16 * k, ctx.lineWidth * 3);
+        ctx.beginPath();
+        ctx.moveTo(to[0], to[1]);
+        ctx.lineTo(to[0] - head * Math.cos(ang - 0.42), to[1] - head * Math.sin(ang - 0.42));
+        ctx.lineTo(to[0] - head * Math.cos(ang + 0.42), to[1] - head * Math.sin(ang + 0.42));
+        ctx.closePath();
+        ctx.fill();
+      } else if (kind === 'dot') {
+        dots += 1;
+        const at = s.at || [];
+        if (at.length < 2) continue;
+        const r = Math.max(1, s.r || 12);
+        ctx.beginPath();
+        ctx.arc(at[0], at[1], r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 2.2 * k;
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
+        ctx.strokeStyle = MARK_COLOR;
+        // 序号：多处标记时，「1 换成红色、2 去掉」才对得上号
+        ctx.fillStyle = '#fff';
+        ctx.font = `700 ${Math.round(r * 1.05)}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(s.n || dots), at[0], at[1] + r * 0.04);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = MARK_COLOR;
+      } else if (kind === 'text') {
+        const box = markTextBox(ctx, s);
+        const pad = 5 * k;
+        // 先垫一层暗底：照片上什么颜色都有，白字直接写上去十次有三次看不清
+        ctx.fillStyle = 'rgba(8, 10, 14, 0.62)';
+        ctx.fillRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2);
+        ctx.lineWidth = 2 * k;
+        ctx.strokeStyle = MARK_COLOR;
+        ctx.strokeRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2);
+        ctx.font = markFont(Math.max(12, s.size || 24));
+        ctx.fillStyle = '#fff';
+        ctx.fillText(String(s.text || ''), box[0], box[1] + box[3] * 0.78);
+        ctx.fillStyle = MARK_COLOR;
+      }
+    }
+    ctx.restore();
+  }
+
+  function buildSmartEdit(n, img, wf) {
+    const W = img.naturalWidth || 1024;
+    const H = img.naturalHeight || 1024;
+    // 一次性：永远从空白开始，也不回写源节点——这块区域属于「这一次操作」，
+    // 不属于那张图（和擦除 / 去字同一个道理，否则下次打开是一片已经标满的区域）
+    const doc = { w: W, h: H, strokes: [] };
+
+    const root = document.createElement('div');
+    root.id = 'smartEdit';
+    root.innerHTML = `
+      <div class="se-bar">
+        <span class="se-title">智能编辑 · ${esc(n.title)}</span>
+        <div class="se-tools" role="group" aria-label="标记工具">
+          ${SMART_TOOLS.map(([k, label, tip], i) => `<button type="button" class="se-tool" data-tool="${k}"
+            aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}">${label}</button>`).join('')}
+        </div>
+        <label class="se-size">粗细 <input type="range" min="8" max="200" step="1" value="48"><b>48</b></label>
+        <button type="button" class="se-btn" data-act="undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
+        <button type="button" class="se-btn" data-act="clear" title="清空全部标记">清除</button>
+        <span class="se-spacer"></span>
+        <span class="se-count">还没有标记</span>
+        <button type="button" class="se-btn" data-act="cancel">取消</button>
+        <button type="button" class="se-run" data-act="run">生成</button>
+      </div>
+      <div class="se-body">
+        <div class="se-stage">
+          <div class="se-frame">
+            <img class="se-img" alt="">
+            <canvas class="se-cv se-mask"></canvas>
+            <canvas class="se-cv se-mark"></canvas>
+            <span class="se-hint">点一下 / 圈一块 / 涂一笔，标出要改的地方</span>
+          </div>
+        </div>
+        <aside class="se-side">
+          <label class="se-lbl" for="sePrompt">要改成什么样</label>
+          <textarea id="sePrompt" class="se-prompt" placeholder="例如：换成青花瓷盘，其他不要动"></textarea>
+          <div class="se-presets">
+            ${SMART_PRESETS.map(([label, text]) => `<button type="button" class="se-preset"
+              data-text="${esc(text)}">${label}</button>`).join('')}
+          </div>
+          <div class="se-wf">
+            <span class="se-lbl">工作流</span>
+            <b>${esc(wf.label)}</b>
+          </div>
+          <p class="se-tip">标记只决定「改哪里」，具体改成什么样写在上面的框里。出图会落在右边新节点，原图不动。</p>
+        </aside>
+      </div>`;
+
+    const frame = root.querySelector('.se-frame');
+    const stage = root.querySelector('.se-stage');
+    const cvMask = root.querySelector('.se-mask');
+    const cvMark = root.querySelector('.se-mark');
+    const countEl = root.querySelector('.se-count');
+    const promptEl = root.querySelector('#sePrompt');
+    const runBtn = root.querySelector('[data-act="run"]');
+    const undoBtn = root.querySelector('[data-act="undo"]');
+
+    root.querySelector('.se-img').src = n.dataURL;
+    cvMask.width = W;
+    cvMask.height = H;
+    cvMark.width = W;
+    cvMark.height = H;
+    const mctx = cvMask.getContext('2d');
+    const actx = cvMark.getContext('2d');
+
+    const ac = new AbortController();
+    const sess = { n, wf, doc, root, frame, stage, cv: cvMark, ac,
+      tool: 'dot', size: 48, draft: null, textInput: null };
+    smartSession = sess;
+
+    const redraw = () => {
+      paintStrokes(mctx, doc, false);
+      paintMarks(actx, doc);
+    };
+    const refresh = () => {
+      const marks = doc.strokes.filter((s) => strokeKind(s) !== 'eraser').length;
+      const pct = maskCover(doc);
+      // 一个点在大图上就是零点几个百分点，四舍五入成 0% 会读成「什么都没标」。
+      // 有标记但不足 1% 时写 <1%：数字可以粗，但不能自相矛盾。
+      countEl.textContent = marks
+        ? `标记 ${marks} 处 · 覆盖 ${pct > 0 ? `${pct}%` : '<1%'}`
+        : '还没有标记';
+      undoBtn.disabled = !doc.strokes.length;
+    };
+
+    // 显示尺寸按 contain 算一次写进 frame；落笔只在这一层换算
+    const fit = () => {
+      const aw = stage.clientWidth - 40;
+      const ah = stage.clientHeight - 40;
+      const k = Math.min(aw / W, ah / H, 1);
+      frame.style.width = `${Math.max(80, Math.round(W * k))}px`;
+      frame.style.height = `${Math.max(80, Math.round(H * k))}px`;
+    };
+    requestAnimationFrame(fit);
+    window.addEventListener('resize', fit, { signal: ac.signal });
+
+    const toDoc = (ev) => {
+      const r = cvMark.getBoundingClientRect();
+      const k = doc.w / r.width;
+      return [
+        Math.round(clamp((ev.clientX - r.left) * k, 0, doc.w)),
+        Math.round(clamp((ev.clientY - r.top) * k, 0, doc.h)),
+      ];
+    };
+    // 点击的圈大小按短边算：800 的图上 28px 是个圈，4000 的图上还是「一小块」
+    const dotRadius = () => Math.max(12, Math.round(Math.min(W, H) * 0.035));
+
+    // 文字标记：不用 window.prompt（它会挡住整屏、还没法定位）。
+    // 就地开一个 input，回车落字、Esc 取消、失焦算确认。
+    const askText = (ev, p) => {
+      if (sess.textInput) return;
+      const r = cvMark.getBoundingClientRect();
+      const inp = document.createElement('input');
+      inp.className = 'se-textin';
+      inp.type = 'text';
+      inp.maxLength = 40;
+      inp.placeholder = '写一句备注，回车确认';
+      inp.style.left = `${Math.round(ev.clientX - r.left)}px`;
+      inp.style.top = `${Math.round(ev.clientY - r.top)}px`;
+      frame.appendChild(inp);
+      sess.textInput = inp;
+      inp.focus();
+      let closed = false;
+      const done = (commit) => {
+        if (closed) return;
+        closed = true;
+        const text = inp.value.trim();
+        inp.remove();
+        sess.textInput = null;
+        if (!commit || !text) return;
+        doc.strokes.push({ kind: 'text', at: p, text, size: Math.max(24, sess.size) });
+        redraw();
+        refresh();
+      };
+      inp.onkeydown = (e) => {
+        e.stopPropagation();       // Esc 不能穿到「关掉整个编辑器」那条上
+        if (e.key === 'Enter') { e.preventDefault(); done(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      };
+      inp.onblur = () => done(true);
+    };
+
+    cvMark.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();        // 不让画布顺手拖节点 / 平移
+      if (ev.button !== 0) return;
+      if (sess.textInput) return;  // 正在写备注：先让它收尾
+      const p = toDoc(ev);
+      if (sess.tool === 'dot') {
+        const no = doc.strokes.filter((s) => strokeKind(s) === 'dot').length + 1;
+        doc.strokes.push({ kind: 'dot', at: p, r: dotRadius(), n: no });
+        redraw();
+        refresh();
+        return;
+      }
+      if (sess.tool === 'text') { askText(ev, p); return; }
+      if (sess.tool === 'rect') {
+        sess.draft = { kind: 'rect', origin: p, rect: [p[0], p[1], 0, 0] };
+      } else if (sess.tool === 'arrow') {
+        sess.draft = { kind: 'arrow', from: p, to: p.slice(), size: sess.size };
+      } else {
+        sess.draft = { kind: sess.tool, size: sess.size, pts: [p] };
+      }
+      doc.strokes.push(sess.draft);
+      redraw();
+    }, { signal: ac.signal });
+
+    // 走笔挂在 window 上：挂在 canvas 上一快就划出边界，后面的 move 全丢
+    window.addEventListener('pointermove', (ev) => {
+      const d = sess.draft;
+      if (!d) return;
+      const p = toDoc(ev);
+      if (d.kind === 'rect') {
+        d.rect = [
+          Math.min(d.origin[0], p[0]), Math.min(d.origin[1], p[1]),
+          Math.abs(p[0] - d.origin[0]), Math.abs(p[1] - d.origin[1]),
+        ];
+      } else if (d.kind === 'arrow') {
+        d.to = p;
+      } else {
+        const last = d.pts[d.pts.length - 1];
+        if (last && Math.abs(last[0] - p[0]) + Math.abs(last[1] - p[1]) < 1) return;
+        d.pts.push(p);
+      }
+      redraw();
+    }, { signal: ac.signal });
+
+    const endMark = () => {
+      const d = sess.draft;
+      sess.draft = null;
+      if (!d) return;
+      // 手抖点一下不该留下一个看不见的框 / 一根没有方向的箭头
+      const tiny = (d.kind === 'rect' && (d.rect[2] < 6 || d.rect[3] < 6))
+        || (d.kind === 'arrow' && Math.hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]) < 8);
+      if (tiny) doc.strokes.pop();
+      delete d.origin;
+      redraw();
+      refresh();
+    };
+    window.addEventListener('pointerup', endMark, { signal: ac.signal });
+    window.addEventListener('pointercancel', endMark, { signal: ac.signal });
+
+    root.querySelectorAll('[data-tool]').forEach((b) => {
+      b.onclick = () => {
+        sess.tool = b.dataset.tool;
+        root.querySelectorAll('[data-tool]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        cvMark.style.cursor = sess.tool === 'text' ? 'text' : sess.tool === 'dot' ? 'pointer' : 'crosshair';
+      };
+    });
+
+    const sizeEl = root.querySelector('.se-size input');
+    const sizeNum = root.querySelector('.se-size b');
+    const setSize = (v) => {
+      sess.size = Math.round(clamp(v, 8, 200));
+      sizeEl.value = sess.size;
+      sizeNum.textContent = sess.size;
+    };
+    sizeEl.oninput = () => setSize(Number(sizeEl.value));
+
+    root.querySelector('[data-act="undo"]').onclick = () => {
+      doc.strokes.pop();
+      redraw();
+      refresh();
+    };
+    root.querySelector('[data-act="clear"]').onclick = () => {
+      if (!doc.strokes.length) return;
+      doc.strokes.length = 0;
+      redraw();
+      refresh();
+    };
+    root.querySelector('[data-act="cancel"]').onclick = () => closeSmartEdit();
+    runBtn.onclick = () => smartRun();
+
+    // 预设接在已有内容后面：一次要改两处时，不用把前半句重打一遍
+    root.querySelectorAll('.se-preset').forEach((b) => {
+      b.onclick = () => {
+        const text = b.dataset.text || '';
+        const cur = promptEl.value.trim();
+        promptEl.value = cur ? `${cur}${/[。，；！？]$/.test(cur) ? '' : '，'}${text}` : text;
+        promptEl.focus();
+        promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+      };
+    });
+    // Ctrl/Cmd + Enter：手不用离开输入框就能跑
+    promptEl.onkeydown = (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); smartRun(); }
+    };
+
+    // 滚轮调粗细：在图上滚轮不该去缩放画布；侧栏里滚轮是滚文字，别调笔刷
+    root.addEventListener('wheel', (ev) => {
+      if (ev.target === promptEl) return;
+      ev.preventDefault();
+      setSize(sess.size + (ev.deltaY < 0 ? 4 : -4));
+    }, { passive: false, signal: ac.signal });
+
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); closeSmartEdit(); return; }
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
+        ev.preventDefault();
+        doc.strokes.pop();
+        redraw();
+        refresh();
+        return;
+      }
+      if (ev.key === '[') { ev.preventDefault(); setSize(sess.size - 4); }
+      if (ev.key === ']') { ev.preventDefault(); setSize(sess.size + 4); }
+    }, { signal: ac.signal });
+
+    document.body.appendChild(root);
+    redraw();
+    refresh();
+  }
+
+  // 生成：标记 + 描述一起交给新节点，然后**直接开跑**。
+  // 描述已经在编辑器里写完了，再让用户回到面板点一次「生成」纯属多一步。
+  function smartRun() {
+    const s = smartSession;
+    if (!s) return;
+    const prompt = String(s.root.querySelector('#sePrompt').value || '').trim();
+    if (!s.doc.strokes.length) { flash('先标出要改的地方：点一下、圈一块，或者涂一笔'); return; }
+    if (!prompt) { flash('再写一句要改成什么样，比如「换成青花瓷盘」'); s.root.querySelector('#sePrompt').focus(); return; }
+    const src = s.n;
+    const doc = s.doc;
+    closeSmartEdit();
+    const n = createEditNode(src, 'smart', doc, { prompt });
+    if (n && n.gen && n.gen.wf) generateImage(n);
   }
 
   /* ---------------- 裁剪浮层 ---------------- */

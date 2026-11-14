@@ -4020,6 +4020,137 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 #maskEditor .me-frame:hover .me-hint { opacity: 1; }
 
+/* ---------- 智能编辑：标位置 + 说要求，一个界面里做完 ----------
+   和遮罩编辑器同一套外壳（全屏深色 + 顶部一条 bar），区别是右边多一栏写描述：
+   「涂哪儿」和「改成什么样」必须在同一屏里，否则用户又得记住自己刚涂了什么。 */
+#smartEdit {
+  position: fixed; inset: 0; z-index: 230;
+  display: flex; flex-direction: column;
+  background: rgba(8, 10, 14, 0.95);
+  backdrop-filter: blur(6px);
+  animation: meIn 0.16s ease-out;
+}
+#smartEdit .se-bar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+#smartEdit .se-title {
+  font-size: 12px; color: var(--muted); margin-right: 4px;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#smartEdit .se-tools { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: var(--panel-2); }
+#smartEdit .se-tool {
+  height: 28px; padding: 0 11px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: none; color: var(--text);
+  font: inherit; font-size: 12px; cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+#smartEdit .se-tool:hover { background: rgba(255, 255, 255, 0.07); }
+#smartEdit .se-tool[aria-pressed="true"] {
+  background: var(--accent); color: #0b1220; border-color: var(--accent);
+}
+#smartEdit .se-btn {
+  height: 28px; padding: 0 11px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: none; color: var(--text);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+#smartEdit .se-btn:hover { background: rgba(255, 255, 255, 0.07); }
+#smartEdit .se-btn:disabled { opacity: 0.35; cursor: default; }
+#smartEdit .se-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+#smartEdit .se-size input { width: 100px; accent-color: var(--accent); }
+#smartEdit .se-size b { min-width: 28px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+#smartEdit .se-spacer { flex: 1 1 auto; }
+#smartEdit .se-count {
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  min-width: 96px; text-align: right;
+}
+#smartEdit .se-run {
+  height: 30px; padding: 0 18px; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--accent); color: #0b1220;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+#smartEdit .se-run:hover { filter: brightness(1.08); }
+
+#smartEdit .se-body { flex: 1 1 auto; min-height: 0; display: flex; }
+#smartEdit .se-stage {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 18px; overflow: hidden;
+}
+#smartEdit .se-frame {
+  position: relative; flex: 0 0 auto;
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+  background: #000;
+}
+#smartEdit .se-img { display: block; width: 100%; height: 100%; object-fit: fill; }
+/* 两层画布：底下那层是半透明遮罩（范围），上面那层是彩色标注（箭头 / 序号 / 文字）。
+   只有最上面那层收指针事件，底下两层纯显示。 */
+#smartEdit .se-cv {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+#smartEdit .se-mark { pointer-events: auto; cursor: pointer; touch-action: none; }
+#smartEdit .se-hint {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  padding: 5px 12px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62); color: #dfe6f2;
+  font-size: 11.5px; white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity 0.2s;
+}
+#smartEdit .se-frame:hover .se-hint { opacity: 1; }
+/* 文字标记的就地输入框：出现在点的位置，宽一点好写，深底浅字 */
+#smartEdit .se-textin {
+  position: absolute; z-index: 2;
+  min-width: 160px; max-width: 70%;
+  padding: 3px 7px;
+  border: 1px solid var(--accent); border-radius: 6px;
+  background: rgba(10, 14, 20, 0.92); color: #fff;
+  font: inherit; font-size: 12px; outline: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+#smartEdit .se-side {
+  flex: 0 0 clamp(260px, 26vw, 340px);
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 14px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  overflow-y: auto;
+}
+#smartEdit .se-lbl { font-size: 12px; color: var(--muted); }
+#smartEdit .se-prompt {
+  width: 100%; box-sizing: border-box;
+  min-height: 118px; max-height: 40vh; resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text);
+  font: inherit; font-size: 12.5px; line-height: 1.6;
+}
+#smartEdit .se-prompt:focus { outline: none; border-color: var(--accent); }
+#smartEdit .se-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+#smartEdit .se-preset {
+  height: 26px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: none; color: var(--text);
+  font: inherit; font-size: 11.5px; cursor: pointer;
+}
+#smartEdit .se-preset:hover { border-color: var(--accent); color: var(--accent); }
+#smartEdit .se-wf {
+  display: flex; align-items: center; gap: 8px;
+  padding-top: 9px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--muted);
+}
+#smartEdit .se-wf b {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); font-weight: 500;
+}
+#smartEdit .se-tip { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+
 /* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
    z-index 压在「查看大图」按钮下面，免得挡住它。 */
 .node.image .thumb .mask-ov {
