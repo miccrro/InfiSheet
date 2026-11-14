@@ -13818,26 +13818,23 @@
   //
   // **不走遮罩**：遮罩是二值的（改 / 不改），它说不清「这根箭头指着的那只碗」。
   // 画上去的箭头、圈、序号是模型看得懂的指示，和描述里那句「换成青花瓷盘」一起才构成完整要求。
+  // 每颗按钮只有图标：这条工具条长在节点里，宽度就是节点的宽度（380），
+  // 五个中文词 + 撤销 / 清除 / 滑杆 / 退出 挤不进一行。文字退到 title 和 aria-label。
   const SMART_TOOLS = [
     // 「点一下」和「圈一块」合成一个工具：抬手之前谁也说不准用户是想点还是想框，
     // 让他先选一次工具，多半会选错再返工。两种标记都编号，描述里「1 换成红色」才对得上号。
-    ['mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）'],
-    ['brush', '画笔', '自由涂出要改的范围'],
-    ['arrow', '箭头', '从起点拖到目标，指哪改哪'],
-    ['text', '文字', '在图上写一句备注（模型也看得见）'],
-    ['eraser', '橡皮', '擦掉标错的地方'],
+    ['mark', 'mark', '标注', '点一下标出位置，拖一下圈出一块（都会编号）'],
+    ['brush', 'brush', '画笔', '自由涂出要改的范围'],
+    ['arrow', 'arrow', '箭头', '从起点拖到目标，指哪改哪'],
+    ['text', 'text', '文字', '在图上写一句备注（模型也看得见）'],
+    ['eraser', 'eraser', '橡皮', '擦掉标错的地方'],
   ];
-  // 预设：空框最容易写出一句模型听不懂的话。点一下填进去，用户再改成具体的。
-  // 前四条故意留半句（「换成」后面等用户补），只有「删掉它」是完整指令。
-  const SMART_PRESETS = [
-    ['换衣服', '把标记区域里人物的衣服换成'],
-    ['换表情', '把标记区域里人物的表情改成'],
-    ['换背景', '把标记区域的背景换成'],
-    ['加个东西', '在标记区域加上'],
-    ['删掉它', '把标记区域里的东西去掉，用周围的背景、材质和光线自然补全，不要留下痕迹。'],
-  ];
-  const MARK_COLOR = '#ff3b30';                    // 标记：红 + 阴影，深浅底上都看得见
-  const MARK_SOFT = 'rgba(255, 59, 48, 0.5)';      // 画笔：半透明，别把底下的内容整个盖住
+  // 标记一律「白线 + 深色描边」。单色标记总有一种底图会吃掉它：纯白在雪地 / 白墙上消失，
+  // 纯红在暖色皮肤上糊成一片。白线外面套一圈深色，深底上白线跳出来、浅底上深边托住轮廓。
+  const MARK_INK = '#ffffff';
+  const MARK_HALO = 'rgba(8, 10, 14, 0.55)';       // 白线外面那道深色描边
+  const MARK_WASH = 'rgba(255, 255, 255, 0.12)';   // 框里那层淡白，圈出来的范围一眼看得见
+  const MARK_SOFT = 'rgba(255, 255, 255, 0.66)';   // 画笔：半透明，别把底下的内容整个盖住
 
   // 标注图是当「源图」送进去的，所以要挑**只吃图、不吃遮罩**的那种工作流：
   // 吃遮罩的那份拿不到遮罩（alpha 不透明 → mask 全 0），送进去等于什么都没改。
@@ -13899,65 +13896,91 @@
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    // 同一段路径描两遍：先粗的深色垫底，再压上细的白线。路径不用重建，
+    // 所以两条线严丝合缝，看起来是「白线带一道黑边」而不是两层。
+    const ink = (w) => {
+      ctx.strokeStyle = MARK_HALO;
+      ctx.lineWidth = w + 2.6 * k;
+      ctx.stroke();
+      ctx.strokeStyle = MARK_INK;
+      ctx.lineWidth = w;
+      ctx.stroke();
+    };
     const line = (pts, size) => {
       if (!pts.length) return;
-      ctx.lineWidth = Math.max(2, size);
+      const w = Math.max(2, size);
       if (pts.length === 1) {
         ctx.beginPath();
         ctx.arc(pts[0][0], pts[0][1], Math.max(1, size / 2), 0, Math.PI * 2);
+        ctx.fillStyle = MARK_SOFT;
         ctx.fill();
+        ctx.strokeStyle = MARK_HALO;
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
         return;
       }
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      // 画笔是半透明的，描边也淡一档：给它配一条和白线一样重的黑边会变成一根管子
+      ctx.strokeStyle = 'rgba(8, 10, 14, 0.32)';
+      ctx.lineWidth = w + 2 * k;
+      ctx.stroke();
+      ctx.strokeStyle = MARK_SOFT;
+      ctx.lineWidth = w;
       ctx.stroke();
     };
-    // 序号徽章：白圈红底白字。点和框共用一套编号（按落笔顺序），
+    // 圆角矩形：用 arcTo 手画，半径按短边收（框很小时别缩成椭圆）
+    const roundRect = (x, y, w, h, r) => {
+      const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    };
+    // 序号：白底深字的圆牌。点和框共用一套编号（按落笔顺序），
     // 这样描述里写「1 换成红色、2 去掉」时，两个编号指的是同一件事。
+    // 白底比红底安静，但在深色画面上更亮——编号是唯一能把「描述里的 1」和「图上的 1」
+    // 对上的东西，宁可抢眼也不能看不清。
     const badge = (x, y, no, r) => {
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = MARK_INK;
       ctx.fill();
-      ctx.lineWidth = 2.2 * k;
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = MARK_HALO;
+      ctx.lineWidth = 2.4 * k;
       ctx.stroke();
-      ctx.strokeStyle = MARK_COLOR;
-      ctx.fillStyle = '#fff';
-      ctx.font = `700 ${Math.round(r * 1.05)}px system-ui, sans-serif`;
+      ctx.fillStyle = '#12161c';
+      ctx.font = `700 ${Math.round(r * 1.02)}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(no), x, y + r * 0.04);
       ctx.textAlign = 'start';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = MARK_COLOR;
     };
     const badgeR = () => Math.max(12, Math.round(Math.min(doc.w, doc.h) * 0.035));
     let no = 0;
     for (const s of doc.strokes || []) {
       const kind = strokeKind(s);
       if (kind === 'brush' || kind === 'eraser') {
-        // 画笔和橡皮都不带阴影：一条半透明的粗线再加投影只会糊成一团
-        ctx.shadowBlur = 0;
         ctx.globalCompositeOperation = kind === 'eraser' ? 'destination-out' : 'source-over';
-        ctx.strokeStyle = kind === 'eraser' ? '#000' : MARK_SOFT;
-        ctx.fillStyle = ctx.strokeStyle;
         line(s.pts || [], s.size || 12);
         ctx.globalCompositeOperation = 'source-over';
         continue;
       }
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-      ctx.shadowBlur = 4 * k;
-      ctx.strokeStyle = MARK_COLOR;
-      ctx.fillStyle = MARK_COLOR;
       if (kind === 'rect') {
         const r = s.rect || [];
         if (!(r[2] > 0 && r[3] > 0)) continue;
         no += 1;
-        ctx.lineWidth = 3 * k;
-        ctx.setLineDash([9 * k, 6 * k]);
-        ctx.strokeRect(r[0], r[1], r[2], r[3]);
-        ctx.setLineDash([]);
+        // 实线 + 淡底，不用虚线：虚线在密集的背景纹理上会碎成一段一段，
+        // 远看像画面本身的噪点；一圈干净的实线加一层薄白才是「我圈住了这块」。
+        roundRect(r[0], r[1], r[2], r[3], Math.min(r[2], r[3]) * 0.08 + 6 * k);
+        ctx.fillStyle = MARK_WASH;
+        ctx.fill();
+        ink(2.2 * k);
         // 编号贴在框的左上角（夹在画面内，免得贴着边缘时被裁掉半个）
         const br = badgeR();
         badge(clamp(r[0], br + 2, Math.max(br + 2, doc.w - br - 2)),
@@ -13966,19 +13989,25 @@
         const from = s.from || [];
         const to = s.to || [];
         if (from.length < 2 || to.length < 2) continue;
-        ctx.lineWidth = Math.max(2 * k, (s.size || 12) * 0.4);
+        const w = Math.max(2.4 * k, (s.size || 12) * 0.42);
+        const ang = Math.atan2(to[1] - from[1], to[0] - from[0]);
+        const head = Math.max(16 * k, w * 3.2);
+        // 杆子缩进一个箭头长：不然线头的圆帽会从三角尖端戳出来一小截
         ctx.beginPath();
         ctx.moveTo(from[0], from[1]);
-        ctx.lineTo(to[0], to[1]);
-        ctx.stroke();
-        const ang = Math.atan2(to[1] - from[1], to[0] - from[0]);
-        const head = Math.max(16 * k, ctx.lineWidth * 3);
+        ctx.lineTo(to[0] - head * 0.7 * Math.cos(ang), to[1] - head * 0.7 * Math.sin(ang));
+        ink(w);
+        // 箭头：白色实心三角 + 深色描边，和杆子同一套配色
         ctx.beginPath();
         ctx.moveTo(to[0], to[1]);
         ctx.lineTo(to[0] - head * Math.cos(ang - 0.42), to[1] - head * Math.sin(ang - 0.42));
         ctx.lineTo(to[0] - head * Math.cos(ang + 0.42), to[1] - head * Math.sin(ang + 0.42));
         ctx.closePath();
+        ctx.fillStyle = MARK_INK;
         ctx.fill();
+        ctx.strokeStyle = MARK_HALO;
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
       } else if (kind === 'dot') {
         no += 1;
         const at = s.at || [];
@@ -13986,17 +14015,17 @@
         badge(at[0], at[1], s.n || no, Math.max(1, s.r || badgeR()));
       } else if (kind === 'text') {
         const box = markTextBox(ctx, s);
-        const pad = 5 * k;
+        const pad = 6 * k;
         // 先垫一层暗底：照片上什么颜色都有，白字直接写上去十次有三次看不清
-        ctx.fillStyle = 'rgba(8, 10, 14, 0.62)';
-        ctx.fillRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2);
-        ctx.lineWidth = 2 * k;
-        ctx.strokeStyle = MARK_COLOR;
-        ctx.strokeRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2);
+        roundRect(box[0] - pad, box[1] - pad, box[2] + pad * 2, box[3] + pad * 2, 5 * k);
+        ctx.fillStyle = 'rgba(8, 10, 14, 0.72)';
+        ctx.fill();
+        ctx.strokeStyle = MARK_INK;
+        ctx.lineWidth = 1.6 * k;
+        ctx.stroke();
         ctx.font = markFont(Math.max(12, s.size || 24));
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = MARK_INK;
         ctx.fillText(String(s.text || ''), box[0], box[1] + box[3] * 0.78);
-        ctx.fillStyle = MARK_COLOR;
       }
     }
     ctx.restore();
@@ -14042,31 +14071,34 @@
     bar.dataset.smartFor = n.id;
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', '智能编辑的标记工具');
+    // 一条到底：五个标记工具 / 撤销·清除 / 粗细 / 退出，中间用细分隔线分组。
+    // 只有图标，文字退到 title（节点宽度 380，五个中文词 + 这些控件一行放不下）。
     bar.innerHTML = `
       <div class="sm-tools" role="group" aria-label="标记工具">
-        ${SMART_TOOLS.map(([k, label, tip], i) => `<button type="button" class="sm-tool" data-tool="${k}"
-          aria-pressed="${i === 0 ? 'true' : 'false'}" title="${tip}" aria-label="${label}：${tip}">${label}</button>`).join('')}
+        ${SMART_TOOLS.map(([k, ico, label, tip], i) => `<button type="button" class="sm-tool" data-tool="${k}"
+          data-icon="${ico}" aria-pressed="${i === 0 ? 'true' : 'false'}"
+          title="${tip}" aria-label="${label}：${tip}"></button>`).join('')}
       </div>
-      <div class="sm-row">
-        <button type="button" class="sm-btn" data-act="undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
-        <button type="button" class="sm-btn" data-act="clear" title="清空全部标记">清除</button>
-        <label class="sm-size" title="标记的粗细（[ ] 也能调）">
-          <input type="range" min="8" max="200" step="1" value="48" aria-label="标记粗细"><b>48</b></label>
-        <span class="sm-count">还没有标记</span>
-        <button type="button" class="sm-btn sm-exit" data-act="exit" title="退出标记模式（Esc）">退出</button>
-      </div>
-      <div class="sm-presets" role="group" aria-label="常用要求">
-        ${SMART_PRESETS.map(([label, text]) => `<button type="button" class="sm-preset"
-          data-text="${esc(text)}">${label}</button>`).join('')}
-      </div>`;
+      <span class="sm-sep" aria-hidden="true"></span>
+      <button type="button" class="sm-btn" data-act="undo" data-icon="undo"
+        title="撤销上一笔（Ctrl+Z）" aria-label="撤销"></button>
+      <button type="button" class="sm-btn" data-act="clear" data-icon="clear"
+        title="清空全部标记" aria-label="清除"></button>
+      <span class="sm-sep" aria-hidden="true"></span>
+      <label class="sm-size" title="标记的粗细 48（[ ] 也能调）">
+        <input type="range" min="8" max="200" step="1" value="48" aria-label="标记粗细"></label>
+      <span class="sm-sep" aria-hidden="true"></span>
+      <button type="button" class="sm-btn sm-exit" data-act="exit" data-icon="close"
+        title="退出标记模式（Esc）" aria-label="退出"></button>`;
     // 点工具条不能把节点选丢了
     bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     panel.parentElement.insertBefore(bar, panel);
+    // 图标是 data-icon 挂上去的（和首页、底栏同一套），插进 DOM 之后再水合
+    if (window.hydrateIcons) window.hydrateIcons(bar);
 
-    const countEl = bar.querySelector('.sm-count');
     const undoBtn = bar.querySelector('[data-act="undo"]');
     const sizeEl = bar.querySelector('.sm-size input');
-    const sizeNum = bar.querySelector('.sm-size b');
+    const sizeLabel = bar.querySelector('.sm-size');
     const ta = panel.querySelector('.gen-prompt');
     // 空着的时候换一句「这里该写什么」：这个框平时是「生图提示词」，此刻是「要改成什么样」
     if (ta && !promptText(ta).trim()) ta.dataset.ph = '要改成什么样？例如：换成青花瓷盘，其他不要动';
@@ -14084,9 +14116,11 @@
     const focused = () => alive() && state.selected.has(n.id);
 
     const redraw = () => paintAnnotations(ctx, doc);
+    // 不摆「N 处」的计数：这一行只有 320px，一个计数胶囊就把滑杆挤成一条缝。
+    // 图上的编号（1、2、3…）本来就是计数，再加一遍是重复。数字挂到 data 上给测试读。
     const refresh = () => {
       const marks = doc.strokes.filter((s) => strokeKind(s) !== 'eraser').length;
-      countEl.textContent = marks ? `标记 ${marks} 处` : '还没有标记';
+      bar.dataset.marks = String(marks);
       undoBtn.disabled = !doc.strokes.length;
       queueSave();
     };
@@ -14218,7 +14252,9 @@
     const setSize = (v) => {
       sess.size = Math.round(clamp(v, 8, 200));
       sizeEl.value = sess.size;
-      sizeNum.textContent = sess.size;
+      // 数字放进 title：滑杆旁边再挤一个「48」，一行里第二个裸数字，
+      // 和右边的工具图标不是一个量级的东西，看着像标签掉了
+      sizeLabel.title = `标记的粗细 ${sess.size}（[ ] 也能调）`;
     };
     sizeEl.oninput = () => setSize(Number(sizeEl.value));
 
@@ -14231,24 +14267,6 @@
       refresh();
     };
     bar.querySelector('[data-act="exit"]').onclick = () => exitSmartEdit(n);
-
-    // 预设接在已有内容后面：一次要改两处时，不用把前半句重打一遍
-    bar.querySelectorAll('.sm-preset').forEach((b) => {
-      b.onclick = () => {
-        const text = b.dataset.text || '';
-        if (!ta) { flash('这个节点没有提示词框：先点标题上的「生成」把面板打开'); return; }
-        const cur = promptText(ta).trim();
-        fillPrompt(ta, cur ? `${cur}${/[。，；！？]$/.test(cur) ? '' : '，'}${text}` : text, n);
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        ta.focus();
-        const r = document.createRange();
-        r.selectNodeContents(ta);
-        r.collapse(false);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(r);
-      };
-    });
 
     window.addEventListener('keydown', (ev) => {
       if (!focused()) return;

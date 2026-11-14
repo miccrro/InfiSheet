@@ -7486,14 +7486,22 @@ try {
     if (!cv || !bar) return null;
     const r = cv.getBoundingClientRect();
     const btn = document.querySelector('#imgTools [data-tool="smart"]');
+    const tool = bar.querySelector('.sm-tool');
+    const rgb = (s) => (s.match(/[\\d.]+/g) || []).slice(0, 3).map(Number);
+    const neutral = (s) => { const c = rgb(s); return c.length === 3
+      && Math.abs(c[0] - c[1]) <= 2 && Math.abs(c[1] - c[2]) <= 2; };
     return {
-      tools: [...bar.querySelectorAll('.sm-tool')].map((b) => b.textContent.trim()),
-      pressed: (bar.querySelector('.sm-tool[aria-pressed="true"]') || {}).textContent || '',
-      presets: bar.querySelectorAll('.sm-preset').length,
+      tools: [...bar.querySelectorAll('.sm-tool')].map((b) => b.dataset.tool),
+      pressed: (bar.querySelector('.sm-tool[aria-pressed="true"]') || { dataset: {} }).dataset.tool || '',
+      icons: bar.querySelectorAll('.sm-tool svg').length,
       hasPrompt: !!document.querySelector('.gen-panel .gen-prompt'),
       cv: [cv.width, cv.height],
       box: [r.left, r.top, r.width, r.height],
-      count: bar.querySelector('.sm-count').textContent.trim(),
+      marks: bar.dataset.marks || '',
+      barH: Math.round(bar.getBoundingClientRect().height),
+      toolH: Math.round(tool.getBoundingClientRect().height),
+      bgNeutral: neutral(getComputedStyle(bar).backgroundColor),
+      activeNeutral: neutral(getComputedStyle(bar.querySelector('.sm-tool[aria-pressed="true"]')).backgroundColor),
       overlay: !!document.getElementById('smartEdit'),
       inNode: bar.closest('.node') === document.querySelector('#nodes .node.image'),
       on: !!btn && btn.classList.contains('on'),
@@ -7501,22 +7509,34 @@ try {
   })()`, 8000).catch(() => null);
   // 「点一下」和「圈一块」合并成一个「标注」：抬手之前谁也说不准用户想点还是想框，
   // 让他先选一次工具多半会选错再返工。两种标记都编号。
-  check('点「智能编辑」→ 标记层盖在节点图上：五种标记 + 描述框 + 预设都在，**没有独立编辑器**',
-    !!smartOpen && smartOpen.tools.join('/') === '标注/画笔/箭头/文字/橡皮'
-      && smartOpen.pressed === '标注' && smartOpen.hasPrompt && smartOpen.presets === 5
+  check('点「智能编辑」→ 一条图标工具条长在节点里：五个标记工具 + 描述框，**没有独立编辑器**',
+    !!smartOpen && smartOpen.tools.join('/') === 'mark/brush/arrow/text/eraser'
+      && smartOpen.pressed === 'mark' && smartOpen.icons === 5 && smartOpen.hasPrompt
       && smartOpen.overlay === false && smartOpen.inNode === true && smartOpen.on === true,
     JSON.stringify(smartOpen && { tools: smartOpen.tools, pressed: smartOpen.pressed,
-      presets: smartOpen.presets, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
+      icons: smartOpen.icons, overlay: smartOpen.overlay, inNode: smartOpen.inNode, on: smartOpen.on }));
+  // 五个工具 / 撤销·清除 / 粗细 / 计数 / 退出 必须排在**一行**里：
+  // 以前是「工具一行 + 撤销那一行 + 预设一行」三层，节点下面挂了半屏的按钮。
+  check('工具条整合成一条：所有控件排在同一行（条高 < 42，没有第二层）',
+    !!smartOpen && smartOpen.barH < 42 && smartOpen.barH >= smartOpen.toolH,
+    smartOpen ? `bar=${smartOpen.barH} tool=${smartOpen.toolH}` : 'none');
+  // 底色统一成中性灰，不再有红色：红框 + 红底 + 红胶囊那版看着像警告条，
+  // 红色在这个 app 里只留给「危险」（删除 / 关闭服务）。
+  check('工具条底色是中性灰，选中的工具也不靠红色（红色只留给危险操作）',
+    !!smartOpen && smartOpen.bgNeutral === true && smartOpen.activeNeutral === true,
+    JSON.stringify({ bg: smartOpen && smartOpen.bgNeutral, active: smartOpen && smartOpen.activeNeutral }));
   check('智能编辑：canvas 内部尺寸 = 原图像素（不然标记整体错位）',
     !!smartOpen && smartOpen.cv[0] === smartPick.nat[0] && smartOpen.cv[1] === smartPick.nat[1],
     smartOpen ? `cv=${smartOpen.cv} img=${smartPick.nat}` : 'none');
+  // 计数不进工具条（320px 里塞一个胶囊就把滑杆挤成一条缝），挂在 data-marks 上给断言读；
+  // 图上那串 1、2、3… 本来就是计数
   check('智能编辑：一打开是空的（这些标记属于这一次操作，不沿用上次）',
-    !!smartOpen && /还没有标记/.test(smartOpen.count), smartOpen && smartOpen.count);
+    !!smartOpen && smartOpen.marks === '0', smartOpen && smartOpen.marks);
 
   const sb = smartOpen.box;
   const sAt = (fx, fy) => ({ x: sb[0] + sb[2] * fx, y: sb[1] + sb[3] * fy });
   const smartSel = '#nodes .node.image .sm-bar';
-  const smartCount = () => page.evaluate(`document.querySelector('${smartSel} .sm-count').textContent.trim()`);
+  const smartCount = () => page.evaluate(`document.querySelector('${smartSel}').dataset.marks || ''`);
   const smartTool = (k) => page.evaluate(`document.querySelector('${smartSel} [data-tool="${k}"]').click()`);
   const promptSel = `.gen-panel[data-panel-for="${smartPick.id}"] .gen-prompt`;
 
@@ -7543,17 +7563,17 @@ try {
     beforeClick.same === true && beforeClick.pe !== 'none' && beforeClick.bars === 1,
     JSON.stringify(beforeClick));
   await page.clickAt(sAt(0.5, 0.5).x, sAt(0.5, 0.5).y, { settle: 220 });
-  check('点击：点一下就有一个带编号的标记', /标记 1 处/.test(await smartCount()),
+  check('点击：点一下就有一个带编号的标记', await smartCount() === '1',
     `${await smartCount()} · ${JSON.stringify(beforeClick)}`);
   // 同一个「标注」工具，拖一下就变成框——不用先换工具，框也带编号（1、2 连着排）
   await page.drag(sAt(0.2, 0.62), sAt(0.5, 0.84), { steps: 10, settle: 250 });
   check('框选：同一个「标注」工具拖一下就圈住一块（框也带编号）',
-    /标记 2 处/.test(await smartCount()), await smartCount());
+    await smartCount() === '2', await smartCount());
 
   // 箭头：指哪改哪
   await smartTool('arrow');
   await page.drag(sAt(0.2, 0.24), sAt(0.42, 0.4), { steps: 10, settle: 250 });
-  check('箭头：拖出一条指向目标的箭头', /标记 3 处/.test(await smartCount()), await smartCount());
+  check('箭头：拖出一条指向目标的箭头', await smartCount() === '3', await smartCount());
 
   // 文字：点一下就地输入，回车落字
   await smartTool('text');
@@ -7567,19 +7587,19 @@ try {
   await new Promise((r) => setTimeout(r, 250));
   const afterText = await smartCount();
   check('文字：就地输入框出现，回车后落成一个标记、输入框收掉',
-    textInputShown === true && /标记 4 处/.test(afterText)
+    textInputShown === true && afterText === '4'
       && (await page.evaluate(`!document.querySelector('.sm-textin')`)) === true,
     `${textInputShown} · ${afterText}`);
 
   // 撤销回到上一步
   await page.evaluate(`document.querySelector('${smartSel} [data-act="undo"]').click()`);
-  check('撤销：撤掉最后一笔', /标记 3 处/.test(await smartCount()), await smartCount());
+  check('撤销：撤掉最后一笔', await smartCount() === '3', await smartCount());
 
-  // 预设：点一下把句子填进**这个节点自己的**提示词框
-  await page.evaluate(`document.querySelector('${smartSel} .sm-preset').click()`);
-  const presetVal = await page.evaluate(`(document.querySelector('${promptSel}') || {}).textContent || ''`);
-  check('预设：点「换衣服」把半句填进节点的提示词框（用户再补具体的）',
-    /把标记区域里人物的衣服换成$/.test(presetVal.trim()), presetVal);
+  // 预设那一排撤了：五个常用句子占掉整行，写要求本来就是在下面的提示词框里写。
+  // 这里改成确认它真的没了——留一条「不会再长回来」的回归。
+  check('预设那一排已经撤掉（工具条只剩一行图标控件）',
+    (await page.evaluate(`document.querySelectorAll('${smartSel} .sm-preset').length`)) === 0,
+    'presets');
 
   // 没写描述就点生成：拦住，标记不丢（模式不退出）
   await page.evaluate(`(() => {
@@ -7619,13 +7639,13 @@ try {
         const c = cv.getContext('2d');
         c.drawImage(bm, 0, 0);
         const px = (x, y) => { const d = c.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; };
-        // 点击在 (50%,50%)，半径 18：取圈内偏右一点，避开中间那个白色的「1」
+        // 点击在 (50%,50%)，编号牌半径 18：取圈内偏右一点，避开中间那个深色的「1」
         upDot = px(Math.round(bm.width * 0.5) + 10, Math.round(bm.height * 0.5));
-        // 箭头从 (20%,24%) 拖到 (42%,40%)：沿线中点应该压着红线
+        // 箭头从 (20%,24%) 拖到 (42%,40%)：沿线中点应该压着白线
         upArrow = px(Math.round(bm.width * 0.31), Math.round(bm.height * 0.32));
         // 框的编号徽章：框从 (20%,62%) 拖开，序号画在框左上角、半径 18。
-        // 取 (+12,+8) 这个点：在圆内、避开中间的白字，也避开框线本身（下面 8px 处）。
-        // 这一格在图上本来是棕色地面，红了只可能是徽章。
+        // 取 (+12,+8) 这个点：在圆内、避开中间那个深色的「2」，也避开圆边本身。
+        // 这一格在图上本来是棕色地面，白了只可能是编号牌。
         upRect = px(Math.round(bm.width * 0.2) + 12, Math.round(bm.height * 0.62) + 8);
         // 没标过的角落：必须和原图一模一样（否则说明整张被涂了）
         upCorner = px(4, 4);
@@ -7683,16 +7703,17 @@ try {
   check('智能编辑：挑的是**只吃图**的工作流（不是吃遮罩的局部重绘）',
     !!smartGen.wf && !/局部重绘/.test(smartGen.wf), smartGen.wf);
   // 这条是整个功能的立论：交给模型的是**画了标记的那张图**，不是遮罩
-  check('智能编辑：传给模型的是标注图（点 / 箭头位置是红的，没标的地方原样）',
+  // 标记是「白线 + 深色描边」：单色标记总有一种底图会吃掉它，所以这里验的是白色本身
+  check('智能编辑：传给模型的是标注图（点 / 箭头位置是白的，没标的地方原样）',
     smartGen.upSize && smartGen.upSize[0] === 512
-      && smartGen.upDot && smartGen.upDot[0] > 180 && smartGen.upDot[1] < 130
-      && smartGen.upArrow && smartGen.upArrow[0] > 150 && smartGen.upArrow[1] < 140
+      && smartGen.upDot && smartGen.upDot[0] > 235 && smartGen.upDot[1] > 235 && smartGen.upDot[2] > 235
+      && smartGen.upArrow && smartGen.upArrow[0] > 235 && smartGen.upArrow[1] > 235 && smartGen.upArrow[2] > 235
       && JSON.stringify(smartGen.upCorner) === JSON.stringify(smartGen.srcCorner),
     JSON.stringify({ size: smartGen.upSize, dot: smartGen.upDot, arrow: smartGen.upArrow,
       corner: smartGen.upCorner, srcCorner: smartGen.srcCorner }));
   // 框也带编号：点和框共用一套序号，描述里写「1 换成红色、2 去掉」才对得上号
-  check('框选：框的左上角也画了编号（红底白字，就在交给模型的那张图上）',
-    smartGen.upRect && smartGen.upRect[0] > 180 && smartGen.upRect[1] < 130,
+  check('框选：框的左上角也画了编号（白底深字，就在交给模型的那张图上）',
+    smartGen.upRect && smartGen.upRect[0] > 235 && smartGen.upRect[1] > 235 && smartGen.upRect[2] > 235,
     JSON.stringify(smartGen.upRect));
   check('智能编辑：上传的是标注图本身（<节点id>-edit.png，不是 -mask.png）',
     /^.+-edit\.png$/.test(smartGen.upName || '') && !/-mask\.png$/.test(smartGen.upName || ''),

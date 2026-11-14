@@ -2523,7 +2523,7 @@ button.primary { border-radius: 999px; }
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。
    底栏的 .dock-btn 也是：它现在是「图标 + 文字」的宽按钮，要的是 10px 圆角矩形，
    做成 999px 会变成一颗药丸。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -4040,53 +4040,65 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   font: inherit; font-size: 12px; outline: none;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
-/* 工具条：跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」 */
+/* 工具条：**一条**，跟着节点走（不是屏幕坐标的浮条），和生成面板一样「选中才有」。
+   底色只有一层中性灰。以前是「红框 + 红底 + 红胶囊」——一条工具条上三种红，
+   看着像警告条；红色只该留给「危险」，工具条是常态界面。
+   宽度就是节点宽度（380），控件得省着用：工具只放图标，文字退到 title 里。 */
 .sm-bar {
   margin: 6px 0 3px;
-  padding: 6px;
-  display: flex; flex-direction: column; gap: 5px;
-  border: 1px solid rgba(255, 59, 48, 0.34);
+  padding: 4px;
+  display: flex; align-items: center; gap: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 9px;
-  background: rgba(255, 59, 48, 0.07);
+  /* 不透明：画布有一层点阵网格，半透明底会把网格漏进来，一排工具上顶着几个灰点，
+     看着像图标画脏了 */
+  background: var(--panel-2);
 }
 .node:not(.selected) .sm-bar { display: none; }
-.sm-bar .sm-tools {
-  display: flex; gap: 3px; padding: 3px;
-  border-radius: 8px; background: rgba(255, 255, 255, 0.05);
+.sm-bar .sm-tools { display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }
+/* 工具和动作共用一种方按钮：26×26、7px 圆角、透明底。
+   选中不靠换颜色、靠「提亮」：一排里只有一颗是亮的，一眼看得出当前拿的是哪把工具。 */
+.sm-bar .sm-tool, .sm-bar .sm-btn {
+  width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border: none; border-radius: 7px;
+  background: transparent; color: var(--dim);
+  cursor: pointer; transition: background 0.14s, color 0.14s;
 }
-.sm-bar .sm-tool {
-  flex: 1 1 auto; height: 24px; padding: 0 4px;
-  border: 1px solid transparent; border-radius: 6px;
-  background: none; color: var(--text);
-  font: inherit; font-size: 11.5px; cursor: pointer;
-  transition: background 0.14s, color 0.14s, border-color 0.14s;
+.sm-bar .sm-tool svg, .sm-bar .sm-btn svg { width: 17px; height: 17px; }
+.sm-bar .sm-tool:hover, .sm-bar .sm-btn:hover { background: rgba(255, 255, 255, 0.09); color: var(--text); }
+.sm-bar .sm-tool[aria-pressed="true"] { background: rgba(255, 255, 255, 0.18); color: #fff; }
+.sm-bar .sm-btn:disabled { opacity: 0.3; cursor: default; }
+.sm-bar .sm-btn:disabled:hover { background: transparent; color: var(--dim); }
+/* 分组用的细分隔线：比分一个「浅一点的底」安静，也不额外占宽度 */
+.sm-bar .sm-sep { width: 1px; height: 15px; flex: 0 0 auto; margin: 0 2px; background: rgba(255, 255, 255, 0.12); }
+/* 粗细：滑杆吃掉剩余宽度（节点被拉宽时只有它该长）。数字不摆在旁边——
+   它右边紧跟着「5 处」，一行里两个裸数字看着像同一件事的两个值；数字进 title。 */
+.sm-bar .sm-size { display: flex; align-items: center; flex: 1 1 60px; min-width: 40px; padding: 0 2px; }
+/* 原生 range 的滑块在 14px 高里是个大圆钮，缩到这条工具条上像颗开关。
+   自己画：3px 轨道 + 10px 白色小圆点。 */
+.sm-bar .sm-size input {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; min-width: 0; height: 14px; margin: 0;
+  /* 全局 input 有 1px 边框 + 7px 圆角，不清掉的话滑杆外面会多一个空胶囊 */
+  border: 0; border-radius: 0; background: none; cursor: pointer;
 }
-.sm-bar .sm-tool:hover { background: rgba(255, 255, 255, 0.08); }
-.sm-bar .sm-tool[aria-pressed="true"] { background: #ff3b30; border-color: #ff3b30; color: #fff; }
-.sm-bar .sm-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.sm-bar .sm-btn {
-  height: 24px; padding: 0 7px;
-  border: 1px solid var(--line); border-radius: 6px;
-  background: none; color: var(--text);
-  font: inherit; font-size: 11.5px; cursor: pointer;
+.sm-bar .sm-size input::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.18);
 }
-.sm-bar .sm-btn:hover { background: rgba(255, 255, 255, 0.08); }
-.sm-bar .sm-btn:disabled { opacity: 0.35; cursor: default; }
-/* 粗细只留滑杆 + 数字：节点面板只有 320 来像素，加「粗细」两个字就把「退出」挤到下一行 */
-.sm-bar .sm-size { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); }
-.sm-bar .sm-size input { width: 54px; accent-color: #ff3b30; }
-.sm-bar .sm-size b { min-width: 18px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.sm-bar .sm-count {
-  margin-left: auto; font-size: 11.5px; color: var(--muted);
-  font-variant-numeric: tabular-nums; white-space: nowrap;
+.sm-bar .sm-size input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px; margin-top: -3.5px;
+  border: none; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
-.sm-bar .sm-presets { display: flex; flex-wrap: wrap; gap: 5px; }
-.sm-bar .sm-preset {
-  height: 22px; padding: 0 8px; border-radius: 999px;
-  border: 1px solid var(--line); background: none; color: var(--text);
-  font: inherit; font-size: 11px; cursor: pointer;
+.sm-bar .sm-size input::-moz-range-track {
+  height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.18);
 }
-.sm-bar .sm-preset:hover { border-color: #ff3b30; color: #ff8a80; }
+.sm-bar .sm-size input::-moz-range-thumb {
+  width: 10px; height: 10px; border: none; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
 
 /* 节点上的遮罩预览：框已经是图片比例、图片又铺满框，所以 100%×100% 就是像素级对齐。
    z-index 压在「查看大图」按钮下面，免得挡住它。 */
