@@ -6797,6 +6797,26 @@ try {
   // ---- 生成完自动入库：前端必须真的把这次出的图交给资产库 ----
   // 命名规则和去重归 tests/smoke.py 管，这里只验**前端有没有接上**：MCP 那边就曾经
   // 因为「函数没注入」整个功能失效，表现却是「什么都没发生」——这种静默失效最难发现。
+  // 先把源节点放进编组：结果新节点也应属于同一组，组框要跟着扩展。
+  const existingGroupIds = await page.evaluate(`[...document.querySelectorAll('#groups .group')].map((el) => el.dataset.gid)`);
+  await page.evaluate(`(() => {
+    const stage = document.querySelector('#stage');
+    const b = stage.getBoundingClientRect();
+    stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: b.left + 6,
+      clientY: b.bottom - 6, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+  })()`);
+  await pickNode('i2', false);
+  await pickNode('t6', true);
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, bubbles: true }))`);
+  const generatedGroupId = await page.evaluate(`([...document.querySelectorAll('#groups .group')]
+    .map((el) => el.dataset.gid).find((id) => !${JSON.stringify(existingGroupIds)}.includes(id))) || ''`);
+  const groupSetup = await page.evaluate(`({ groups: [...document.querySelectorAll('#groups .group')]
+    .map((el) => ({ id: el.dataset.gid, label: el.querySelector('.gname')?.textContent })),
+    selected: [...document.querySelectorAll('#nodes .node.selected')].map((el) => el.dataset.id) })`);
+  check('编组生成测试先建好包含源节点的组', !!generatedGroupId,
+    JSON.stringify({ generatedGroupId, existingGroupIds, ...groupSetup }));
+  await pickNode('i2', true);
+  await pickNode('i2', false);
   // 先把这个节点选中：生成面板是按「当前选中的节点」渲染的，不选就查不到 .gen-run。
   const i2Title = await page.center(`#nodes .node[data-id="i2"] .node-title`);
   await page.clickAt(i2Title.x, i2Title.y, { settle: 400 });
@@ -6895,6 +6915,25 @@ try {
   check('新节点由原节点连出（连线条数 +1）',
     !!autoImp.after && !!autoImp.before && autoImp.after.links === autoImp.before.links + 1,
     JSON.stringify({ before: autoImp.before, after: autoImp.after }));
+  const groupedResult = await page.evaluate(`(async () => {
+    const newId = ${JSON.stringify(autoImp.after.ids || [])}.find((id) => !${JSON.stringify(autoImp.before.ids || [])}.includes(id));
+    const gid = ${JSON.stringify(generatedGroupId)};
+    const box = document.querySelector('#groups .group[data-gid="' + gid + '"]');
+    const pid = localStorage.getItem('infisheet-project');
+    let members = [];
+    for (let k = 0; k < 20; k++) {
+      const saved = await (await fetch('/api/projects/' + pid)).json();
+      members = (saved.canvas.groups || []).find((item) => item.id === gid)?.nodeIds || [];
+      if (members.includes(newId)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return { gid, newId, members, label: box?.querySelector('.gname')?.textContent || '' };
+  })()`);
+  check('编组内生成的结果节点仍属于原编组，组框和存档都更新',
+    !!groupedResult.newId && groupedResult.members.includes('i2')
+      && groupedResult.members.includes(groupedResult.newId)
+      && /3 节点/.test(groupedResult.label), JSON.stringify(groupedResult));
+  await page.evaluate(`document.querySelector('#groups .group[data-gid="${generatedGroupId}"] .group-head button:last-child')?.click()`);
   // 新节点得带着这次的整套参数：打开大图详情就能看到「这张是用什么词出的」，
   // 不用回头翻原节点。以前这一步是空的（新节点 gen 只有默认工作流）。
   const bornInfo = await page.evaluate(`(async () => {

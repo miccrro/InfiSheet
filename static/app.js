@@ -8146,6 +8146,10 @@
         title: genNodeTitle(gen, '图片（生成）'), plain: true, gen, w: spots[i].w,
       }, true);
     });
+    const bornIds = born.map((nd) => nd.id);
+    state.groups.forEach((g) => {
+      if (g.nodeIds.includes(src.id)) g.nodeIds.push(...bornIds);
+    });
     // 方向：原节点 → 新节点。反过来（新 → 原）画出来是「产物指回上游」，
     // 线要从产物右侧绕一大圈才够得着原节点的 in 口，看着就是反的。
     born.forEach((nd) => {
