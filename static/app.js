@@ -625,15 +625,6 @@
             el.style.width = `${n.w}px`;
             queueSave();
           }
-          // 纯图片节点没有下方参数面板：竖图被 760px 高度限制收窄时，外框也要跟着收窄。
-          if (!el.querySelector('.gen-panel') && im.naturalWidth && im.naturalHeight) {
-            const fittedWidth = Math.round(760 * im.naturalWidth / im.naturalHeight) + 22;
-            if (n.w > fittedWidth) {
-              n.w = fittedWidth;
-              queueSave();
-            }
-            if (el.style.width !== `${n.w}px`) el.style.width = `${n.w}px`;
-          }
           // 扩图模式：--ar 和尺寸标签都归边框管（它按「扩完之后」的画布算），
           // 这里再按原图写一次就会把框拉回去
           if (!outpaintOn(n)) {
@@ -650,8 +641,8 @@
               (maskOv.width !== im.naturalWidth || maskOv.height !== im.naturalHeight)) maskOv.remove();
           scheduleLayout();
         };
-        im.addEventListener('load', fit);
         if (im.complete && im.naturalWidth) requestAnimationFrame(fit);
+        im.addEventListener('load', fit);
       } else {
         thumb.classList.add('is-empty');
         // 空节点平时只放一个占位图标：不摆「尝试：上传图片 / 文本生图」那种常驻推荐
