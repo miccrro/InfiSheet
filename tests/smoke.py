@@ -252,6 +252,20 @@ def main() -> int:
         sys.path.insert(0, str(ROOT))
         import server as _srv  # noqa: PLC0415  只有这一段需要 import 服务端模块
 
+        text_entry = {"outputs": {"12": {"text": ["  蓝色夜景中的人物  "]},
+                                  "10": {"images": [{"filename": "input.png"}]}},
+                      "status": {"completed": True, "status_str": "success"}}
+        old_comfy_json = _srv.comfy_json
+        try:
+            _srv.comfy_json = lambda _path, timeout=20: {"text-job": text_entry}
+            text_job = _srv.job_status("text-job")
+        finally:
+            _srv.comfy_json = old_comfy_json
+        check("文本输出工作流完成后，/api/job 返回反推文字",
+              text_job.get("status") == "success"
+              and text_job.get("texts") == [{"node": "12", "text": "蓝色夜景中的人物"}],
+              str(text_job.get("texts")))
+
         _entry = {"prompt": [0, "pid", {"3": {"class_type": "LoadImage", "_meta": {"title": "加载图像"}}}]}
         _d = _srv.execution_error_detail(
             {"node_id": "3", "node_type": "LoadImage",

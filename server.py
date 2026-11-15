@@ -1280,6 +1280,23 @@ def collect_artifacts(entry: dict) -> list[dict]:
     return found
 
 
+def collect_text_outputs(entry: dict) -> list[dict]:
+    """Read text emitted by ComfyUI output nodes without mixing in image artifacts."""
+    found = []
+    for node_id, output in (entry.get("outputs") or {}).items():
+        if not isinstance(output, dict):
+            continue
+        values = output.get("text") or []
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                found.append({"node": str(node_id), "text": value.strip()[:20000]})
+    return found
+
+
 def history_summary(limit: int = 20) -> list[dict]:
     hist = comfy_json("/history", timeout=30)
     rows = []
@@ -4699,6 +4716,7 @@ def job_status(pid: str) -> dict:
         status = (entry.get("status") or {})
         completed = bool(status.get("completed"))
         artifacts = collect_artifacts(entry)
+        texts = collect_text_outputs(entry)
         messages = status.get("messages") or []
         error = None
         detail = None
@@ -4719,14 +4737,15 @@ def job_status(pid: str) -> dict:
         if error is None and not completed:
             if (status.get("status_str") or "").lower() == "error":
                 return {"ok": True, "status": "error", "completed": False, "artifacts": artifacts,
+                        "texts": texts,
                         "error": "执行失败（ComfyUI 未给出详细原因）",
                         "error_detail": {"kind": "unknown", "where": "执行阶段",
                                          "message": "ComfyUI 把这次执行标成了 error，但没有给出节点和异常信息。"
                                                     "去 ComfyUI 的 console 看那一屏输出最准。",
                                          "summary": "执行失败（ComfyUI 未给出详细原因）"}}
-            return {"ok": True, "status": "running", "artifacts": artifacts}
+            return {"ok": True, "status": "running", "artifacts": artifacts, "texts": texts}
         return {"ok": True, "status": "success" if completed else (status.get("status_str") or "done"),
-                "completed": completed, "artifacts": artifacts, "error": error,
+                "completed": completed, "artifacts": artifacts, "texts": texts, "error": error,
                 # 「哪里报错」：前端拿它拼一行「节点 3 · 加载图像」并给详情卡片
                 "error_detail": detail}
     queue = comfy_json("/queue", timeout=15)

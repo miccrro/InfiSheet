@@ -1704,7 +1704,7 @@
         return;
       }
       clearInterval(timer);
-      onDone(res.artifacts || [], res.error, secs, det);
+      onDone(res.artifacts || [], res.error, secs, det, res.texts || []);
     }, 1500);
     // 返回「停止轮询」的句柄（对象，不是函数）：队列面板取消任务时用它把前端这侧掐掉
     return { stop() { stopped = true; clearInterval(timer); } };
@@ -7813,7 +7813,7 @@
   function jobPhaseText(job) {
     if (!job) return '';
     if (job.phase === 'queued') return '排队中';
-    if (job.phase === 'running') return `生成中${pctText(job.progress)}`;
+    if (job.phase === 'running') return `${job.kind === 'infer' ? '反推中' : '生成中'}${pctText(job.progress)}`;
     if (job.phase === 'done') return '完成';
     if (job.phase === 'error') return '失败';
     if (job.phase === 'canceled') return '已取消';
@@ -7966,8 +7966,13 @@
     const n = getNode(job.nodeId);
     if (!n) return;
     try {
+      if (job.kind === 'infer' && n.inferJob === job) {
+        n.inferAttempt = null;
+        n.inferJob = null;
+        updateImgTools();
+      }
       if (n.timer) { clearInterval(n.timer); n.timer = null; }
-      if (n.gen) {
+      if (n.gen && job.kind === 'image') {
         n.gen.attempt = null;
         n.gen.busy = false;
         n.gen.status = '已取消';
@@ -11307,18 +11312,19 @@
     ['outpaint', '扩图', 'expand', '把画布向外扩大，让模型补全画外内容'],
     ['cutout', '抠图', 'magic', '去掉背景，只保留主体'],
     ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
+    ['infer', '反推提示词', 'search', '用「反推」工作流分析这张图，写入当前节点的提示词'],
     ['download', '下载', 'download', '把这张图存到本地（原图分辨率，不压缩）'],
   ];
   // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
   // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
   const IMG_TOOL_BREAKS = new Set(['smart', 'outpaint', 'download']);
-  // 窄屏收纳：这四个都是「整张交给模型重做一遍」，用得少、名字又长，宽度不够时收进
+  // 窄屏收纳：编辑和反推用得少、名字又长，宽度不够时收进
   // 「更多编辑」。裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载始终留在条上——它们是高频且
   // 一眼能认出图标的那几个。收起的按钮不做成 display:none 就完事：菜单里要能用 Tab 走到。
-  const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale']);
-  const IMG_MORE_ORDER = ['erase', 'detext', 'cutout', 'upscale'];
+  const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale', 'infer']);
+  const IMG_MORE_ORDER = ['erase', 'detext', 'cutout', 'upscale', 'infer'];
   // 收进菜单后没有图标可看，得把「点下去会发生什么」写在文字里
-  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成' };
+  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成', infer: '写入当前节点提示词' };
   // 低于这个宽度就收起（1024×768 那档是主要目标：整条 640px 会横着压掉半个画布）
   const IMG_NARROW_W = 1200;
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
@@ -11379,7 +11385,7 @@
     more.type = 'button';
     more.className = 'it-btn it-more-toggle';
     more.dataset.moreToggle = '1';
-    more.title = '更多编辑：擦除 / 去字 / 抠图 / 高清';
+    more.title = '更多编辑：擦除 / 去字 / 抠图 / 高清 / 反推提示词';
     more.setAttribute('aria-label', '更多编辑');
     more.innerHTML = `${icon('more')}<span>更多编辑</span>`;
     more.onclick = (ev) => { ev.stopPropagation(); openImgMore(more); };
@@ -11541,8 +11547,82 @@
       // 「智能编辑」也是开关：亮着＝这个节点正在标记模式，再点一次退出
       const sb = bar.querySelector('[data-tool="smart"]');
       if (sb) sb.classList.toggle('on', smartOn(n));
+      const ib = bar.querySelector('[data-tool="infer"]');
+      if (ib) {
+        ib.classList.toggle('on', !!n.inferAttempt);
+        ib.querySelector('span').textContent = n.inferAttempt ? '取消反推' : '反推提示词';
+      }
       fitImgTools();
       positionImgTools();
+    }
+  }
+
+  async function inferImagePrompt(n) {
+    if (n.inferAttempt) {
+      n.inferAttempt = null;
+      if (n.inferJob && JOB_ALIVE.has(n.inferJob.phase)) cancelQueuedJob(n.inferJob).catch(() => {});
+      updateImgTools();
+      flash('已取消反推');
+      return;
+    }
+    if (n.gen && n.gen.busy) { flash('当前节点正在生成，完成后再反推'); return; }
+    const workflow = wfOptions().find((o) => o.file === '反推' || o.label === '反推');
+    if (!workflow) { flash('请先在工作流库中导入名为「反推」的图片反推工作流'); return; }
+    const attempt = Symbol('infer');
+    n.inferAttempt = attempt;
+    updateImgTools();
+    const canceled = () => n.inferAttempt !== attempt;
+    const reset = () => { if (!canceled()) { n.inferAttempt = null; updateImgTools(); } };
+    try {
+      const graph = await loadGraphById(workflow.id);
+      if (canceled()) return;
+      if (!graph) throw new Error('反推工作流已不存在');
+      const loaders = Object.values(graph).filter((item) => item.class_type === 'LoadImage' && item.inputs);
+      if (!loaders.length) throw new Error('反推工作流没有 LoadImage 图片输入');
+      const image = await ensureUploaded(n);
+      if (canceled()) return;
+      loaders.forEach((item) => { item.inputs.image = image; });
+      const res = await postJson('/api/run', { graph });
+      if (canceled()) {
+        if (res.ok && res.prompt_id) postJson('/api/queue/cancel', { prompt_id: res.prompt_id }).catch(() => {});
+        return;
+      }
+      if (!res.ok || !res.prompt_id) throw new Error(JSON.stringify(res.error || '提交失败').slice(0, 200));
+      const job = newJob(n, 'infer', { title: '图片反推提示词', wf: workflow.id });
+      job.pid = res.prompt_id;
+      n.inferJob = job;
+      job.poll = pollPrompt(res.prompt_id,
+        (label, secs, progress) => patchJob(job, { phase: label === '排队中' ? 'queued' : 'running', secs, progress }),
+        (_artifacts, error, _secs, _detail, texts) => {
+          if (canceled()) return;
+          if (getNode(n.id) !== n) {
+            n.inferAttempt = null;
+            finishJob(job, 'canceled', '源节点已离开当前画布');
+            return;
+          }
+          reset();
+          n.inferJob = null;
+          const prompt = (texts || []).map((item) => item.text).filter(Boolean).at(-1) || '';
+          if (error || !prompt) {
+            const message = error || '工作流没有返回文本；请确认已连接文本输出节点';
+            finishJob(job, 'error', message);
+            flash(`反推失败：${message}`);
+            return;
+          }
+          if (n.plain) delete n.plain;
+          if (!n.gen) n.gen = {};
+          n.gen.prompt = prompt;
+          rerenderNode(n.id, true);
+          queueSave();
+          commit();
+          finishJob(job, 'done', '已写入当前节点提示词');
+          flash('反推完成，提示词已写入当前节点');
+        });
+      renderQueue();
+    } catch (err) {
+      if (canceled()) return;
+      reset();
+      flash(`反推失败：${err.message}`);
     }
   }
 
@@ -11551,6 +11631,7 @@
     // 工具条是「选中才有」的浮层，但它可能因为选择被别处清掉而残留一下。
     // 这时候点上去什么都不发生，用户只会以为功能坏了——顺手把状态刷新回去。
     if (!n) { updateImgTools(); flash('先选中一张有图的节点'); return; }
+    if (kind === 'infer') { inferImagePrompt(n); return; }
     if (kind === 'crop') { openCrop(n); return; }
     if (kind === 'rotate') { openRotateMenu(n, btn); return; }
     if (kind === 'color') { openColorPanel(n); return; }

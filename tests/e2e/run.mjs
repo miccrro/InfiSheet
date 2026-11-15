@@ -128,6 +128,7 @@ try {
     && qMix.live === 2 && qMix.text === '2 个进行中 · 1 个完成 · 1 个失败', qMix.text);
   check('队列条目：生成中带百分比，没进度就不编一个数字',
     jobPhaseText({ phase: 'running', progress: 42 }) === '生成中 42%'
+    && jobPhaseText({ phase: 'running', kind: 'infer', progress: null }) === '反推中'
     && jobPhaseText({ phase: 'running', progress: null }) === '生成中'
     && jobPhaseText({ phase: 'running', progress: 0 }) === '生成中'   // 0% 还没走完第一步
     && jobPhaseText({ phase: 'canceled' }) === '已取消');
@@ -4842,15 +4843,15 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条贴着它（上方，放不下就压在自己图上）、图标 + 文案齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/旋转/调色/智能编辑/遮罩/擦除/去字/扩图/抠图/高清/下载'
+      && toolBar.tools.join('/') === '裁剪/旋转/调色/智能编辑/遮罩/擦除/去字/扩图/抠图/高清/反推提示词/下载'
       && toolBar.attached && toolBar.inView && toolBar.clearsTitles
       && (toolBar.place === 'above' || toolBar.place === 'over')
       && toolBar.pe === 'none' && toolBar.btnPe === 'auto',
     JSON.stringify(toolBar));
   // 智能编辑归在「靠遮罩」那一段：它和遮罩 / 擦除 / 去字是同一类（先标位置，再让模型改）
-  check('工具条按「本地变换 / 涂抹 / 整图编辑 / 导出」分四段（三条分隔线，4/3/3/1）',
+  check('工具条按「本地变换 / 涂抹 / 整图编辑 / 导出」分四段',
     toolBar.seps === 3
-      && toolBar.layout === 'crop/rotate/color/|/smart/mask/erase/detext/|/outpaint/cutout/upscale/|/download',
+      && toolBar.layout === 'crop/rotate/color/|/smart/mask/erase/detext/|/outpaint/cutout/upscale/infer/|/download',
     toolBar.layout);
 
   // ---- 窄屏收纳：1024 宽时把四个「整图交给模型」的工具收进「更多编辑」 ----
@@ -4874,7 +4875,7 @@ try {
       blocked };
   })()`);
   check('宽屏：工具条整条摊开，不出现「更多编辑」',
-    wideTools.narrow === false && !wideTools.toggleShown && wideTools.tools.length === 11,
+    wideTools.narrow === false && !wideTools.toggleShown && wideTools.tools.length === 12,
     JSON.stringify(wideTools));
 
   await page.setViewport(1024, 768);
@@ -4902,7 +4903,7 @@ try {
       w: Math.round(r.width),
       tools: vis.map((b) => b.dataset.tool || 'more'),
       // 收起的那四个必须真的不占位（getClientRects 为空），不然只是「看不见但还挡着」
-      gone: ['erase', 'detext', 'cutout', 'upscale']
+      gone: ['erase', 'detext', 'cutout', 'upscale', 'infer']
         .every((k) => !bar.querySelector('[data-tool="' + k + '"]').getClientRects().length),
       // 「更多编辑」是个真按钮：可 Tab 到（tabIndex >= 0）、不是 display:none 的假元素
       toggleFocusable: !!toggle && toggle.tabIndex >= 0 && toggle.getClientRects().length > 0,
@@ -4914,7 +4915,7 @@ try {
     };
   })()`);
   // 智能编辑也留在条上（它和遮罩同类，属于高频），所以收起来之后是 7 颗 + 「更多编辑」
-  check('1024 宽：四个「整图编辑」收进「更多编辑」，核心七颗还在（条从 ~670 收到 ~520）',
+  check('1024 宽：反推与整图编辑收进「更多编辑」，核心工具仍在',
     narrowTools.narrow && narrowTools.gone
       && narrowTools.tools.join('/') === 'crop/rotate/color/smart/mask/outpaint/more/download'
       && narrowTools.toggleFocusable && narrowTools.w < 560,
@@ -4942,13 +4943,14 @@ try {
     await new Promise((r) => setTimeout(r, 200));
     return out;
   })()`);
-  check('「更多编辑」菜单：四项都在，且写清「需要生成 / 将在新节点中生成」',
-    !!moreMenu && moreMenu.items.length === 4
+  check('「更多编辑」菜单：反推与编辑工具说明清楚结果去向',
+    !!moreMenu && moreMenu.items.length === 5
       && /擦除 · 需要生成/.test(moreMenu.items[0])
       && /去字 · 需要生成/.test(moreMenu.items[1])
       && /抠图 · 将在新节点中生成/.test(moreMenu.items[2])
       && /高清 · 将在新节点中生成/.test(moreMenu.items[3])
-      && moreMenu.icons === 4,
+      && /反推提示词 · 写入当前节点提示词/.test(moreMenu.items[4])
+      && moreMenu.icons === 5,
     JSON.stringify(moreMenu));
 
   await page.clearViewport();
@@ -4959,7 +4961,7 @@ try {
       tools: [...bar.querySelectorAll('.it-btn')].filter((b) => b.getClientRects().length).length };
   })()`);
   check('视口还原后工具条自己摊开（不用刷新、不用重新选中）',
-    backWide.narrow === false && backWide.tools === 11, JSON.stringify(backWide));
+    backWide.narrow === false && backWide.tools === 12, JSON.stringify(backWide));
 
   // 下载：把图存成本地文件。headless 里不真落盘（会污染下载目录），只把 <a> 的
   // click 拦下来，验「文件名取自节点标题、扩展名跟着 MIME 走」这两件真正会错的事。
@@ -8155,6 +8157,93 @@ try {
     /文生图/.test(ownImageBinding.textWf) && ownImageBinding.text.submitted
       && ownImageBinding.text.uploads.length === 0 && ownImageBinding.text.loads.length === 0,
     JSON.stringify(ownImageBinding.text));
+
+  // 反推只改当前图片节点的提示词：工作流从库里取，结果从 /api/job 的文本输出取。
+  await page.evaluate(`(async () => {
+    await fetch('/api/library/' + encodeURIComponent('反推'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '反推', graph: {
+        '10': { class_type: 'LoadImage', inputs: { image: '' } },
+        '8': { class_type: 'GJJ_GemmaTextGenerate', inputs: { media: ['10', 0], prompt: '' } },
+        '12': { class_type: 'ShowText|pysssss', inputs: { text: ['8', 0] } },
+      } }),
+    });
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
+      + '<rect width="64" height="64" fill="#345"/></svg>';
+    const canvas = { version: 2, name: 'e2e 反推', seq: 1, bootAt: Date.now(),
+      view: { x: 80, y: 50, k: 1 }, groups: [], links: [],
+      nodes: [{ id: 'ip1', type: 'image', title: '反推源图', x: 200, y: 160,
+        dataURL: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), plain: true }] };
+    const created = await (await fetch('/api/projects', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: canvas.name }) })).json();
+    await fetch('/api/projects/' + created.id, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canvas }) });
+    localStorage.setItem('infisheet-project', created.id);
+    location.hash = '#canvas'; location.reload();
+  })()`);
+  await page.waitFor(`!!document.querySelector('#nodes .node[data-id="ip1"]')`, 8000);
+  await pickNode('ip1', false);
+  const inferred = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    let submitted = null;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/upload')) return json({ ok: true, image: 'infer-e2e.png', type: 'input' });
+      if (u.startsWith('/api/run')) {
+        submitted = JSON.parse(opts.body).graph;
+        return json({ ok: true, prompt_id: 'infer-e2e' });
+      }
+      if (u.startsWith('/api/job?pid=infer-e2e')) return json({ ok: true, status: 'success', completed: true,
+        artifacts: [], texts: [{ node: '12', text: '夜色中的蓝衣人物，柔和侧光' }] });
+      return real(url, opts);
+    };
+    try {
+      document.querySelector('#imgTools [data-tool="infer"]').click();
+      for (let k = 0; k < 45; k++) {
+        const prompt = document.querySelector('[data-panel-for="ip1"] .gen-prompt')?.textContent || '';
+        if (prompt.includes('夜色中的蓝衣人物')) break;
+        await sleep(100);
+      }
+      return { submitted: !!submitted, image: submitted?.['10']?.inputs?.image || '',
+        prompt: document.querySelector('[data-panel-for="ip1"] .gen-prompt')?.textContent || '',
+        nodes: document.querySelectorAll('#nodes .node').length };
+    } finally { window.fetch = real; }
+  })()`);
+  check('图片反推把当前图片送进工作流，并把文本写回原节点提示词',
+    inferred.submitted && !!inferred.image && inferred.prompt === '夜色中的蓝衣人物，柔和侧光'
+      && inferred.nodes === 1,
+    JSON.stringify(inferred));
+  const inferCancel = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const canceled = [];
+    let submitted = false;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/run')) { submitted = true; return json({ ok: true, prompt_id: 'infer-cancel' }); }
+      if (u.startsWith('/api/job?pid=infer-cancel')) return json({ ok: true, status: 'queued' });
+      if (u.startsWith('/api/queue/cancel')) {
+        canceled.push(JSON.parse(opts.body).prompt_id);
+        return json({ ok: true, removed: true, interrupted: false });
+      }
+      return real(url, opts);
+    };
+    try {
+      const button = document.querySelector('#imgTools [data-tool="infer"]');
+      button.click();
+      for (let k = 0; k < 40 && !submitted; k++) await sleep(50);
+      button.click();
+      await sleep(250);
+      return { canceled, active: button.classList.contains('on'),
+        prompt: document.querySelector('[data-panel-for="ip1"] .gen-prompt')?.textContent || '' };
+    } finally { window.fetch = real; }
+  })()`);
+  check('再次点击反推可取消任务，已有提示词保持不变',
+    inferCancel.canceled.includes('infer-cancel') && !inferCancel.active
+      && inferCancel.prompt === inferred.prompt, JSON.stringify(inferCancel));
 
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。
