@@ -11605,7 +11605,7 @@
           n.inferJob = null;
           const prompt = (texts || []).map((item) => item.text).filter(Boolean).at(-1) || '';
           if (error || !prompt) {
-            const message = error || '工作流没有返回文本；请确认已连接文本输出节点';
+            const message = error || '工作流没有返回文本；请确认推理节点产生了文本结果';
             finishJob(job, 'error', message);
             flash(`反推失败：${message}`);
             return;

@@ -1281,8 +1281,9 @@ def collect_artifacts(entry: dict) -> list[dict]:
 
 
 def collect_text_outputs(entry: dict) -> list[dict]:
-    """Read text emitted by ComfyUI output nodes without mixing in image artifacts."""
+    """Read display text, or Gemma's result when no display node ran."""
     found = []
+    gemma = []
     for node_id, output in (entry.get("outputs") or {}).items():
         if not isinstance(output, dict):
             continue
@@ -1294,7 +1295,14 @@ def collect_text_outputs(entry: dict) -> list[dict]:
         for value in values:
             if isinstance(value, str) and value.strip():
                 found.append({"node": str(node_id), "text": value.strip()[:20000]})
-    return found
+        results = output.get("gjj_gemma_result") or []
+        if isinstance(results, dict):
+            results = [results]
+        if isinstance(results, list):
+            for result in results:
+                if isinstance(result, dict) and isinstance(result.get("text"), str) and result["text"].strip():
+                    gemma.append({"node": str(node_id), "text": result["text"].strip()[:20000]})
+    return found or gemma
 
 
 def history_summary(limit: int = 20) -> list[dict]:

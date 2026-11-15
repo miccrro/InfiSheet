@@ -265,6 +265,17 @@ def main() -> int:
               text_job.get("status") == "success"
               and text_job.get("texts") == [{"node": "12", "text": "蓝色夜景中的人物"}],
               str(text_job.get("texts")))
+        gemma_entry = {"outputs": {"8": {"gjj_gemma_result": [{"text": "  蓝色夜景中的人物  ",
+                                                               "model": "gemma4"}]}},
+                       "status": {"completed": True, "status_str": "success"}}
+        try:
+            _srv.comfy_json = lambda _path, timeout=20: {"gemma-job": gemma_entry}
+            gemma_job = _srv.job_status("gemma-job")
+        finally:
+            _srv.comfy_json = old_comfy_json
+        check("没有展示文本节点时，也从 Gemma 结果写回反推文字",
+              gemma_job.get("texts") == [{"node": "8", "text": "蓝色夜景中的人物"}],
+              str(gemma_job.get("texts")))
 
         _entry = {"prompt": [0, "pid", {"3": {"class_type": "LoadImage", "_meta": {"title": "加载图像"}}}]}
         _d = _srv.execution_error_detail(
