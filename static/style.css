@@ -1499,18 +1499,13 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: grid; place-items: center;
 }
 .gen-run svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
-/* 生成中：箭头换成旋转加载环 */
+/* 生成中：原位切成可点击的取消按钮。 */
 .gen-run.busy {
-  background: transparent; border: 2px solid rgba(255, 255, 255, 0.28);
-  opacity: 1; cursor: progress;
+  width: 48px; flex-basis: 48px;
+  background: #a92d39; color: #fff; border: none;
+  font-size: 12px; font-weight: 700; cursor: pointer;
 }
-.gen-run.busy svg { display: none; }
-.gen-run.busy::after {
-  content: ''; width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #f2f2f2;
-  animation: gen-spin 0.8s linear infinite;
-}
-@keyframes gen-spin { }
+.gen-run.busy:hover { background: #c33b49; }
 
 /* 占位/其它节点微调，让新外壳更协调 */
 .node.text .node-body, .node.wf .node-body, .node.out .node-body { padding: 10px; }
@@ -2546,8 +2541,6 @@ button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm)
 }
 .gen-bar .gen-run:hover { background: #f2f2f2; }
 .gen-bar .gen-run .oi { width: 17px; height: 17px; }
-.gen-bar .gen-run.busy { background: transparent; border: 2px solid rgba(255, 255, 255, 0.24); box-shadow: none; }
-
 /* 白色主按钮统一：纯白实心、深色字、去掉白色光晕（半透明白 + 光晕会让边缘发灰发糊）
    注意用 background 简写：旧的 .set-actions button.prime 是 linear-gradient，只改 background-color 盖不掉 */
 button.primary,
@@ -2555,6 +2548,10 @@ button.primary,
 #bar .icon.prime, .gen-run, .gen-bar .gen-run {
   background: #ffffff; color: #141414; border-color: transparent; box-shadow: none;
 }
+.gen-bar .gen-run.busy, .of-params .gen-run.busy {
+  width: 48px; flex: 0 0 48px; background: #a92d39; color: #fff; border: none; box-shadow: none;
+}
+.gen-bar .gen-run.busy:hover, .of-params .gen-run.busy:hover { background: #c33b49; }
 button.primary:hover,
 .set-actions button.prime:hover, #appSettings .set-actions button.prime:hover,
 #bar .icon.prime:hover { background: #f2f2f2; color: #141414; }

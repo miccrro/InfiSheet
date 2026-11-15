@@ -5876,7 +5876,7 @@ try {
   // 这一跑是假的（/api/run 和轮询都被挡掉了），节点会 busy 到轮询回来为止。
   // 必须等它落地：后面还有好几处「点生成」，busy 没清掉就会被静默吞掉（真踩过）。
   await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
-    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+    return !!b && !b.classList.contains('busy'); })()`, 15000).catch(() => null);
   // 任务已经结束（job 被挡成 done），这时才把 fetch 还回去：早还一次，轮询就会查到
   // 真服务端 → 判「任务丢失」→ 自动重试，重试会在开着的扩图框上再跑一遍
   await page.evaluate(`window.fetch = window.__realFetch`);
@@ -6006,12 +6006,12 @@ try {
   // 前面几条用例可能留着一个假任务在轮询：busy 期间点生成会被直接吞掉，
   // 于是「烘焙没做、尺寸没变」被误报成「工作流被换掉了」。等按钮能点再点。
   await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
-    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+    return !!b && !b.classList.contains('busy'); })()`, 15000).catch(() => null);
   await page.evaluate(`document.querySelector('.node.selected .gen-run').click()`);
   // 提交失败时边框**故意留着**（能接着调、不用重新拖），所以这里不再等它消失，
   // 只等这一轮跑完（busy 落地）
   await page.waitFor(`(() => { const b = document.querySelector('.node.selected .gen-run');
-    return !!b && !b.disabled; })()`, 15000).catch(() => null);
+    return !!b && !b.classList.contains('busy'); })()`, 15000).catch(() => null);
   await new Promise((r) => setTimeout(r, 400));
   const opKeep = await page.evaluate(`(async () => {
     const el = document.querySelector('.node.selected');
@@ -6428,7 +6428,7 @@ try {
     const runBtn = document.querySelector('[data-panel-for="${pick.img}"] .gen-run');
     const pr = document.querySelector('[data-panel-for="${pick.img}"] .gen-prompt');
     return { hits, wf: box ? box.textContent.trim() : '',
-             status: st ? st.textContent : '', busy: !!(runBtn && runBtn.disabled),
+             status: st ? st.textContent : '', busy: !!(runBtn && runBtn.classList.contains('busy')),
              prompt: pr ? String(pr.value != null ? pr.value : pr.textContent).slice(0, 40) : '(no prompt)' };
   })()`);
   check('遮罩清掉后不会再用「局部重绘」跑（否则出图跟原图逐位相同）',
@@ -6744,7 +6744,7 @@ try {
     let clicked = false;
     for (let k = 0; k < 40; k++) {
       const b = document.querySelector('[data-panel-for="i2"] .gen-run');
-      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      if (b && !b.classList.contains('busy')) { b.click(); clicked = true; break; }
       await sleep(100);
     }
     for (let k = 0; k < 80; k++) {
@@ -6844,7 +6844,7 @@ try {
       linkedPrompt.textContent = 'auto import';
       linkedPrompt.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    // 上一个用例刚在这个节点上收尾，按钮可能还禁用着；而且面板会随进度重渲染，
+    // 上一个用例刚在这个节点上收尾，按钮可能还是「取消」；而且面板会随进度重渲染，
     // 抓到的元素随时会脱离文档——所以每一轮都重新查、拿到活的再点。
     let clicked = false;
     // 出图前后各拍一张快照：这次生成要验「原节点的图不被覆盖、结果落到新节点上」
@@ -6859,7 +6859,7 @@ try {
     const before = shot();
     for (let k = 0; k < 40; k++) {
       const b = document.querySelector('[data-panel-for="i2"] .gen-run');
-      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      if (b && !b.classList.contains('busy')) { b.click(); clicked = true; break; }
       await sleep(100);
     }
     for (let k = 0; k < 120 && !libCalls.length; k++) await sleep(100);
@@ -6925,11 +6925,8 @@ try {
     (bornInfo.rows || []).some((r) => /^工作流.+/.test(r) && !/工作流$/.test(r)),
     JSON.stringify(bornInfo.rows));
 
-  // ---- 连点生成只提交一次 ----
-  // 准备阶段（上传参考图 / 烘焙遮罩 / 读风格）是一串 await，一次几秒。以前 busy 要等
-  // **真正提交**才置位，这期间按钮可点：用户以为没反应，再点一下、再点一下，每次都从
-  // 「检查 busy」那里进来，于是各提交一个任务——一次操作出三张图，三张还都不一样
-  // （种子每次重算）。这条用例把 /api/analyze 拖慢 600ms 来复现那个窗口。
+  // ---- 生成键切成取消键：准备阶段也能停 ----
+  // 上传参考图期间仍未提交任务；点取消后不能继续走到 /api/run。
   const clickStorm = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const real = window.fetch.bind(window);
@@ -6938,10 +6935,9 @@ try {
     window.fetch = async (url, opts) => {
       const u = String(url);
       if (u.startsWith('/api/run')) { runs.push(u.slice(0, 40)); return json({ ok: true, prompt_id: 'storm' }); }
-      // 真正的窗口在**上传参考图**：它发生在 busy 置位之前，一张大图几秒。
-      // （/api/analyze 在 busy 之后，拖慢它复现不出这个问题。）
+      // 图片可能已缓存；固定拖慢工作流分析，保证取消发生在提交之前。
       if (u.startsWith('/api/upload')) { await sleep(700); return json({ ok: false, error: 'offline' }); }
-      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/analyze')) { await sleep(700); return json({ ok: true, slots: [] }); }
       if (u.startsWith('/api/job')) {
         if (!u.includes('storm')) return real(url, opts);
         return json({ ok: true, status: 'success', progress: 100, artifacts: [
@@ -6956,19 +6952,55 @@ try {
       ta.textContent = 'storm';
       ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    // 连点三次，间隔 80ms：模拟「点了没反应，再点一下」
-    for (let i = 0; i < 3; i++) {
-      const b = document.querySelector('[data-panel-for="i2"] .gen-run');
-      if (b) b.click();
-      await sleep(80);
-    }
-    for (let k = 0; k < 60 && !runs.length; k++) await sleep(100);
+    const button = () => document.querySelector('[data-panel-for="i2"] .gen-run');
+    button().click();
+    await sleep(200);
+    const active = { text: button().textContent.trim(), label: button().getAttribute('aria-label'),
+      busy: button().classList.contains('busy'), disabled: button().disabled,
+      color: getComputedStyle(button()).backgroundColor };
+    button().click();
     await sleep(1600);        // 等准备阶段彻底跑完，确认没有后续提交
+    const after = { text: button().textContent.trim(), label: button().getAttribute('aria-label'),
+      busy: button().classList.contains('busy'), status: document.querySelector('[data-panel-for="i2"] .gen-status')?.textContent || '' };
     window.fetch = real;
-    return { runs: runs.length, urls: runs };
+    return { runs: runs.length, active, after };
   })()`);
-  check('连点生成只提交一次（准备阶段的 await 不再放行重复提交）',
-    clickStorm.runs === 1, JSON.stringify(clickStorm));
+  check('生成键立即变成醒目的取消键，准备阶段点它不会提交任务',
+    clickStorm.runs === 0 && clickStorm.active.text === '取消'
+      && clickStorm.active.label === '取消生成' && clickStorm.active.busy
+      && !clickStorm.active.disabled && clickStorm.active.color === 'rgb(169, 45, 57)'
+      && !clickStorm.after.busy && clickStorm.after.label === '生成'
+      && clickStorm.after.status === '已取消', JSON.stringify(clickStorm));
+
+  const activeCancel = await page.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const real = window.fetch.bind(window);
+    const json = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const calls = [];
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/upload')) return json({ ok: false, error: 'offline' });
+      if (u.startsWith('/api/analyze')) return json({ ok: true, slots: [] });
+      if (u.startsWith('/api/run')) { calls.push('run'); return json({ ok: true, prompt_id: 'cancel-active' }); }
+      if (u.startsWith('/api/queue/cancel')) { calls.push(JSON.parse(opts.body).prompt_id); return json({ ok: true, removed: true }); }
+      if (u.startsWith('/api/job') && u.includes('cancel-active')) return json({ ok: true, status: 'running', progress: 20 });
+      return real(url, opts);
+    };
+    const button = () => document.querySelector('[data-panel-for="i2"] .gen-run');
+    button().click();
+    for (let k = 0; k < 70 && !calls.includes('run'); k++) await sleep(100);
+    const running = button()?.textContent.trim();
+    if (running === '取消') button().click();
+    await sleep(150);
+    const after = { text: button()?.getAttribute('aria-label'),
+      status: document.querySelector('[data-panel-for="i2"] .gen-status')?.textContent || '' };
+    window.fetch = real;
+    return { calls, running, after };
+  })()`);
+  check('任务已提交时点同一个取消键会撤掉后端任务并恢复生成键',
+    activeCancel.running === '取消' && activeCancel.calls.includes('cancel-active')
+      && activeCancel.after.text === '生成' && activeCancel.after.status === '已取消',
+    JSON.stringify(activeCancel));
 
   // ---- MCP：外部改画布，浏览器要自己跟上 ----
   // 服务端那条链路归 tests/mcp.py；这里验的是**前端**：它手里握着整份画布快照，
@@ -7483,7 +7515,7 @@ try {
     let clicked = false;
     for (let k = 0; k < 40; k++) {
       const b = document.querySelector('.gen-run');
-      if (b && !b.disabled) { b.click(); clicked = true; break; }
+      if (b && !b.classList.contains('busy')) { b.click(); clicked = true; break; }
       await sleep(100);
     }
     let status = '';
@@ -7926,7 +7958,6 @@ try {
     ta.appendChild(document.createTextNode('把标记区域里的球换成青花瓷盘，其他不要动'));
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     ta.closest('.gen-panel').querySelector('.gen-run').click();
-    ta.closest('.gen-panel').querySelector('.gen-run').click(); // 准备图片的异步间隙，连续点击只建一单
     let pendingSrc = '', pendingMask = false, pendingCount = 0, status = '';
     for (let k = 0; k < 120; k++) {
       const holder = [...document.querySelectorAll('#nodes .node.image')]

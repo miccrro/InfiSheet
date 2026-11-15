@@ -3303,10 +3303,9 @@
 
     const run = makeGenControlButton({
       className: 'gen-run', html: ICON.arrow, title: '生成（Enter 也可）',
-      onClick: (ev) => { ev.stopPropagation(); generateImage(n); },
+      onClick: (ev) => { ev.stopPropagation(); if (g.busy) cancelImageGeneration(n); else generateImage(n); },
     });
-    run.disabled = !!g.busy;
-    if (g.busy) run.classList.add('busy');
+    syncGenRunButton(run, !!g.busy);
     bar.appendChild(run);
 
     // 状态行从底栏里搬出来了，单独占一整行（可以换行）。
@@ -3379,15 +3378,19 @@
     st.onclick = bad ? (ev) => { ev.stopPropagation(); openErrorCard(n); } : null;
   }
 
+  function syncGenRunButton(btn, busy) {
+    btn.classList.toggle('busy', busy);
+    btn.innerHTML = busy ? '取消' : icon('arrowUp');
+    btn.title = busy ? '取消当前生成任务' : '生成（Enter 也可）';
+    btn.setAttribute('aria-label', busy ? '取消生成' : '生成');
+  }
+
   function refreshGenPanel(n) {
     const el = document.querySelector(`[data-panel-for="${CSS.escape(n.id)}"]`);
     if (!el) return;
     syncStatus(n);
     const btn = el.querySelector('.gen-run');
-    if (btn) {
-      btn.disabled = !!n.gen.busy;
-      btn.classList.toggle('busy', !!n.gen.busy);
-    }
+    if (btn) syncGenRunButton(btn, !!n.gen.busy);
     // 生成中：图片上盖一层「生成中 42%」。显隐和 paintProgress 用**同一个**判据，
     // 否则两边一打架就会出现「迟到的 tick 把遮罩重新点亮」或「完成的 100% 被提前收掉」。
     const ov = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .gen-overlay`);
@@ -3399,6 +3402,19 @@
         if (label) label.textContent = genOverlayText(n);
       }
     }
+  }
+
+  function cancelImageGeneration(n) {
+    const g = n.gen;
+    if (!g || !g.busy) return;
+    g.attempt = null;
+    if (g.job && JOB_ALIVE.has(g.job.phase)) {
+      cancelQueuedJob(g.job).catch(() => {});
+      return;
+    }
+    g.busy = false;
+    g.status = '已取消';
+    refreshGenPanel(n);
   }
 
   async function generateImage(n) {
@@ -3416,11 +3432,14 @@
     // ——一次操作出三张图，三张还都不一样（种子每次重算）。状态也一起改，
     // 让他当场看到「已经在准备了」，而不是对着一个没反应的按钮连点。
     const prevStatus = g.status || '';
+    const attempt = Symbol('generation');
+    g.attempt = attempt;
+    const canceled = () => g.attempt !== attempt;
     g.busy = true;
     g.status = '准备中…';
     refreshGenPanel(n);
     // 提前返回的几条路都得把 busy 放掉，否则这个节点就永远卡在「准备中…」
-    const bail = () => { g.busy = false; g.status = prevStatus; refreshGenPanel(n); };
+    const bail = () => { if (canceled()) return; g.busy = false; g.status = prevStatus; refreshGenPanel(n); };
     // 自动重试复用同一条队列记录：否则每重试一次就多一行，用户会以为提交了好几遍
     const keepJob = g.jobReuse && g.job ? g.job : null;
     g.jobReuse = false;
@@ -3447,7 +3466,9 @@
     if (outpaintOn(n)) {
       try {
         bake = await bakeOutpaint(n);
+        if (canceled()) return;
       } catch (err) {
+        if (canceled()) return;
         flash(`扩图准备失败：${err.message}`);
         bail();
         return;
@@ -3469,6 +3490,7 @@
     let styleEntry = null;
     if (!outpaintOn(n) && g.style && g.style.cat) {
       styleEntry = await styleOf(g.style).catch(() => null);
+      if (canceled()) return;
       if (!styleEntry) flash(`风格「${g.style.cn || g.style.cat}」读不到了，这次按无风格生成`);
     }
     const promptText = styleEntry ? applyStylePrompt(rawPrompt, styleEntry) : rawPrompt;
@@ -3483,8 +3505,12 @@
     for (const r of refs) {
       try {
         const name = await ensureUploaded(r.node);
+        if (canceled()) return;
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
-      } catch { /* 这张传不上去就跳过，别把整次生成拖垮 */ }
+      } catch {
+        if (canceled()) return;
+        // 这张传不上去就跳过，别把整次生成拖垮。
+      }
     }
     // 节点自己的图是否进工作流，等确认工作流能力后决定：能读图的流自动取当前图，
     // 文生图只用文字。遮罩和扩图另有专门的上传路径。
@@ -3508,15 +3534,19 @@
       try {
         if (cropMode) {
           const img = await loadImageEl(srcURL);
+          if (canceled()) return;
           cropRect = cropRectFor(mdoc, img.naturalWidth || img.width, img.naturalHeight || img.height);
           if (!cropRect) throw new Error('涂的范围算不出来（遮罩是空的？）');
           const name = await uploadCropImage(img, cropRect, n.id);
+          if (canceled()) return;
           if (name) picked.unshift({ node: n, name, label: labelOf(n) });
         } else {
           const name = await uploadMaskedImage(n, mdoc, srcURL);
+          if (canceled()) return;
           if (name) picked.unshift({ node: n, name, label: labelOf(n) });
         }
       } catch (err) {
+        if (canceled()) return;
         flash(`遮罩${cropMode ? '裁切' : '上传'}失败：${err.message}`);
         bail();
         return;
@@ -3528,8 +3558,10 @@
     if (bake && !needMask) {
       try {
         const name = await uploadImageData(bake.url, `${n.id}-outpaint.png`);
+        if (canceled()) return;
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
+        if (canceled()) return;
         flash(`扩图源图上传失败：${err.message}`);
         bail();
         return;
@@ -3540,8 +3572,10 @@
     if (!needMask && !bake && srcURL && wfNow && wfNow.image && wfNow.category !== 'txt2img') {
       try {
         const name = await ensureUploaded(n);
+        if (canceled()) return;
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
+        if (canceled()) return;
         flash(`节点图片上传失败：${err.message}`);
         bail();
         return;
@@ -3555,9 +3589,11 @@
     try {
       stage = '载入工作流';
       const graph = await loadGraphById(g.wf);
+      if (canceled()) return;
       if (!graph) throw new Error('工作流为空');
       stage = '分析工作流';
       const a = await postJson('/api/analyze', { graph });
+      if (canceled()) return;
       // 分析这一步也要几十毫秒到几秒：取消可能就发生在这里
       if (g.job && g.job.phase === 'canceled') { g.busy = false; return; }
       // 智能画幅：出图前按「这次真正要喂进去的图」重算一次。
@@ -3595,6 +3631,10 @@
       };
       stage = '提交任务';
       const res = await postJson('/api/run', { graph: built.graph });
+      if (canceled()) {
+        if (res.ok && res.prompt_id) await postJson('/api/queue/cancel', { prompt_id: res.prompt_id }).catch(() => {});
+        return;
+      }
       if (!res.ok) throw new Error(JSON.stringify(res.error || {}).slice(0, 180));
       // 扩图这一轮已经把「撑大的画布 + 遮罩」烘进请求了：边框到此收工，尺寸档还给用户。
       // 原图 / 原遮罩全程没动过，结果会作为新节点落在它右边（hadImage 那条路）。
@@ -3660,6 +3700,7 @@
       // 面板重建、gen 被拷贝都不会让它丢，取消时一定能停掉这一次轮询。
       g.job.poll = pollPrompt(res.prompt_id,
         (label, secs, p) => {
+          if (canceled()) return;
           // 「这一拍没数字」不等于「没有百分比」：排队中、ws 还没到第一个采样器、换采样器
           // 的那一瞬间，服务端都会短暂报不出数，可上一次的 42% 仍然成立。状态行必须用
           // 「最新已知」的那个数去拼，否则它会在「生成中 42% · …」和「生成中 · …」之间
@@ -3672,6 +3713,7 @@
           refreshGenPanel(n);
         },
         async (arts, err, secs, detail) => {
+          if (canceled()) return;
           g.busy = false;
           if (err) {
             clearProgress(n);
@@ -3795,6 +3837,7 @@
           }
         });
     } catch (err) {
+      if (canceled()) return;
       g.busy = false;
       clearProgress(n);
       // 这里接的是「还没提交到 ComfyUI 就失败」的那一段：载入 / 分析 / 构建 / 提交。
@@ -7925,6 +7968,7 @@
     try {
       if (n.timer) { clearInterval(n.timer); n.timer = null; }
       if (n.gen) {
+        n.gen.attempt = null;
         n.gen.busy = false;
         n.gen.status = '已取消';
         clearProgress(n);
