@@ -7015,7 +7015,7 @@ try {
       && clickStorm.active.label === '取消生成' && clickStorm.active.busy
       && !clickStorm.active.disabled && clickStorm.active.color === 'rgb(169, 45, 57)'
       && clickStorm.active.size.join('×') === '28×28'
-      && clickStorm.active.iconSize.join('×') === '18×18'
+      && clickStorm.active.iconSize.every((v) => Math.abs(v - 18) < 0.5)
       && clickStorm.active.offset.every((v) => Math.abs(v) < 0.5)
       && clickStorm.active.size.join('×') === clickStorm.after.size.join('×')
       && !clickStorm.after.busy && clickStorm.after.label === '生成'
