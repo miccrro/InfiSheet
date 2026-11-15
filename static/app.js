@@ -8629,6 +8629,7 @@
         return {
         id: n.id, type: n.type, title: n.title, x: n.x, y: n.y, w: n.w, h: n.h,
         value: n.value, dataURL: n.dataURL, uploaded: n.uploaded, filename: n.filename,
+        inferSource: n.type === 'text' ? n.inferSource : undefined,
         // 文本节点：富文本 HTML + 底色。value 仍然存一份纯文本，老版本读档也不会空
         html: n.type === 'text' ? n.html : undefined,
         bg: n.type === 'text' ? n.bg : undefined,
@@ -11324,7 +11325,7 @@
   const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale', 'infer']);
   const IMG_MORE_ORDER = ['erase', 'detext', 'cutout', 'upscale', 'infer'];
   // 收进菜单后没有图标可看，得把「点下去会发生什么」写在文字里
-  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成', infer: '写入当前节点提示词' };
+  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成', infer: '写入提示词节点' };
   // 低于这个宽度就收起（1024×768 那档是主要目标：整条 640px 会横着压掉半个画布）
   const IMG_NARROW_W = 1200;
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
@@ -11612,11 +11613,26 @@
           if (n.plain) delete n.plain;
           if (!n.gen) n.gen = {};
           n.gen.prompt = prompt;
+          let output = state.nodes.find((item) => item.type === 'text' && item.inferSource === n.id);
+          if (output) {
+            output.value = prompt;
+            output.html = textToHtml(prompt);
+            rerenderNode(output.id, true);
+          } else {
+            output = addTextNode(n.x + nodeWidth(n) + 80, n.y, prompt);
+            output.title = '反推提示词';
+            output.inferSource = n.id;
+            addLink(n.id, output.id, 'in');
+            state.groups.filter((group) => group.nodeIds.includes(n.id))
+              .forEach((group) => { group.nodeIds.push(output.id); });
+            renderGroups();
+            rerenderNode(output.id, true);
+          }
           rerenderNode(n.id, true);
           queueSave();
           commit();
-          finishJob(job, 'done', '已写入当前节点提示词');
-          flash('反推完成，提示词已写入当前节点');
+          finishJob(job, 'done', '已写入当前节点和提示词节点');
+          flash('反推完成，已生成提示词节点');
         });
       renderQueue();
     } catch (err) {

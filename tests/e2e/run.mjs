@@ -4949,7 +4949,7 @@ try {
       && /去字 · 需要生成/.test(moreMenu.items[1])
       && /抠图 · 将在新节点中生成/.test(moreMenu.items[2])
       && /高清 · 将在新节点中生成/.test(moreMenu.items[3])
-      && /反推提示词 · 写入当前节点提示词/.test(moreMenu.items[4])
+      && /反推提示词 · 写入提示词节点/.test(moreMenu.items[4])
       && moreMenu.icons === 5,
     JSON.stringify(moreMenu));
 
@@ -8158,7 +8158,7 @@ try {
       && ownImageBinding.text.uploads.length === 0 && ownImageBinding.text.loads.length === 0,
     JSON.stringify(ownImageBinding.text));
 
-  // 反推只改当前图片节点的提示词：工作流从库里取，结果从 /api/job 的文本输出取。
+  // 反推写回图片提示词，也生成一个可连接的提示词节点。
   await page.evaluate(`(async () => {
     await fetch('/api/library/' + encodeURIComponent('反推'), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -8206,14 +8206,16 @@ try {
         if (prompt.includes('夜色中的蓝衣人物')) break;
         await sleep(100);
       }
+      const output = document.querySelector('#nodes .node[data-id^="t"]');
       return { submitted: !!submitted, image: submitted?.['10']?.inputs?.image || '',
         prompt: document.querySelector('[data-panel-for="ip1"] .gen-prompt')?.textContent || '',
-        nodes: document.querySelectorAll('#nodes .node').length };
+        nodes: document.querySelectorAll('#nodes .node').length,
+        output: output?.textContent || '', links: document.querySelectorAll('#links .link-line').length };
     } finally { window.fetch = real; }
   })()`);
-  check('图片反推把当前图片送进工作流，并把文本写回原节点提示词',
+  check('图片反推写回原节点提示词，并生成连线的文本节点',
     inferred.submitted && !!inferred.image && inferred.prompt === '夜色中的蓝衣人物，柔和侧光'
-      && inferred.nodes === 1,
+      && inferred.nodes === 2 && inferred.output.includes(inferred.prompt) && inferred.links === 1,
     JSON.stringify(inferred));
   const inferCancel = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
