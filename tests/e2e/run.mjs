@@ -8168,12 +8168,12 @@ try {
         '12': { class_type: 'ShowText|pysssss', inputs: { text: ['8', 0] } },
       } }),
     });
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
-      + '<rect width="64" height="64" fill="#345"/></svg>';
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="2308" height="4096">'
+      + '<rect width="2308" height="4096" fill="#345"/></svg>';
     const canvas = { version: 2, name: 'e2e 反推', seq: 1, bootAt: Date.now(),
       view: { x: 80, y: 50, k: 1 }, groups: [], links: [],
       nodes: [{ id: 'ip1', type: 'image', title: '反推源图', x: 200, y: 160,
-        dataURL: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), plain: true }] };
+        w: 520, dataURL: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), plain: true }] };
     const created = await (await fetch('/api/projects', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: canvas.name }) })).json();
     await fetch('/api/projects/' + created.id, { method: 'POST',
@@ -8183,6 +8183,22 @@ try {
   })()`);
   await page.waitFor(`!!document.querySelector('#nodes .node[data-id="ip1"]')`, 8000);
   await pickNode('ip1', false);
+  const tallImport = await page.evaluate(`(async () => {
+    const el = document.querySelector('#nodes .node[data-id="ip1"]');
+    const im = el.querySelector('.thumb img');
+    if (!im.complete) await new Promise((resolve) => im.addEventListener('load', resolve, { once: true }));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const card = el.querySelector('.node-card').getBoundingClientRect();
+    const thumb = el.querySelector('.thumb').getBoundingClientRect();
+    return { cardW: Math.round(card.width), thumbW: Math.round(thumb.width),
+      plain: !!el.querySelector('.n-genon'), size: [im.naturalWidth, im.naturalHeight],
+      styleW: el.style.width,
+      left: Math.round(thumb.left - card.left), right: Math.round(card.right - thumb.right) };
+  })()`);
+  check('导入竖图时节点外框跟图片一起收窄，两侧没有宽空带',
+    Math.abs(tallImport.left - tallImport.right) <= 1
+      && tallImport.left <= 12 && tallImport.right <= 12,
+    JSON.stringify(tallImport));
   const inferred = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const real = window.fetch.bind(window);
