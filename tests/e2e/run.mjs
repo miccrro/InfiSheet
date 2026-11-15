@@ -8200,24 +8200,6 @@ try {
       && tallImport.left <= 2 && tallImport.right <= 2
       && Math.abs(tallImport.thumbW / tallImport.thumbH - 2308 / 4096) < 0.002,
     JSON.stringify(tallImport));
-  const zoomedImageTools = await page.evaluate(`(() => {
-    const thumb = document.querySelector('#nodes .node[data-id="ip1"] .thumb');
-    const r = thumb.getBoundingClientRect();
-    document.getElementById('stage').dispatchEvent(new WheelEvent('wheel', {
-      bubbles: true, cancelable: true, deltaY: -495,
-      clientX: r.left + r.width / 2, clientY: r.top + 100,
-    }));
-    const image = thumb.getBoundingClientRect();
-    const bar = document.getElementById('imgTools').getBoundingClientRect();
-    return { imageW: Math.round(image.width), barW: Math.round(bar.width),
-      left: Math.round(bar.left - image.left), right: Math.round(bar.right - image.right),
-      fits: image.left >= 10 && image.right <= innerWidth - 10 };
-  })()`);
-  check('放大图片后工具条跟随图片显示宽度，两端对齐',
-    zoomedImageTools.fits && zoomedImageTools.imageW > 750
-      && Math.abs(zoomedImageTools.barW - zoomedImageTools.imageW) <= 2
-      && Math.abs(zoomedImageTools.left) <= 2 && Math.abs(zoomedImageTools.right) <= 2,
-    JSON.stringify(zoomedImageTools));
   const inferred = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const real = window.fetch.bind(window);

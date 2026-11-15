@@ -3274,7 +3274,6 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
      压住标题时至少还能点中标题，不至于「点了没反应」。 */
   pointer-events: none;
 }
-#imgTools { justify-content: space-between; }
 #imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn { pointer-events: auto; }
 #imgTools.hidden, #textTools.hidden { display: none; }
 #imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn {
