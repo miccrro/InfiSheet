@@ -36,6 +36,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run check
       - run: python -m tests.pack
+      - run: python -m tests.update_worker
       - run: npm test
 
   e2e:

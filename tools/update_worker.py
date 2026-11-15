@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from ctypes import wintypes
 from pathlib import Path, PurePosixPath
 
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
@@ -92,21 +94,31 @@ def download_archive(manifest: dict, destination: Path) -> None:
         "Accept": "application/octet-stream",
     })
     opener = urllib.request.build_opener(SafeRedirect())
-    digest = hashlib.sha256()
-    total = 0
-    with opener.open(request, timeout=30) as response, destination.open("wb") as out:
-        length = response.headers.get("Content-Length")
-        if length and int(length) > MAX_ARCHIVE_BYTES:
-            fail("更新包超过 200 MB 上限")
-        while True:
-            block = response.read(1024 * 1024)
-            if not block:
-                break
-            total += len(block)
-            if total > MAX_ARCHIVE_BYTES:
-                fail("更新包超过 200 MB 上限")
-            digest.update(block)
-            out.write(block)
+    for attempt in range(3):
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            with opener.open(request, timeout=30) as response, destination.open("wb") as out:
+                length = response.headers.get("Content-Length")
+                if length and int(length) > MAX_ARCHIVE_BYTES:
+                    fail("更新包超过 200 MB 上限")
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    total += len(block)
+                    if total > MAX_ARCHIVE_BYTES:
+                        fail("更新包超过 200 MB 上限")
+                    digest.update(block)
+                    out.write(block)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (408, 429, 500, 502, 503, 504) or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError, ConnectionError):
+            if attempt == 2:
+                raise
+        time.sleep(attempt + 1)
     expected_digest = str(manifest.get("sha256") or "").lower()
     if expected_digest and digest.hexdigest() != expected_digest:
         fail("更新包 SHA-256 校验失败")
@@ -243,6 +255,30 @@ def restore_files(changes: list[tuple[Path, Path | None]]) -> None:
 
 
 def process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            error = ctypes.get_last_error()
+            if error in (87, 1168):  # invalid PID / process no longer exists
+                return False
+            if error == 5:  # access denied: treat as running
+                return True
+            raise ctypes.WinError(error)
+        try:
+            result = kernel32.WaitForSingleObject(handle, 0)
+            if result == 0:  # signaled: the process has exited, even if a handle remains open
+                return False
+            if result == 258:  # WAIT_TIMEOUT
+                return True
+            raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -250,25 +286,22 @@ def process_exists(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    except OSError as exc:
-        if os.name == "nt" and getattr(exc, "winerror", None) == 87:
-            return False
-        raise
 
 
 def stop_server(manifest: dict) -> None:
     request = urllib.request.Request(manifest["shutdown_url"], data=b"", method="POST",
                                      headers={"Content-Length": "0"})
+    request_error = None
     try:
         LOCAL_OPENER.open(request, timeout=5).read()
-    except urllib.error.URLError:
-        if process_exists(int(manifest["pid"])):
-            raise
+    except urllib.error.URLError as exc:
+        request_error = exc  # the server may exit before the shutdown response arrives
     deadline = time.time() + 25
     while process_exists(int(manifest["pid"])) and time.time() < deadline:
         time.sleep(0.25)
     if process_exists(int(manifest["pid"])):
-        fail("本地服务没有按时退出，未替换程序文件")
+        detail = f"（关闭请求：{request_error}）" if request_error else ""
+        fail(f"本地服务没有按时退出，未替换程序文件{detail}")
 
 
 def start_server(manifest: dict) -> subprocess.Popen:
@@ -307,6 +340,7 @@ def run(manifest_path: Path) -> None:
     server_stopped = False
     new_proc = None
     keep_backup = False
+    phase = "准备更新"
     try:
         work_dir = manifest_path.parent.resolve(strict=True)
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -319,21 +353,27 @@ def run(manifest_path: Path) -> None:
         root = ensure_install_root(Path(manifest["root"]), str(manifest.get("current_version") or ""))
         stage = Path(tempfile.mkdtemp(prefix=".infisheet-update-", dir=root.parent))
         archive = stage / "release.zip"
+        phase = "下载更新包"
         write_status(manifest, "downloading", "正在从 GitHub 下载更新包")
         download_archive(manifest, archive)
+        phase = "校验更新包"
         write_status(manifest, "validating", "正在校验更新包和版本")
         extracted = extract_archive(archive, stage, str(manifest["version"]))
+        phase = "关闭旧版服务"
         write_status(manifest, "restarting", "更新包通过校验，服务即将重启")
         stop_server(manifest)
         server_stopped = True
+        phase = "替换程序文件"
         apply_files(root, extracted, stage / "backup", changes)
+        phase = "启动新版服务"
         new_proc = start_server(manifest)
         if not wait_for_server(new_proc, str(manifest["health_host"]),
                                int(manifest["port"]), str(manifest["version"])):
             fail("新版启动检查失败")
         write_status(manifest, "complete", f"已更新到 InfiSheet {manifest['version']}")
     except Exception as exc:  # noqa: BLE001 -- every failed install must roll back and report status
-        message = str(exc) if isinstance(exc, RuntimeError) else f"更新失败（{type(exc).__name__}）"
+        message = (str(exc) if isinstance(exc, RuntimeError)
+                   else f"{phase}失败（{type(exc).__name__}：{exc}）")
         if changes:
             if new_proc and new_proc.poll() is None:
                 new_proc.terminate()
