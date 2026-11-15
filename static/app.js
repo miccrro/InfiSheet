@@ -3380,7 +3380,7 @@
 
   function syncGenRunButton(btn, busy) {
     btn.classList.toggle('busy', busy);
-    btn.innerHTML = busy ? '取消' : icon('arrowUp');
+    btn.innerHTML = icon(busy ? 'close' : 'arrowUp');
     btn.title = busy ? '取消当前生成任务' : '生成（Enter 也可）';
     btn.setAttribute('aria-label', busy ? '取消生成' : '生成');
   }

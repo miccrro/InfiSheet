@@ -1499,11 +1499,10 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: grid; place-items: center;
 }
 .gen-run svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
-/* 生成中：原位切成可点击的取消按钮。 */
+/* 生成中：同尺寸的关闭图标，红色表示可取消。 */
 .gen-run.busy {
-  width: 48px; flex-basis: 48px;
   background: #a92d39; color: #fff; border: none;
-  font-size: 12px; font-weight: 700; cursor: pointer;
+  cursor: pointer;
 }
 .gen-run.busy:hover { background: #c33b49; }
 
@@ -2549,7 +2548,7 @@ button.primary,
   background: #ffffff; color: #141414; border-color: transparent; box-shadow: none;
 }
 .gen-bar .gen-run.busy, .of-params .gen-run.busy {
-  width: 48px; flex: 0 0 48px; background: #a92d39; color: #fff; border: none; box-shadow: none;
+  background: #a92d39; color: #fff; border: none; box-shadow: none;
 }
 .gen-bar .gen-run.busy:hover, .of-params .gen-run.busy:hover { background: #c33b49; }
 button.primary:hover,

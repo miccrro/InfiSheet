@@ -6955,20 +6955,23 @@ try {
     const button = () => document.querySelector('[data-panel-for="i2"] .gen-run');
     button().click();
     await sleep(200);
-    const active = { text: button().textContent.trim(), label: button().getAttribute('aria-label'),
+    const active = { label: button().getAttribute('aria-label'), icon: button().querySelector('svg path')?.getAttribute('d'),
       busy: button().classList.contains('busy'), disabled: button().disabled,
-      color: getComputedStyle(button()).backgroundColor };
+      color: getComputedStyle(button()).backgroundColor, size: [button().offsetWidth, button().offsetHeight] };
     button().click();
     await sleep(1600);        // 等准备阶段彻底跑完，确认没有后续提交
-    const after = { text: button().textContent.trim(), label: button().getAttribute('aria-label'),
-      busy: button().classList.contains('busy'), status: document.querySelector('[data-panel-for="i2"] .gen-status')?.textContent || '' };
+    const after = { label: button().getAttribute('aria-label'), icon: button().querySelector('svg path')?.getAttribute('d'),
+      busy: button().classList.contains('busy'), size: [button().offsetWidth, button().offsetHeight],
+      status: document.querySelector('[data-panel-for="i2"] .gen-status')?.textContent || '' };
     window.fetch = real;
     return { runs: runs.length, active, after };
   })()`);
   check('生成键立即变成醒目的取消键，准备阶段点它不会提交任务',
-    clickStorm.runs === 0 && clickStorm.active.text === '取消'
+    clickStorm.runs === 0 && clickStorm.active.icon && clickStorm.active.icon !== clickStorm.after.icon
       && clickStorm.active.label === '取消生成' && clickStorm.active.busy
       && !clickStorm.active.disabled && clickStorm.active.color === 'rgb(169, 45, 57)'
+      && clickStorm.active.size.join('×') === '28×28'
+      && clickStorm.active.size.join('×') === clickStorm.after.size.join('×')
       && !clickStorm.after.busy && clickStorm.after.label === '生成'
       && clickStorm.after.status === '已取消', JSON.stringify(clickStorm));
 
@@ -6989,8 +6992,8 @@ try {
     const button = () => document.querySelector('[data-panel-for="i2"] .gen-run');
     button().click();
     for (let k = 0; k < 70 && !calls.includes('run'); k++) await sleep(100);
-    const running = button()?.textContent.trim();
-    if (running === '取消') button().click();
+    const running = button()?.getAttribute('aria-label');
+    if (running === '取消生成') button().click();
     await sleep(150);
     const after = { text: button()?.getAttribute('aria-label'),
       status: document.querySelector('[data-panel-for="i2"] .gen-status')?.textContent || '' };
@@ -6998,7 +7001,7 @@ try {
     return { calls, running, after };
   })()`);
   check('任务已提交时点同一个取消键会撤掉后端任务并恢复生成键',
-    activeCancel.running === '取消' && activeCancel.calls.includes('cancel-active')
+    activeCancel.running === '取消生成' && activeCancel.calls.includes('cancel-active')
       && activeCancel.after.text === '生成' && activeCancel.after.status === '已取消',
     JSON.stringify(activeCancel));
 
