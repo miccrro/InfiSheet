@@ -1004,14 +1004,13 @@
         kinds: it.kinds || [],
         // 删除 / 覆盖写回都要真实库名（文件名去掉 .json），id 里带着前缀不能直接用
         file: it.name,
-        // 是不是它所在能力分类的默认（默认表在服务端 data/wf-defaults.json）
-        isDefault: wfDefaultId(cat) === id,
+        // 星号跟这一行可见的分组走，避免分组标签与默认状态指向两套分类。
+        isDefault: wfDefaultId(it.group || cat) === id,
       };
     });
   }
 
-  // 某个能力分类当前的默认工作流 id（没设过 / 设的那份已经不在了 → 空串）。
-  // 分类键只用 CAT_ORDER 那六个：它们是「这个工作流干什么用的」，不随用户改分类而变。
+  // 某个可见分组当前的默认工作流 id（没设过 → 空串）。
   function wfDefaultId(cat) {
     const d = (state.wfDefaults || {})[cat];
     return d ? String(d) : '';
@@ -1032,9 +1031,9 @@
     const wants = Array.isArray(need) ? need : [need];
     const auto = wfOptions().filter((o) => !o.alphaMask);
     for (const want of wants) {
-      const def = auto.find((o) => o.id === wfDefaultId(want));
+      const def = auto.find((o) => o.category === want && o.group === want && o.id === wfDefaultId(want));
       if (def) return def.id;
-      const hit = auto.find((o) => o.category === want);
+      const hit = auto.find((o) => o.category === want && o.group === want);
       if (hit) return hit.id;
     }
     return '';
@@ -1049,7 +1048,7 @@
         items: lib.items || [],
         categories: lib.categories || [],
       };
-      // 默认工作流按能力分类各一份，跟列表同一份响应回来
+      // 默认工作流按可见分组各一份，跟列表同一份响应回来
       state.wfDefaults = lib.defaults || {};
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
@@ -5038,31 +5037,31 @@
     const opts = wfOptions();
     const cats = wfCategories();
 
-    // ---- 每个能力分类当前用的是哪一份 ----
+    // ---- 每个可见分组当前用的是哪一份 ----
     // 「未设」不能只是一段灰字：用户设了别的分类的默认，却以为这一份也该生效，
     // 结果新建节点还是空的（真机反馈）。所以这里一行一个分类，写清「它管的是哪件事」，
     // 值那颗芯片可点——点一下就只看该分类的候选，挑 ☆ 时不用自己认哪份是文生图。
     if (defEl) {
-      const cats = CAT_ORDER.filter((c) => opts.some((o) => o.category === c));
+      const groups = cats.filter((c) => opts.some((o) => o.group === c.id));
       defEl.innerHTML = '';
       if (!opts.length) {
         defEl.textContent = '还没有可用的工作流，点上面的「导入工作流…」加一个。';
       } else {
         const head = document.createElement('span');
         head.className = 'wf-def-head';
-        head.textContent = '按分类默认（点行里的 ☆ 换；新建节点按用途预选）';
+        head.textContent = '按分组默认（点行里的 ☆ 换；常用能力分组供新建节点预选）';
         defEl.appendChild(head);
         const grid = document.createElement('div');
         grid.className = 'wf-def-grid';
-        cats.forEach((c) => {
-          const hit = opts.find((o) => o.id === wfDefaultId(c));
-          const use = CAT_USES[c] || '新建节点';
+        groups.forEach((c) => {
+          const hit = opts.find((o) => o.group === c.id && o.id === wfDefaultId(c.id));
+          const use = CAT_USES[c.id] || '手动选择';
           const row = document.createElement('div');
-          row.className = 'wf-def-row' + (setWfOnly === c ? ' only' : '');
+          row.className = 'wf-def-row' + (setWfOnly === c.id ? ' only' : '');
 
           const nm = document.createElement('span');
           nm.className = 'wf-def-cat';
-          nm.textContent = CAT_LABEL[c] || c;
+          nm.textContent = c.name;
 
           const useEl = document.createElement('span');
           useEl.className = 'wf-def-use';
@@ -5073,13 +5072,13 @@
           btn.className = 'wf-def' + (hit ? ' on' : ' miss');
           btn.textContent = hit ? hit.label : '未设 · 点这里选';
           btn.title = hit
-            ? `「${CAT_LABEL[c] || c}」的默认是「${hit.label}」，${use}会用它。点一下只看这一类`
-            : `「${CAT_LABEL[c] || c}」还没设默认：${use}不会自动带工作流。点一下看这一类有哪些候选`;
+            ? `「${c.name}」的默认是「${hit.label}」。${use}。点一下只看这一组`
+            : `「${c.name}」还没设默认。点一下看这一组有哪些候选`;
           btn.onclick = () => {
-            setWfOnly = setWfOnly === c ? '' : c;
+            setWfOnly = setWfOnly === c.id ? '' : c.id;
             renderSetWorkflows(box);
             flash(setWfOnly
-              ? `只看「${CAT_LABEL[c] || c}」：点行里的 ☆ 设为「${use}」的默认`
+              ? `只看「${c.name}」：点行里的 ☆ 设为这一组的默认`
               : '已显示全部工作流');
           };
 
@@ -5095,13 +5094,13 @@
     let hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
     // 顶部点了某个分类的「未设」→ 只列这一类。挑默认时眼前只有候选，不用在
     // 十几份工作流里自己认哪份是文生图。
-    if (setWfOnly) hits = hits.filter((o) => o.category === setWfOnly);
+    if (setWfOnly) hits = hits.filter((o) => o.group === setWfOnly);
     listEl.innerHTML = '';
     if (setWfOnly) {
       // 过滤条先摆上：哪怕这一类一份都没有，也要留着「显示全部」的出口
       const bar = document.createElement('p');
       bar.className = 'tip wf-only';
-      bar.innerHTML = `只看「${esc(CAT_LABEL[setWfOnly] || setWfOnly)}」· <button type="button" class="wf-only-x">显示全部</button>`;
+      bar.innerHTML = `只看「${esc(catName(setWfOnly))}」· <button type="button" class="wf-only-x">显示全部</button>`;
       bar.querySelector('.wf-only-x').onclick = () => { setWfOnly = ''; renderSetWorkflows(box); };
       listEl.appendChild(bar);
     }
@@ -5161,7 +5160,7 @@
       use.title = '把这份工作流变成一个节点放到画布上';
       use.onclick = () => useWfItem(o);
 
-      // 「默认」：按**能力分类**各一份（文生图 / 图生图 / 高清…）。
+      // 「默认」：按这一行显示的分组各一份。
       // 存服务端而不是 localStorage：换浏览器、MCP 跑图都读同一份。
       const star = document.createElement('button');
       star.type = 'button';
@@ -5179,8 +5178,8 @@
         };
       } else {
         star.title = o.isDefault
-          ? `取消「${CAT_LABEL[o.category] || '其他'}」的默认`
-          : `设为「${CAT_LABEL[o.category] || '其他'}」的默认工作流`;
+          ? `取消「${catName(o.group)}」的默认`
+          : `设为「${catName(o.group)}」的默认工作流`;
         star.onclick = (ev) => { ev.stopPropagation(); setWfDefault(o, !o.isDefault); };
       }
 
@@ -5367,12 +5366,10 @@
     flash(icon ? '图标已更新' : '已恢复默认图标');
   }
 
-  // 设 / 取消某个工作流在它**能力分类**里的默认。
-  // 键用 o.category 而不是 o.group：高清按钮、编辑节点挑工作流看的是「它干什么用的」，
-  // 用户把两份文生图归到不同组织分类里，也不该因此多出两个默认。
+  // 设 / 取消这个工作流在可见分组里的默认。
   async function setWfDefault(o, on) {
     const next = { ...(state.wfDefaults || {}) };
-    if (on) next[o.category] = o.id; else delete next[o.category];
+    if (on) next[o.group] = o.id; else delete next[o.group];
     const r = await api('/api/wf/defaults', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ defaults: next }),
@@ -5381,7 +5378,7 @@
     state.wfDefaults = r.defaults || next;
     refreshSetWf();
     flash(on
-      ? `「${CAT_LABEL[o.category] || '其他'}」默认 → ${o.label}`
+      ? `「${catName(o.group)}」默认 → ${o.label}`
       : `已取消默认：${o.label}`);
   }
 
@@ -7323,7 +7320,7 @@
     // 设过但那份已经删了 → 也留空，别把一个死 id 写进存档。
     if (!n.gen) {
       const wf = wfDefaultId('txt2img');
-      n.gen = { wf: wf && wfOptions().some((o) => o.id === wf) ? wf : '' };
+      n.gen = { wf: wf && wfOptions().some((o) => o.id === wf && o.category === 'txt2img' && o.group === 'txt2img') ? wf : '' };
     }
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
@@ -12172,8 +12169,9 @@
   // 看上去就是「默认工作流不起作用」。默认那份走的是裁切局部重绘，一样能改。
   function maskWorkflow() {
     const all = wfOptions();
-    const def = all.find((o) => o.id === wfDefaultId('img2img'));
-    return all.find((o) => o.alphaMask) || def || all.find((o) => o.image) || null;
+    const def = all.find((o) => o.id === wfDefaultId('img2img') && o.group === 'img2img' && o.category === 'img2img');
+    return all.find((o) => o.alphaMask) || def
+      || all.find((o) => o.image && o.group === 'img2img' && o.category === 'img2img') || null;
   }
 
   function createEditNode(src, kind, maskDoc) {
@@ -14026,8 +14024,8 @@
   // 优先使用普通图像编辑工作流做裁切重绘；只有遮罩工作流时走原生 alpha 遮罩。
   function annotateWorkflow() {
     const all = wfOptions();
-    const def = all.find((o) => o.id === wfDefaultId('img2img'));
-    const plain = all.filter((o) => o.image && !o.alphaMask);
+    const def = all.find((o) => o.id === wfDefaultId('img2img') && o.group === 'img2img' && o.category === 'img2img');
+    const plain = all.filter((o) => o.image && !o.alphaMask && o.group === 'img2img' && o.category === 'img2img');
     return (def && def.image && !def.alphaMask ? def : null) || plain[0] || maskWorkflow();
   }
 

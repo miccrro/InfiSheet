@@ -2642,7 +2642,7 @@ try {
   check('工作流库就是设置的第一格：搜索 / 导入 / 说明 / 列表 / 分类都在',
     wfPane.missing.length === 0 && wfPane.rows > 0 && wfPane.chips > 0,
     JSON.stringify(wfPane));
-  // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「能力分类的默认」，第 5 颗是放大镜「查残留」——
+  // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「可见分组的默认」，第 5 颗是放大镜「查残留」——
   // 导入时弹过一次之后，文件就躺在列表里了，想再确认一遍（或怀疑某张图不是自己出的）
   // 原来没有任何入口。
   check('每行七件套：图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除',
@@ -2650,10 +2650,10 @@ try {
       && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows
       && wfPane.checks === wfPane.rows,
     JSON.stringify(wfPane));
-  check('那一行读数报「每个能力分类当前用哪一份」，夹具没设过就写「未设」',
-    /^按分类默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
+  check('那一行读数报「每个分组当前用哪一份」，夹具没设过就写「未设」',
+    /^按分组默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
 
-  // ☆ 设默认：按**能力分类**各一份，存服务端 data/wf-defaults.json（换设备 / MCP 读同一份）
+  // ☆ 设默认：按可见分组各一份，存服务端 data/wf-defaults.json（换设备 / MCP 读同一份）
   // 吃遮罩的那份（局部重绘）不给设——它只能由遮罩编辑器选中，设了也永远不会被自动挑中。
   const maskStar = await page.evaluate(`(() => {
     const row = document.querySelector('#appSettings #setWfList .wf-item[data-id="lib:krea2-局部重绘.api"]');
@@ -3096,14 +3096,14 @@ try {
   })()`);
   check('能新建分类（胶囊里多一个「我的常用」）', catNew.includes('我的常用'), catNew.join(' / '));
 
-  const libCell = await page.center('#appSettings #setWfList .wf-item[data-id^="lib:"] .wf-cat');
+  const libCell = await page.center('#appSettings #setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-cat');
   await page.clickAt(libCell.x, libCell.y, { settle: 500 });
   await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
     .find((b) => b.textContent.trim() === '我的常用').click()`);
   await new Promise((r) => setTimeout(r, 900));
   const catMoved = await page.evaluate(`(() => {
     const box = document.getElementById('appSettings');
-    const row = box.querySelector('#setWfList .wf-item[data-id^="lib:"]');
+    const row = box.querySelector('#setWfList .wf-item[data-id="lib:e2e 我的流程"]');
     return {
       cat: row ? row.querySelector('.wf-cat').textContent : '',
       chips: [...box.querySelectorAll('.wf-chip')].map((c) => c.textContent),
@@ -3112,6 +3112,28 @@ try {
   check('给工作流换分类：行里的胶囊跟着变，分类那排立刻多出这一组',
     catMoved.cat === '我的常用' && catMoved.chips.includes('我的常用1'),
     JSON.stringify({ cat: catMoved.cat, chips: catMoved.chips }));
+
+  await page.evaluate(`document.querySelector('#setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-star').click()`);
+  await page.waitFor(`!!document.querySelector('#setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-star.on')`, 5000);
+  const customDefault = await page.evaluate(`(async () => {
+    const cats = (await (await fetch('/api/wf/categories')).json()).categories;
+    const key = cats.find((c) => c.name === '我的常用')?.id;
+    const defaults = (await (await fetch('/api/wf/defaults')).json()).defaults;
+    return { key, defaults, summary: document.getElementById('setWfDefault').textContent };
+  })()`);
+  check('自定义分组的星号只设该分组默认，说明行与分类标签一致',
+    customDefault.key && customDefault.defaults[customDefault.key] === 'lib:e2e 我的流程'
+      && !customDefault.defaults.txt2img && customDefault.summary.includes('我的常用')
+      && customDefault.summary.includes('e2e 我的流程'),
+    JSON.stringify(customDefault));
+
+  await page.evaluate(`document.querySelector('#setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-cat').click()`);
+  await page.evaluate(`[...document.querySelectorAll('.popmenu button')]
+    .find((b) => b.textContent.trim() === '文生图').click()`);
+  await page.waitFor(`document.querySelector('#setWfList .wf-item[data-id="lib:e2e 我的流程"] .wf-cat')?.textContent === '文生图'`, 5000);
+  const movedDefault = await page.evaluate(`(async () => (await (await fetch('/api/wf/defaults')).json()).defaults)()`);
+  check('默认工作流移出分组后清除旧星号和旧默认',
+    !movedDefault[customDefault.key], JSON.stringify(movedDefault));
 
   // 存进服务端，不是只记在内存里：关掉重开还在
   await page.key('Escape', { code: 'Escape', keyCode: 27 });

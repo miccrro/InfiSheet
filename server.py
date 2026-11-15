@@ -3783,7 +3783,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- PUT / DELETE：工作流库 ----------
     def api_put(self, path: str):
-        """PUT 只剩两件事：存工作流库、记「按分类默认」。
+        """PUT 只剩两件事：存工作流库、记「按分组默认」。
 
         以前这里还挂过 /api/presets/{file}/graph（内置预设的覆盖图）。内置预设整档删掉后
         只剩库：用户的工作流就是 data/library/ 里的文件本身，改就是改文件。
@@ -4413,6 +4413,8 @@ def save_categories(items) -> list[dict]:
     DATA.mkdir(parents=True, exist_ok=True)
     categories_file().write_text(
         json.dumps({"categories": out}, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 删掉的分组不能继续占着默认位。
+    save_wf_defaults(load_wf_defaults())
     return out
 
 
@@ -4423,11 +4425,11 @@ def normalize_group(value: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 默认工作流：**按能力分类**各一份
+# 默认工作流：**按可见分组**各一份
 #
 # 以前是「全局一个默认」存 localStorage：谁被选中，就意味着用户没选过也照样出图，
-# 而且换个浏览器就没了、MCP 也读不到。现在改成按分类（文生图 / 图生图 / 高清…）
-# 各记一份，存在 data/ 里：新建节点按用途预选，跨设备与 MCP 共用同一份。
+# 而且换个浏览器就没了、MCP 也读不到。现在按可见分组各记一份，存在 data/ 里：
+# 常用能力分组供新建节点按用途预选，自定义分组只供手动选择。
 # 只记 id，不记图——工作流被删 / 改名时由 /api/wf/resolve 那条链兜底。
 # --------------------------------------------------------------------------- #
 def wf_defaults_file() -> Path:
@@ -4435,7 +4437,7 @@ def wf_defaults_file() -> Path:
 
 
 def load_wf_defaults() -> dict[str, str]:
-    """读默认表。只认 CATEGORY_ORDER 里的键，值必须是字符串 id。"""
+    """读默认表。键必须是当前分组 id，值必须是字符串 id。"""
     try:
         raw = json.loads(wf_defaults_file().read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 —— 默认表坏了就当没配，回落到自动挑一个
@@ -4443,10 +4445,11 @@ def load_wf_defaults() -> dict[str, str]:
     items = raw.get("defaults") if isinstance(raw, dict) else None
     if not isinstance(items, dict):
         return {}
+    groups = {c["id"] for c in load_categories()}
     out = {}
     for k, v in items.items():
         k, v = str(k or "").strip(), str(v or "").strip()
-        if k in CATEGORY_ORDER and v:
+        if k in groups and v:
             out[k] = v
     return out
 
@@ -4454,10 +4457,11 @@ def load_wf_defaults() -> dict[str, str]:
 def save_wf_defaults(items) -> dict[str, str]:
     """清洗后落盘：键必须在分类表里，值只留工作流 id（`lib:`；老的 `preset:` 也照收，
     由 resolve_workflow_id 按名字映射到库，别因为一次升级就把默认清空）。"""
+    groups = {c["id"] for c in load_categories()}
     out = {}
     for k, v in (items or {}).items():
         k, v = str(k or "").strip(), str(v or "").strip()
-        if k not in CATEGORY_ORDER or not v:
+        if k not in groups or not v:
             continue
         if not v.startswith(("preset:", "lib:")):
             continue
@@ -4662,6 +4666,7 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
         return None, "工作流文件读不出来"
     if not isinstance(data, dict):
         return None, "工作流文件格式不对"
+    old_group = normalize_group(data.get("group")) or graph_category(data.get("graph") or {}, data)
     if "title" in patch:
         title = str(patch.get("title") or "").strip()[:40]
         if title:
@@ -4681,6 +4686,12 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
         else:
             data.pop("icon", None)       # 清空 = 回到默认的工作流图标
     f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    new_group = normalize_group(data.get("group")) or graph_category(data.get("graph") or {}, data)
+    if old_group != new_group:
+        defaults = load_wf_defaults()
+        if defaults.get(old_group) == wf_id:
+            del defaults[old_group]
+            save_wf_defaults(defaults)
     return {"id": wf_id, "title": data.get("title") or f.stem,
             "group": data.get("group") or "",
             "icon": data.get("icon") or ""}, ""
