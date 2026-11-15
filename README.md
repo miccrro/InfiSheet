@@ -18,7 +18,7 @@
 | 系统 | 入口 | 带图标的版本 |
 |---|---|---|
 | Windows | `启动.bat` | `InfiSheet.lnk`（或双击 `创建快捷方式.vbs` 在桌面生成一个） |
-| macOS | `启动.command`（首次右键 → 打开） | `InfiSheet.app`（双击即可，图标是 InfiSheet） |
+| macOS | `启动.command`（首次右键 → 打开） | `InfiSheet.app`（首次右键 → 打开，图标是 InfiSheet） |
 | Linux | `./start.sh` | `InfiSheet.desktop`（`Icon=` 指向 `static/icon-512.png`） |
 
 `.bat` / `.command` / `.sh` 本身带不了图标——图标由系统按文件类型决定。想让它显示成 InfiSheet，
@@ -37,15 +37,13 @@
 Windows 上别直接拿别人给的 `.lnk`：里面写死了路径，换台机器就失效。发 `创建快捷方式.vbs` 更稳——
 它按脚本自己的位置算路径，双击在桌面生成一份指向当前目录的快捷方式。
 
-**macOS 打不开的话，基本是这两件事之一：**
+**macOS 首次打开：**下载发布页的安装包，解压后保留整个 `infisheet` 文件夹，右键 `InfiSheet.app` →「打开」。如果系统仍拦截，可以在同一目录的终端里运行：
 
 ```bash
-chmod +x 启动.command                          # ① 双击只弹「permission denied」：执行位丢了
-xattr -d com.apple.quarantine 启动.command     # ② 提示「无法验证开发者」：去掉隔离标记
+bash 启动.command
 ```
 
-压缩包（尤其是从 GitHub 直接下载的 zip）解压后不带执行位，`git clone` 下来才有。
-两条都不想敲的话，直接在终端里 `bash 启动.command` 也行——脚本本身不依赖执行位。
+`bash` 启动不依赖文件的执行位；若它报错，终端会显示具体原因。发布页安装包包含 macOS 所需的执行权限元数据；GitHub 自动生成的源码 zip 不适合作为安装包。
 脚本现在会把失败原因打在窗口里并停住，不会一闪而过。
 
 打开后先看到**首页**：新建画布 / 最近项目（缩略图 + 画布名 + 日期）。

@@ -88,7 +88,9 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
                 arc = f"infisheet/{name}"
                 zf.write(p, arc)
                 if needs_exec(name):
-                    zf.getinfo(arc).external_attr = 0o100755 << 16
+                    info = zf.getinfo(arc)
+                    info.create_system = 3  # macOS 解压器按 Unix 权限读取执行位
+                    info.external_attr = 0o100755 << 16
         for name in INCLUDE_DIRS:
             d = ROOT / name
             if not d.is_dir():
@@ -99,7 +101,9 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
                     continue
                 zf.write(p, f"infisheet/{rel}")
                 if needs_exec(rel):
-                    zf.getinfo(f"infisheet/{rel}").external_attr = 0o100755 << 16
+                    info = zf.getinfo(f"infisheet/{rel}")
+                    info.create_system = 3
+                    info.external_attr = 0o100755 << 16
     written.append(app_zip)
 
     if with_data:

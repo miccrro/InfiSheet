@@ -35,6 +35,7 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm run check
+      - run: python -m tests.pack
       - run: npm test
 
   e2e:
