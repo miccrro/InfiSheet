@@ -3108,9 +3108,13 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 .node.image .node-body { padding: 0; }
 .node.image .thumb { border-radius: 10px; }
-/* 选中：不要方框边，改用一圈贴住图片圆角的描边 + 一点投影，否则在无边节点上像贴了张纸 */
+/* 选中描边贴在实际图片上；高竖图的 .thumb 会比外层卡片窄。 */
 .node.image.selected .node-card {
   border: none;
+  box-shadow: none;
+}
+.node.image.selected .thumb:not(.op-mode),
+.node.image.selected .thumb.op-mode .op-stage {
   box-shadow: 0 0 0 1.5px rgba(122, 162, 255, 0.85), 0 10px 26px rgba(0, 0, 0, 0.42);
 }
 .node.image:hover .node-card { border: none; }
