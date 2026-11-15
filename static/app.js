@@ -11455,7 +11455,11 @@
     // 外框还没量出宽（刚挂上、draw 还没跑）就退回节点，别拿一个 0 宽的框去居中。
     const opStage = el.querySelector('.op-stage');
     const stageBox = opStage ? opStage.getBoundingClientRect() : null;
-    const ref = stageBox && stageBox.width > 1 ? stageBox : nb;
+    const thumbBox = el.querySelector('.thumb')?.getBoundingClientRect();
+    const hasStage = stageBox && stageBox.width > 1;
+    const ref = hasStage ? stageBox : (thumbBox && thumbBox.width > 1 ? thumbBox : nb);
+    // 工具条不随画布缩放，放大后要按图片的屏幕宽度拉开按钮间距。
+    bar.style.minWidth = `${Math.round(Math.min(ref.width, window.innerWidth - 20))}px`;
     const w = bar.offsetWidth || 300;
     const h = bar.offsetHeight || 34;
     const minL = 10, maxL = Math.max(10, window.innerWidth - w - 10);
@@ -11473,7 +11477,7 @@
     // 给定横向位置，纵向怎么摆：贴在标题上方；压到别人就把整条往上抬，
     // 抬一次可能又撞上更高处的一条，所以循环到不再重叠（最多 3 次，正常一次就结束）。
     const solve = (left) => {
-      let y = Math.max(8, ref.top - h - 8);
+      let y = Math.max(8, (hasStage ? ref.top : nb.top) - h - 8);
       let place = 'above';
       for (let i = 0; i < 3; i++) {
         const hit = otherTitleBounds(n.id, left, left + w, y, y + h);
