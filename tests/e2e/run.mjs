@@ -6955,9 +6955,14 @@ try {
     const button = () => document.querySelector('[data-panel-for="i2"] .gen-run');
     button().click();
     await sleep(200);
+    const br = button().getBoundingClientRect();
+    const ir = button().querySelector('svg').getBoundingClientRect();
     const active = { label: button().getAttribute('aria-label'), icon: button().querySelector('svg path')?.getAttribute('d'),
       busy: button().classList.contains('busy'), disabled: button().disabled,
-      color: getComputedStyle(button()).backgroundColor, size: [button().offsetWidth, button().offsetHeight] };
+      color: getComputedStyle(button()).backgroundColor, size: [button().offsetWidth, button().offsetHeight],
+      iconSize: [ir.width, ir.height],
+      offset: [ir.left + ir.width / 2 - br.left - br.width / 2,
+        ir.top + ir.height / 2 - br.top - br.height / 2] };
     button().click();
     await sleep(1600);        // 等准备阶段彻底跑完，确认没有后续提交
     const after = { label: button().getAttribute('aria-label'), icon: button().querySelector('svg path')?.getAttribute('d'),
@@ -6971,6 +6976,8 @@ try {
       && clickStorm.active.label === '取消生成' && clickStorm.active.busy
       && !clickStorm.active.disabled && clickStorm.active.color === 'rgb(169, 45, 57)'
       && clickStorm.active.size.join('×') === '28×28'
+      && clickStorm.active.iconSize.join('×') === '18×18'
+      && clickStorm.active.offset.every((v) => Math.abs(v) < 0.5)
       && clickStorm.active.size.join('×') === clickStorm.after.size.join('×')
       && !clickStorm.after.busy && clickStorm.after.label === '生成'
       && clickStorm.after.status === '已取消', JSON.stringify(clickStorm));

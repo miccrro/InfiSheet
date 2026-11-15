@@ -2628,6 +2628,8 @@ button.primary:hover,
    一颗白圆点挤在三个方角控件中间，看着像从别的设计稿里剪过来的。 */
 .gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px; }
 .gen-bar .gen-run .oi { width: 17px; height: 17px; }
+/* 取消图标用偶数尺寸落在 28px 按钮的整数像素中心，避免 17px 的半像素偏移。 */
+.gen-run.busy .oi, .gen-bar .gen-run.busy .oi { width: 18px; height: 18px; }
 /* 放大编辑区里那颗发送键是同一个按钮，圆角也得跟着走，不然两处长得不一样 */
 .of-params .gen-run { border-radius: 8px; }
 
