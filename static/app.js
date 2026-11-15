@@ -625,9 +625,9 @@
             el.style.width = `${n.w}px`;
             queueSave();
           }
-          // 纯图片节点没有下方参数面板：竖图被 760px 高度限制收窄时，外框贴合原图。
+          // 纯图片节点没有下方参数面板：竖图被 760px 高度限制收窄时，外框也要跟着收窄。
           if (!el.querySelector('.gen-panel') && im.naturalWidth && im.naturalHeight) {
-            const fittedWidth = Math.ceil(760 * im.naturalWidth / im.naturalHeight) + 2;
+            const fittedWidth = Math.round(760 * im.naturalWidth / im.naturalHeight) + 22;
             if (n.w > fittedWidth) {
               n.w = fittedWidth;
               queueSave();
@@ -641,7 +641,7 @@
             // 把比例交给框：框用 aspect-ratio 自己算出高，图片就成了「刚好装下」，
             // object-fit 没空间可补 —— 横图不上下留边、竖图不左右留边。
             if (im.naturalWidth && im.naturalHeight) {
-              thumb.style.setProperty('--ar', im.naturalWidth / im.naturalHeight);
+              thumb.style.setProperty('--ar', (im.naturalWidth / im.naturalHeight).toFixed(4));
             }
           }
           // 遮罩和图片尺寸对不上（这张图被换过内容）就不画预览：拉伸的预览比没有更误导，
