@@ -8192,12 +8192,13 @@ try {
     const thumb = el.querySelector('.thumb').getBoundingClientRect();
     return { cardW: Math.round(card.width), thumbW: Math.round(thumb.width),
       plain: !!el.querySelector('.n-genon'), size: [im.naturalWidth, im.naturalHeight],
-      styleW: el.style.width,
+      styleW: el.style.width, thumbH: Math.round(thumb.height),
       left: Math.round(thumb.left - card.left), right: Math.round(card.right - thumb.right) };
   })()`);
-  check('导入竖图时节点外框跟图片一起收窄，两侧没有宽空带',
+  check('导入竖图时节点外框严格贴合图片尺寸与比例',
     Math.abs(tallImport.left - tallImport.right) <= 1
-      && tallImport.left <= 12 && tallImport.right <= 12,
+      && tallImport.left <= 2 && tallImport.right <= 2
+      && Math.abs(tallImport.thumbW / tallImport.thumbH - 2308 / 4096) < 0.002,
     JSON.stringify(tallImport));
   const inferred = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
