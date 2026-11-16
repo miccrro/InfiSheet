@@ -24,6 +24,7 @@
     groups: [],
     workflows: { items: [], categories: [] },                // boot 时从 /api/library 拉取
     wfDefaults: {},                                          // 能力分类 → 默认工作流 id（服务端存）
+    inferenceWorkflow: '',                                   // 推理按钮专用工作流（全局设置）
     name: '未命名画布',
     snap: false,
     linksHidden: false,
@@ -1051,6 +1052,7 @@
       };
       // 默认工作流按可见分组各一份，跟列表同一份响应回来
       state.wfDefaults = lib.defaults || {};
+      state.inferenceWorkflow = lib.inference_workflow || '';
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
     return state.workflows;
@@ -5037,6 +5039,27 @@
     if (!listEl || !catsEl) return;
     const opts = wfOptions();
     const cats = wfCategories();
+    const inferenceSelect = box.querySelector('#setInferenceWf');
+    if (inferenceSelect) {
+      inferenceSelect.replaceChildren(new window.Option('自动识别「推理」工作流', ''));
+      opts.filter((o) => o.image).forEach((o) => {
+        inferenceSelect.add(new window.Option(o.label, o.id));
+      });
+      if (state.inferenceWorkflow && !opts.some((o) => o.id === state.inferenceWorkflow)) {
+        inferenceSelect.add(new window.Option('已删除的工作流，请重新选择', state.inferenceWorkflow));
+      }
+      inferenceSelect.value = state.inferenceWorkflow;
+      inferenceSelect.onchange = async () => {
+        const previous = state.inferenceWorkflow;
+        const r = await api('/api/settings/inference', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workflow: inferenceSelect.value }),
+        });
+        if (!r.ok) { inferenceSelect.value = previous; flash(r.error || '保存失败'); return; }
+        state.inferenceWorkflow = r.workflow;
+        flash('推理工作流已保存');
+      };
+    }
 
     // ---- 每个可见分组当前用的是哪一份 ----
     // 「未设」不能只是一段灰字：用户设了别的分类的默认，却以为这一份也该生效，
@@ -5637,6 +5660,10 @@
                 <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
               </div>
+              <label class="set-inference">推理提示词工作流
+                <select id="setInferenceWf" aria-label="推理提示词工作流"></select>
+              </label>
+              <p class="set-tip">图片节点有图时直接点「推理提示词」运行；这里选择后台使用的工作流，无需在图片底部切换。</p>
               <div class="set-tip" id="setWfDefault"></div>
               <div class="wf-list" id="setWfList"></div>
               <div class="set-group">分类</div>
@@ -11566,9 +11593,16 @@
     }
     if (n.gen && n.gen.busy) { flash('当前节点正在生成，完成后再推理'); return; }
     const options = wfOptions();
-    const workflow = options.find((o) => o.file === '推理' || o.label === '推理')
-      || options.find((o) => o.file === '反推' || o.label === '反推');
-    if (!workflow) { flash('请先在工作流库中导入名为「推理」的图片推理工作流'); return; }
+    const named = (o, name) => o.image && (o.label.includes(name) || o.file.includes(name));
+    const workflow = state.inferenceWorkflow
+      ? options.find((o) => o.id === state.inferenceWorkflow)
+      : options.find((o) => named(o, '推理')) || options.find((o) => named(o, '反推'));
+    if (!workflow) {
+      flash(state.inferenceWorkflow
+        ? '推理工作流已删除，请在全局设置中重新选择'
+        : '请在全局设置中选择推理工作流，或导入名为「推理」的工作流');
+      return;
+    }
     const attempt = Symbol('infer');
     n.inferAttempt = attempt;
     updateImgTools();

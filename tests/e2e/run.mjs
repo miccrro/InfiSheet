@@ -8205,14 +8205,17 @@ try {
 
   // 推理写回图片提示词，也生成一个可连接的提示词节点。
   await page.evaluate(`(async () => {
-    await fetch('/api/library/' + encodeURIComponent('推理'), {
+    await fetch('/api/library/' + encodeURIComponent('Qwen3.5-图像反推提示词'), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '推理', graph: {
+      body: JSON.stringify({ title: 'Qwen3.5-图像反推提示词', graph: {
         '10': { class_type: 'LoadImage', inputs: { image: '' } },
         '8': { class_type: 'GJJ_GemmaTextGenerate', inputs: { media: ['10', 0], prompt: '' } },
         '12': { class_type: 'ShowText|pysssss', inputs: { text: ['8', 0] } },
       } }),
     });
+    await fetch('/api/settings/inference', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workflow: 'lib:Qwen3.5-图像反推提示词' }) });
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="2308" height="4096">'
       + '<rect width="2308" height="4096" fill="#345"/></svg>';
     const canvas = { version: 2, name: 'e2e 推理', seq: 1, bootAt: Date.now(),
@@ -8227,6 +8230,27 @@ try {
     location.hash = '#canvas'; location.reload();
   })()`);
   await page.waitFor(`!!document.querySelector('#nodes .node[data-id="ip1"]')`, 8000);
+  const inferenceSetting = await page.evaluate(`(async () => {
+    const lib = await (await fetch('/api/library')).json();
+    document.querySelector('[data-act="settings"]').click();
+    const select = document.getElementById('setInferenceWf');
+    const shown = { saved: lib.inference_workflow, selected: select?.value,
+      choices: [...(select?.options || [])].map((o) => o.value) };
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    await new Promise((r) => setTimeout(r, 250));
+    select.value = 'lib:Qwen3.5-图像反推提示词';
+    select.dispatchEvent(new Event('change'));
+    await new Promise((r) => setTimeout(r, 250));
+    shown.updated = (await (await fetch('/api/library')).json()).inference_workflow;
+    document.querySelector('#appSettings .x').click();
+    return shown;
+  })()`);
+  check('全局设置保存并显示推理专用工作流',
+    inferenceSetting.saved === 'lib:Qwen3.5-图像反推提示词'
+      && inferenceSetting.selected === inferenceSetting.saved
+      && inferenceSetting.choices.includes(inferenceSetting.saved)
+      && inferenceSetting.updated === inferenceSetting.saved, JSON.stringify(inferenceSetting));
   await pickNode('ip1', false);
   const imageSelection = await page.evaluate(`(async () => {
     const el = document.querySelector('#nodes .node[data-id="ip1"]');
@@ -8282,6 +8306,17 @@ try {
       && inferred.nodes === 2 && inferred.output.includes('推理提示词')
       && inferred.output.includes(inferred.prompt) && inferred.links === 1,
     JSON.stringify(inferred));
+  const autoInference = await page.evaluate(`(async () => {
+    document.querySelector('[data-act="settings"]').click();
+    const select = document.getElementById('setInferenceWf');
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    await new Promise((r) => setTimeout(r, 250));
+    document.querySelector('#appSettings .x').click();
+    return (await (await fetch('/api/library')).json()).inference_workflow;
+  })()`);
+  check('取消专用配置后回到自动识别模式', autoInference === '', JSON.stringify(autoInference));
+  await pickNode('ip1', false);
   const inferCancel = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const real = window.fetch.bind(window);
