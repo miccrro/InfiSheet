@@ -923,14 +923,14 @@
   }
 
   // ---------------- 工作流图标 ----------------
-  // 一个工作流可以有自己的标：一批内置的**模型官方商标** + 用户自己传的图。
+  // 一个工作流可以有自己的标：通用图标、内置模型商标或用户自己传的图。
   //
   // 内置这批是各家的真实 logo（PNG 在 static/logos/），不是拿字母画的仿标：
   // 用户要的就是「一眼认出这是 Qwen 还是 FLUX」，仿标做不到这件事。
   // 商标归各自所有者，这里只用来标识对应的模型（合理使用）；要换掉某一张，
   // 直接把 static/logos/<id>.png 换成新图即可，前端只认文件名。
   //
-  // 只收**拿得到官方商标**的：Chroma、CogVideoX 这类没有独立 logo 的宁可空着，
+  // 模型商标只收**拿得到官方商标**的：Chroma、CogVideoX 这类没有独立 logo 的宁可空着，
   // 也不编一个字母牌混在里面。
   const WF_ICONS = [
     { id: 'qwen', name: 'Qwen · 通义千问' },
@@ -943,6 +943,7 @@
     { id: 'hidream', name: 'HiDream' },
     { id: 'ltx', name: 'LTX-Video · Lightricks' },
     { id: 'mochi', name: 'Mochi · Genmo' },
+    { id: 'tonyon', name: 'Tonyon' },
   ];
   const WF_ICON_MAP = {};
   WF_ICONS.forEach((ic) => { WF_ICON_MAP[ic.id] = ic; });
@@ -971,7 +972,7 @@
       // 没设图标：默认那颗灰线工作流标 + 虚线框，一眼能看出「这儿可以点」
       return `<span class="wf-ico is-none" style="width:${px}px;height:${px}px">${icon('wf')}</span>`;
     }
-    // 官方商标统一是「白色 + 透明底」（static/logos/ 那 10 张），直接落在深色面板上
+    // 内置图标统一是「白色 + 透明底」，直接落在深色面板上
     // 就是最终效果，不能再垫浅色板——垫了白图标就整个消失。
     return `<span class="wf-ico${raw.startsWith('preset:') ? ' is-logo' : ''}"`
       + ` style="width:${px}px;height:${px}px">${inner}</span>`;

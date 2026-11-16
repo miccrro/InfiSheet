@@ -3194,6 +3194,29 @@ try {
     !!icoPicker && icoPicker.n >= 10 && /Qwen/.test(icoPicker.names[0]) && icoPicker.foot.length === 2,
     JSON.stringify(icoPicker));
 
+  const tonyonChoice = await page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.icon-pop .icon-pick')].find((x) => x.title === 'Tonyon');
+    const img = b?.querySelector('img');
+    return { available: !!b, src: img?.getAttribute('src') || '', loaded: !!(img?.complete && img.naturalWidth) };
+  })()`);
+  check('图标选择器提供 Tonyon 图标且图片加载成功',
+    tonyonChoice.available && /^\/logos\/tonyon\.png(\?v=\d+)?$/.test(tonyonChoice.src)
+      && tonyonChoice.loaded, JSON.stringify(tonyonChoice));
+  await page.evaluate(`document.querySelector('.icon-pop .icon-pick[title="Tonyon"]')?.click()`);
+  await new Promise((r) => setTimeout(r, 900));
+  const tonyonSet = await page.evaluate(`(async () => {
+    const row = document.querySelector('#appSettings #setWfList .wf-item');
+    const img = row.querySelector('.wf-ico-btn img');
+    const lib = await (await fetch('/api/library')).json();
+    const it = (lib.items || []).find((x) => 'lib:' + x.name === row.dataset.id);
+    return { src: img?.getAttribute('src') || '', server: it?.icon || '' };
+  })()`);
+  check('选择 Tonyon 后工作流显示新图标并保存图标标识',
+    /^\/logos\/tonyon\.png(\?v=\d+)?$/.test(tonyonSet.src)
+      && tonyonSet.server === 'preset:tonyon', JSON.stringify(tonyonSet));
+
+  await page.evaluate(`document.querySelector('#appSettings #setWfList .wf-item .wf-ico-btn').click()`);
+  await new Promise((r) => setTimeout(r, 400));
   await page.evaluate(`(() => {
     const b = [...document.querySelectorAll('.icon-pop .icon-pick')].find((x) => /Qwen/.test(x.title));
     if (b) b.click();
