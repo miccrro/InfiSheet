@@ -7811,7 +7811,7 @@
   function jobPhaseText(job) {
     if (!job) return '';
     if (job.phase === 'queued') return '排队中';
-    if (job.phase === 'running') return `${job.kind === 'infer' ? '反推中' : '生成中'}${pctText(job.progress)}`;
+    if (job.phase === 'running') return `${job.kind === 'infer' ? '推理中' : '生成中'}${pctText(job.progress)}`;
     if (job.phase === 'done') return '完成';
     if (job.phase === 'error') return '失败';
     if (job.phase === 'canceled') return '已取消';
@@ -11311,13 +11311,13 @@
     ['outpaint', '扩图', 'expand', '把画布向外扩大，让模型补全画外内容'],
     ['cutout', '抠图', 'magic', '去掉背景，只保留主体'],
     ['upscale', '高清', 'zoom', '放大到更高分辨率并补充细节'],
-    ['infer', '反推提示词', 'search', '用「反推」工作流分析这张图，写入当前节点的提示词'],
+    ['infer', '推理提示词', 'search', '用「推理」工作流分析这张图，写入当前节点的提示词'],
     ['download', '下载', 'download', '把这张图存到本地（原图分辨率，不压缩）'],
   ];
   // 分隔线插在「哪一颗之前」：本地改像素 ｜ 靠遮罩 ｜ 整张交给模型 ｜ 导出。
   // 下载单独成一段：它不动像素、不跑工作流，混在「高清 / 抠图」里会让人以为也要排队生成。
   const IMG_TOOL_BREAKS = new Set(['smart', 'outpaint', 'download']);
-  // 窄屏收纳：编辑和反推用得少、名字又长，宽度不够时收进
+  // 窄屏收纳：编辑和提示词推理用得少、名字又长，宽度不够时收进
   // 「更多编辑」。裁剪 / 旋转 / 调色 / 遮罩 / 扩图 / 下载始终留在条上——它们是高频且
   // 一眼能认出图标的那几个。收起的按钮不做成 display:none 就完事：菜单里要能用 Tab 走到。
   const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale', 'infer']);
@@ -11384,7 +11384,7 @@
     more.type = 'button';
     more.className = 'it-btn it-more-toggle';
     more.dataset.moreToggle = '1';
-    more.title = '更多编辑：擦除 / 去字 / 抠图 / 高清 / 反推提示词';
+    more.title = '更多编辑：擦除 / 去字 / 抠图 / 高清 / 推理提示词';
     more.setAttribute('aria-label', '更多编辑');
     more.innerHTML = `${icon('more')}<span>更多编辑</span>`;
     more.onclick = (ev) => { ev.stopPropagation(); openImgMore(more); };
@@ -11549,7 +11549,7 @@
       const ib = bar.querySelector('[data-tool="infer"]');
       if (ib) {
         ib.classList.toggle('on', !!n.inferAttempt);
-        ib.querySelector('span').textContent = n.inferAttempt ? '取消反推' : '反推提示词';
+        ib.querySelector('span').textContent = n.inferAttempt ? '取消推理' : '推理提示词';
       }
       fitImgTools();
       positionImgTools();
@@ -11561,12 +11561,14 @@
       n.inferAttempt = null;
       if (n.inferJob && JOB_ALIVE.has(n.inferJob.phase)) cancelQueuedJob(n.inferJob).catch(() => {});
       updateImgTools();
-      flash('已取消反推');
+      flash('已取消推理');
       return;
     }
-    if (n.gen && n.gen.busy) { flash('当前节点正在生成，完成后再反推'); return; }
-    const workflow = wfOptions().find((o) => o.file === '反推' || o.label === '反推');
-    if (!workflow) { flash('请先在工作流库中导入名为「反推」的图片反推工作流'); return; }
+    if (n.gen && n.gen.busy) { flash('当前节点正在生成，完成后再推理'); return; }
+    const options = wfOptions();
+    const workflow = options.find((o) => o.file === '推理' || o.label === '推理')
+      || options.find((o) => o.file === '反推' || o.label === '反推');
+    if (!workflow) { flash('请先在工作流库中导入名为「推理」的图片推理工作流'); return; }
     const attempt = Symbol('infer');
     n.inferAttempt = attempt;
     updateImgTools();
@@ -11575,9 +11577,9 @@
     try {
       const graph = await loadGraphById(workflow.id);
       if (canceled()) return;
-      if (!graph) throw new Error('反推工作流已不存在');
+      if (!graph) throw new Error('推理工作流已不存在');
       const loaders = Object.values(graph).filter((item) => item.class_type === 'LoadImage' && item.inputs);
-      if (!loaders.length) throw new Error('反推工作流没有 LoadImage 图片输入');
+      if (!loaders.length) throw new Error('推理工作流没有 LoadImage 图片输入');
       const image = await ensureUploaded(n);
       if (canceled()) return;
       loaders.forEach((item) => { item.inputs.image = image; });
@@ -11587,7 +11589,7 @@
         return;
       }
       if (!res.ok || !res.prompt_id) throw new Error(JSON.stringify(res.error || '提交失败').slice(0, 200));
-      const job = newJob(n, 'infer', { title: '图片反推提示词', wf: workflow.id });
+      const job = newJob(n, 'infer', { title: '图片推理提示词', wf: workflow.id });
       job.pid = res.prompt_id;
       n.inferJob = job;
       job.poll = pollPrompt(res.prompt_id,
@@ -11605,7 +11607,7 @@
           if (error || !prompt) {
             const message = error || '工作流没有返回文本；请确认推理节点产生了文本结果';
             finishJob(job, 'error', message);
-            flash(`反推失败：${message}`);
+            flash(`推理失败：${message}`);
             return;
           }
           if (n.plain) delete n.plain;
@@ -11613,12 +11615,13 @@
           n.gen.prompt = prompt;
           let output = state.nodes.find((item) => item.type === 'text' && item.inferSource === n.id);
           if (output) {
+            output.title = '推理提示词';
             output.value = prompt;
             output.html = textToHtml(prompt);
             rerenderNode(output.id, true);
           } else {
             output = addTextNode(n.x + nodeWidth(n) + 80, n.y, prompt);
-            output.title = '反推提示词';
+            output.title = '推理提示词';
             output.inferSource = n.id;
             addLink(n.id, output.id, 'in');
             state.groups.filter((group) => group.nodeIds.includes(n.id))
@@ -11630,13 +11633,13 @@
           queueSave();
           commit();
           finishJob(job, 'done', '已写入当前节点和提示词节点');
-          flash('反推完成，已生成提示词节点');
+          flash('推理完成，已生成提示词节点');
         });
       renderQueue();
     } catch (err) {
       if (canceled()) return;
       reset();
-      flash(`反推失败：${err.message}`);
+      flash(`推理失败：${err.message}`);
     }
   }
 

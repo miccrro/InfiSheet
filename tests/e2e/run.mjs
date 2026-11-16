@@ -128,7 +128,7 @@ try {
     && qMix.live === 2 && qMix.text === '2 个进行中 · 1 个完成 · 1 个失败', qMix.text);
   check('队列条目：生成中带百分比，没进度就不编一个数字',
     jobPhaseText({ phase: 'running', progress: 42 }) === '生成中 42%'
-    && jobPhaseText({ phase: 'running', kind: 'infer', progress: null }) === '反推中'
+    && jobPhaseText({ phase: 'running', kind: 'infer', progress: null }) === '推理中'
     && jobPhaseText({ phase: 'running', progress: null }) === '生成中'
     && jobPhaseText({ phase: 'running', progress: 0 }) === '生成中'   // 0% 还没走完第一步
     && jobPhaseText({ phase: 'canceled' }) === '已取消');
@@ -4888,7 +4888,7 @@ try {
   })()`);
   check('选中一张有图的节点 → 工具条贴着它（上方，放不下就压在自己图上）、图标 + 文案齐全',
     !toolBar.hidden
-      && toolBar.tools.join('/') === '裁剪/旋转/调色/智能编辑/遮罩/擦除/去字/扩图/抠图/高清/反推提示词/下载'
+      && toolBar.tools.join('/') === '裁剪/旋转/调色/智能编辑/遮罩/擦除/去字/扩图/抠图/高清/推理提示词/下载'
       && toolBar.attached && toolBar.inView && toolBar.clearsTitles
       && (toolBar.place === 'above' || toolBar.place === 'over')
       && toolBar.pe === 'none' && toolBar.btnPe === 'auto',
@@ -4960,7 +4960,7 @@ try {
     };
   })()`);
   // 智能编辑也留在条上（它和遮罩同类，属于高频），所以收起来之后是 7 颗 + 「更多编辑」
-  check('1024 宽：反推与整图编辑收进「更多编辑」，核心工具仍在',
+  check('1024 宽：推理与整图编辑收进「更多编辑」，核心工具仍在',
     narrowTools.narrow && narrowTools.gone
       && narrowTools.tools.join('/') === 'crop/rotate/color/smart/mask/outpaint/more/download'
       && narrowTools.toggleFocusable && narrowTools.w < 560,
@@ -4988,13 +4988,13 @@ try {
     await new Promise((r) => setTimeout(r, 200));
     return out;
   })()`);
-  check('「更多编辑」菜单：反推与编辑工具说明清楚结果去向',
+  check('「更多编辑」菜单：推理与编辑工具说明清楚结果去向',
     !!moreMenu && moreMenu.items.length === 5
       && /擦除 · 需要生成/.test(moreMenu.items[0])
       && /去字 · 需要生成/.test(moreMenu.items[1])
       && /抠图 · 将在新节点中生成/.test(moreMenu.items[2])
       && /高清 · 将在新节点中生成/.test(moreMenu.items[3])
-      && /反推提示词 · 写入提示词节点/.test(moreMenu.items[4])
+      && /推理提示词 · 写入提示词节点/.test(moreMenu.items[4])
       && moreMenu.icons === 5,
     JSON.stringify(moreMenu));
 
@@ -8203,11 +8203,11 @@ try {
       && ownImageBinding.text.uploads.length === 0 && ownImageBinding.text.loads.length === 0,
     JSON.stringify(ownImageBinding.text));
 
-  // 反推写回图片提示词，也生成一个可连接的提示词节点。
+  // 推理写回图片提示词，也生成一个可连接的提示词节点。
   await page.evaluate(`(async () => {
-    await fetch('/api/library/' + encodeURIComponent('反推'), {
+    await fetch('/api/library/' + encodeURIComponent('推理'), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '反推', graph: {
+      body: JSON.stringify({ title: '推理', graph: {
         '10': { class_type: 'LoadImage', inputs: { image: '' } },
         '8': { class_type: 'GJJ_GemmaTextGenerate', inputs: { media: ['10', 0], prompt: '' } },
         '12': { class_type: 'ShowText|pysssss', inputs: { text: ['8', 0] } },
@@ -8215,9 +8215,9 @@ try {
     });
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="2308" height="4096">'
       + '<rect width="2308" height="4096" fill="#345"/></svg>';
-    const canvas = { version: 2, name: 'e2e 反推', seq: 1, bootAt: Date.now(),
+    const canvas = { version: 2, name: 'e2e 推理', seq: 1, bootAt: Date.now(),
       view: { x: 80, y: 50, k: 1 }, groups: [], links: [],
-      nodes: [{ id: 'ip1', type: 'image', title: '反推源图', x: 200, y: 160,
+      nodes: [{ id: 'ip1', type: 'image', title: '推理源图', x: 200, y: 160,
         w: 520, dataURL: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), plain: true }] };
     const created = await (await fetch('/api/projects', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: canvas.name }) })).json();
@@ -8277,9 +8277,10 @@ try {
         output: output?.textContent || '', links: document.querySelectorAll('#links .link-line').length };
     } finally { window.fetch = real; }
   })()`);
-  check('图片反推写回原节点提示词，并生成连线的文本节点',
+  check('图片推理写回原节点提示词，并生成连线的文本节点',
     inferred.submitted && !!inferred.image && inferred.prompt === '夜色中的蓝衣人物，柔和侧光'
-      && inferred.nodes === 2 && inferred.output.includes(inferred.prompt) && inferred.links === 1,
+      && inferred.nodes === 2 && inferred.output.includes('推理提示词')
+      && inferred.output.includes(inferred.prompt) && inferred.links === 1,
     JSON.stringify(inferred));
   const inferCancel = await page.evaluate(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -8307,7 +8308,7 @@ try {
         prompt: document.querySelector('[data-panel-for="ip1"] .gen-prompt')?.textContent || '' };
     } finally { window.fetch = real; }
   })()`);
-  check('再次点击反推可取消任务，已有提示词保持不变',
+  check('再次点击推理可取消任务，已有提示词保持不变',
     inferCancel.canceled.includes('infer-cancel') && !inferCancel.active
       && inferCancel.prompt === inferred.prompt, JSON.stringify(inferCancel));
 
