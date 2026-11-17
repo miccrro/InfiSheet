@@ -1930,6 +1930,7 @@ body.resizing .node-resize { opacity: 1; }
 #addMenu .am-title { font-size: var(--fs-meta); }
 #statusChip { font-size: var(--fs-meta); }
 .set-tip { margin: 2px 0 0; font-size: var(--fs-meta); color: var(--faint); line-height: 1.55; }
+.set-logs { max-height: 210px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--dim); font-size: 11px; line-height: 1.55; }
 #appSettings .set-inference { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--fs-meta); }
 #appSettings .set-inference select { min-width: 220px; max-width: 100%; padding: 7px 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 

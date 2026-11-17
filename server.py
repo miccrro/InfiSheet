@@ -24,6 +24,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -41,8 +42,10 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+from datetime import datetime
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import mcp_server
@@ -74,6 +77,74 @@ def default_data_dir() -> Path:
 
 
 DATA = default_data_dir()
+APP_LOG = logging.getLogger("infisheet")
+_JOB_LOGGED: dict[str, str] = {}
+_JOB_LOG_LOCK = threading.Lock()
+
+
+def configure_logging() -> None:
+    path = DATA / "logs" / "infisheet.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        APP_LOG.setLevel(logging.INFO)
+        APP_LOG.propagate = False
+        for handler in APP_LOG.handlers[:]:
+            handler.close()
+            APP_LOG.removeHandler(handler)
+        handler = RotatingFileHandler(path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        APP_LOG.addHandler(handler)
+    except OSError as exc:
+        print(f"[警告] 程序日志不可写：{exc}", file=sys.stderr)
+
+
+def log_event(event: str, level: int = logging.INFO, **fields) -> None:
+    if not APP_LOG.handlers:
+        return
+    entry = {"time": datetime.now().astimezone().isoformat(timespec="seconds"),
+             "level": logging.getLevelName(level).lower(), "event": event, **fields}
+    APP_LOG.log(level, json.dumps(entry, ensure_ascii=False, default=str))
+
+
+def recent_logs(limit: int = 200) -> list[dict]:
+    path = DATA / "logs" / "infisheet.log"
+    if not path.exists():
+        return []
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - 256 * 1024))
+            raw = stream.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    if size > 256 * 1024:
+        raw = raw[1:]
+    entries = []
+    for line in raw[-max(1, min(limit, 500)):]:
+        try:
+            entries.append(json.loads(line))
+        except ValueError:
+            pass
+    return entries
+
+
+def log_job_status(pid: str, result: dict) -> None:
+    status = "error" if result.get("error") else result.get("status")
+    if status not in ("success", "error"):
+        return
+    with _JOB_LOG_LOCK:
+        if _JOB_LOGGED.get(pid) == status:
+            return
+        _JOB_LOGGED[pid] = status
+        if len(_JOB_LOGGED) > 1000:
+            _JOB_LOGGED.pop(next(iter(_JOB_LOGGED)))
+    detail = result.get("error_detail") or {}
+    log_event("job_finished", logging.ERROR if status == "error" else logging.INFO,
+              prompt_id=pid, status=status, node_id=detail.get("node_id", ""),
+              node_type=detail.get("node_type", ""), error=str(result.get("error") or "")[:400])
+
+
 # 数据目录是不是「人明确指定的」（INFISHEET_DATA / --data）。
 # 指定了就等于说「所有东西都放这儿」——测试、多实例、便携版、容器挂卷都是这个语义，
 # 这时候资产库还跑去程序目录就会分家（测试会写脏真目录，容器里的图挂不出来）。
@@ -2790,6 +2861,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, body, "application/json; charset=utf-8")
 
     def fail(self, message: str, status: int = 400, extra: dict | None = None):
+        if status >= 500:
+            log_event("service_error", logging.ERROR, path=urllib.parse.urlparse(self.path).path,
+                      status=status, error=str(message)[:400])
         payload = {"ok": False, "error": message}
         if extra:
             payload.update(extra)
@@ -3147,6 +3221,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- GET 接口 ----------
     def api_get(self, path: str, query: dict):
+        if path == "/api/logs":
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except (TypeError, ValueError):
+                limit = 200
+            return self.json_out({"ok": True, "file": str(DATA / "logs" / "infisheet.log"),
+                                  "entries": recent_logs(limit)})
         if path == "/api/health":
             out = {"ok": True, "comfy_url": COMFY_URL, "comfy_source": COMFY_SOURCE,
                    "features": ["wf_library", "projects", "canvas_history", "ui_import", "mcp",
@@ -3323,6 +3404,7 @@ class Handler(BaseHTTPRequestHandler):
             if not pid:
                 return self.fail("缺少 pid", 400)
             out = job_status(pid)
+            log_job_status(pid, out)
             with PROGRESS_LOCK:
                 pct = PROGRESS.get(pid)
             # websocket 一个数都没报（或者整条链路哑了）时，去 ComfyUI 控制台日志里读
@@ -3620,6 +3702,7 @@ class Handler(BaseHTTPRequestHandler):
             if pid in running:
                 comfy_request("POST", "/interrupt", b"{}")
                 interrupted = True
+            log_event("job_canceled", prompt_id=pid, was="running" if interrupted else "pending")
             return self.json_out({"ok": True, "prompt_id": pid, "removed": True,
                                   "interrupted": interrupted,
                                   "was": "running" if interrupted else "pending"})
@@ -3643,9 +3726,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 —— ComfyUI 回了非 JSON，按空处理再报错
                 data = {"raw": raw.decode("utf-8", "replace")}
             if status != 200:
+                reason = data.get("error") if isinstance(data, dict) else None
+                log_event("workflow_rejected", logging.ERROR, status=status,
+                          error=str(reason.get("message") or reason.get("type") or "")[:400]
+                          if isinstance(reason, dict) else str(reason or "")[:400],
+                          node_ids=list((data.get("node_errors") or {}).keys())[:10]
+                          if isinstance(data, dict) and isinstance(data.get("node_errors"), dict) else [])
                 return self.json_out({"ok": False, "status": status, "error": data}, 200)
             pid = data.get("prompt_id")
             if pid:
+                log_event("job_submitted", prompt_id=str(pid), node_count=len(graph))
                 # 记下提交时刻：日志兜底要靠它把「上一单的 100%」筛掉（见 _log_progress）
                 PROMPT_START[str(pid)] = time.time()
                 PROGRESS_LOG.pop(str(pid), None)
@@ -4821,6 +4911,7 @@ def main():
         DATA_EXPLICIT = True
     DATA.mkdir(parents=True, exist_ok=True)
     LIBRARY.mkdir(parents=True, exist_ok=True)
+    configure_logging()
 
     # ComfyUI 地址从哪来：--comfy（这一次运行）> 设置里保存的 > COMFY_URL 环境变量 > 默认。
     # 保存的排在被环境变量前面：容器里 compose 永远带着 COMFY_URL，如果它每次都盖回去，
@@ -4868,6 +4959,7 @@ def main():
     global PORT, SERVER
     PORT = args.port
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    log_event("server_started", data_dir=str(DATA), version=app_version())
     PORT = httpd.server_address[1]
     SERVER = httpd
     # 0.0.0.0 不是能打开的地址：浏览器要的是回环地址，对外地址由下面那行提示用户自己拼

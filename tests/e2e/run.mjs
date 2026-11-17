@@ -2733,6 +2733,17 @@ try {
   // 这里只验「没预加载」，不点运行记录那一格——CI 里没有 ComfyUI，点了反而会真报错。
   const histPreload = await page.evaluate(`document.querySelector('#set-pane-history').children.length`);
   check('打开设置不预加载运行记录（点那一格才去问 ComfyUI）', histPreload === 0, `${histPreload} 个子节点`);
+  await page.evaluate(`document.querySelector('#setTabs .tab[data-set="adv"]').click()`);
+  await page.waitFor(`document.querySelector('#setLogEntries')?.textContent.includes('服务启动')`, 5000);
+  const logView = await page.evaluate(`(() => ({
+    path: document.querySelector('#setLogPath')?.textContent || '',
+    text: document.querySelector('#setLogEntries')?.textContent || '',
+    refresh: !!document.querySelector('#setRefreshLogs'),
+  }))()`);
+  check('高级设置可查看并刷新本地程序日志',
+    logView.path.includes('infisheet.log') && logView.text.includes('服务启动') && logView.refresh,
+    JSON.stringify(logView));
+  await page.evaluate(`document.querySelector('#setTabs .tab[data-set="wf"]').click()`);
   // 切一格：只换右边，左边导航和面板尺寸都不动
   await page.evaluate(`document.querySelector('#setTabs .tab[data-set="look"]').click()`);
   await new Promise((r) => setTimeout(r, 250));

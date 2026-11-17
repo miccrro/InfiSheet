@@ -186,6 +186,11 @@ def main() -> int:
         status, health = jget(base, "/api/health")
         c.check("health 200 + ok", status == 200 and (health or {}).get("ok") is True,
                 f"comfy={(health or {}).get('comfy')} v={(health or {}).get('version')}")
+        log_status, logs = jget(base, "/api/logs")
+        c.check("程序日志可读取且位于运行数据目录",
+                log_status == 200 and (logs or {}).get("ok") is True
+                and str((logs or {}).get("file") or "").endswith("infisheet.log")
+                and any(x.get("event") == "server_started" for x in (logs or {}).get("entries") or []))
         comfy_up = bool((health or {}).get("comfy"))
 
         status, _, raw = http("GET", base + "/")
@@ -418,6 +423,12 @@ def main() -> int:
                         time.sleep(0.5)
                     c.check("任务状态收敛到 success", (job or {}).get("status") == "success",
                             f"status={(job or {}).get('status')} err={(job or {}).get('error')}")
+                    _, logs = jget(base, "/api/logs")
+                    events = [x for x in (logs or {}).get("entries") or []
+                              if x.get("prompt_id") == pid]
+                    c.check("日志记录任务提交和完成，不写入工作流正文",
+                            {x.get("event") for x in events} >= {"job_submitted", "job_finished"}
+                            and "EmptyImage" not in json.dumps(events, ensure_ascii=False))
                     arts = (job or {}).get("artifacts") or []
                     c.check("取回图片产物",
                             any(a.get("kind") == "image" for a in arts),
@@ -490,6 +501,11 @@ def main() -> int:
                         status == 502 and "object_info" in err, f"HTTP {status} err={err[:48]}")
                 status2, _ = jpost(dead_base, "/api/analyze", {"graph": graph})
                 c.check("失败结果不进缓存（第二次同样明确报错）", status2 == 502, f"HTTP {status2}")
+                _, error_logs = jget(dead_base, "/api/logs")
+                c.check("服务异常写入本地日志",
+                        any(item.get("event") == "service_error" and item.get("path") == "/api/analyze"
+                            and item.get("status") == 502
+                            for item in (error_logs or {}).get("entries") or []))
                 # 资产面板是「顺手用用」的功能：ComfyUI 挂了它必须退化成空列表 + comfy=false，
                 # 而不是 500——否则前端一打开抽屉就弹错误，画布上的图也跟着看不见了。
                 status, lib = jget(dead_base, "/api/assets?refresh=1")

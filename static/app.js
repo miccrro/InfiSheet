@@ -5768,6 +5768,11 @@
                 <button type="button" id="setHelp">教程与快捷键…</button>
               </div>
               <div class="set-sep"></div>
+              <div class="set-group">程序日志</div>
+              <p class="set-tip" id="setLogPath">任务与服务错误保存在本地数据目录。</p>
+              <div class="set-actions"><button type="button" id="setRefreshLogs">刷新日志</button></div>
+              <pre class="set-logs" id="setLogEntries" aria-live="polite">打开此页后加载日志…</pre>
+              <div class="set-sep"></div>
               <!-- 关于 / 检查更新：默认只读；安装需要用户确认，更新器保留数据并回滚失败的程序文件。
                    放在「高级」最后一格——这是个一年点两三次的动作，不该占常驻位置。 -->
               <div class="set-group">关于</div>
@@ -5782,6 +5787,25 @@
           </div>
         </div>
       </div>`;
+    const loadProgramLogs = async () => {
+      const output = box.querySelector('#setLogEntries');
+      output.textContent = '正在读取日志…';
+      try {
+        const result = await api('/api/logs?limit=200');
+        if (!result.ok) throw new Error(result.error || '读取失败');
+        box.querySelector('#setLogPath').textContent = `本地文件：${result.file}`;
+        const events = { server_started: '服务启动', job_submitted: '任务已提交',
+          job_finished: '任务结束', job_canceled: '任务已取消',
+          workflow_rejected: '工作流被拒绝', service_error: '服务异常' };
+        output.textContent = (result.entries || []).map((item) =>
+          `${item.time || ''}  ${(item.level || '').toUpperCase()}  ${events[item.event] || item.event || ''}`
+          + `${item.prompt_id ? `  ${item.prompt_id}` : ''}`
+          + `${item.status ? `  ${item.status}` : ''}`
+          + `${item.node_ids?.length ? `  节点 ${item.node_ids.join(', ')}` : ''}`
+          + `${item.error ? `  ${item.error}` : ''}`).join('\n') || '暂无日志';
+      } catch (err) { output.textContent = `读取日志失败：${err.message}`; }
+    };
+    box.querySelector('#setRefreshLogs').onclick = loadProgramLogs;
     // ---- 左侧导航：一次只显示一格；运行记录第一次点开才去问 ComfyUI ----
     const panes = ['wf', 'history', 'look', 'conn', 'adv'];
     const setTab = (name) => {
@@ -5792,6 +5816,7 @@
         box.querySelector(`#set-pane-${k}`).classList.toggle('hidden', k !== name);
       });
       if (name === 'history') renderHistory();
+      if (name === 'adv') loadProgramLogs();
       // 接入信息只在真的切到「连接」时才去问：开面板不该顺手打两个接口
       if (name === 'conn') loadMcpSection(box);
     };
