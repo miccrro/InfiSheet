@@ -186,6 +186,17 @@ def main() -> int:
         status, health = jget(base, "/api/health")
         c.check("health 200 + ok", status == 200 and (health or {}).get("ok") is True,
                 f"comfy={(health or {}).get('comfy')} v={(health or {}).get('version')}")
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                second.bind(("127.0.0.1", port))
+                duplicate_bound = True
+            except OSError:
+                duplicate_bound = False
+        finally:
+            second.close()
+        c.check("同一端口不能再被第二个服务绑定", not duplicate_bound)
         log_status, logs = jget(base, "/api/logs")
         c.check("程序日志可读取且位于运行数据目录",
                 log_status == 200 and (logs or {}).get("ok") is True

@@ -5792,6 +5792,7 @@
       output.textContent = '正在读取日志…';
       try {
         const result = await api('/api/logs?limit=200');
+        if (result.error === '接口不存在') throw new Error('当前服务仍在运行旧代码，请关闭并重新启动 InfiSheet');
         if (!result.ok) throw new Error(result.error || '读取失败');
         box.querySelector('#setLogPath').textContent = `本地文件：${result.file}`;
         const events = { server_started: '服务启动', job_submitted: '任务已提交',

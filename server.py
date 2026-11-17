@@ -4907,6 +4907,16 @@ def job_status(pid: str) -> dict:
     return {"ok": True, "status": "unknown", "artifacts": []}
 
 
+class InfiSheetHTTPServer(ThreadingHTTPServer):
+    # Windows 的 SO_REUSEADDR 会允许两个进程同时监听同一端口，请求可能落到旧版本。
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main():
     parser = argparse.ArgumentParser(description="InfiSheet · 无限画布本地服务")
     parser.add_argument("--port", type=int, default=8788)
@@ -4981,7 +4991,12 @@ def main():
 
     global PORT, SERVER
     PORT = args.port
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        httpd = InfiSheetHTTPServer((args.host, args.port), Handler)
+    except OSError as exc:
+        print(f"[启动失败] 端口 {args.port} 无法绑定；请先关闭占用端口的旧实例（{exc}）")
+        log_event("server_bind_failed", logging.ERROR, port=args.port, error=str(exc)[:200])
+        return 2
     log_event("server_started", data_dir=str(DATA), version=app_version())
     PORT = httpd.server_address[1]
     SERVER = httpd
