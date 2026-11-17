@@ -145,6 +145,16 @@ def log_job_status(pid: str, result: dict) -> None:
               node_type=detail.get("node_type", ""), error=str(result.get("error") or "")[:400])
 
 
+def log_job_canceled(pid: str, was: str) -> None:
+    with _JOB_LOG_LOCK:
+        if _JOB_LOGGED.get(pid) == "canceled":
+            return
+        _JOB_LOGGED[pid] = "canceled"
+        if len(_JOB_LOGGED) > 1000:
+            _JOB_LOGGED.pop(next(iter(_JOB_LOGGED)))
+    log_event("job_canceled", prompt_id=pid, was=was)
+
+
 # 数据目录是不是「人明确指定的」（INFISHEET_DATA / --data）。
 # 指定了就等于说「所有东西都放这儿」——测试、多实例、便携版、容器挂卷都是这个语义，
 # 这时候资产库还跑去程序目录就会分家（测试会写脏真目录，容器里的图挂不出来）。
@@ -517,6 +527,19 @@ def _ws_loop() -> None:
                 try:
                     msg = json.loads(data.decode("utf-8"))
                 except ValueError:      # 半个帧 / 非 JSON：跳过这一条，别把整条连接带崩
+                    continue
+                if msg.get("type") in ("execution_success", "execution_error", "execution_interrupted"):
+                    d = msg.get("data") or {}
+                    pid = str(d.get("prompt_id") or "")
+                    if pid:
+                        if msg["type"] == "execution_error":
+                            log_job_status(pid, {"status": "error", "error": str(d.get("exception_message") or ""),
+                                                 "error_detail": {"node_id": str(d.get("node_id") or ""),
+                                                                  "node_type": str(d.get("node_type") or "")}})
+                        elif msg["type"] == "execution_success":
+                            log_job_status(pid, {"status": "success"})
+                        else:
+                            log_job_canceled(pid, "running")
                     continue
                 if msg.get("type") not in ("progress", "progress_state"):
                     continue
@@ -3702,7 +3725,7 @@ class Handler(BaseHTTPRequestHandler):
             if pid in running:
                 comfy_request("POST", "/interrupt", b"{}")
                 interrupted = True
-            log_event("job_canceled", prompt_id=pid, was="running" if interrupted else "pending")
+            log_job_canceled(pid, "running" if interrupted else "pending")
             return self.json_out({"ok": True, "prompt_id": pid, "removed": True,
                                   "interrupted": interrupted,
                                   "was": "running" if interrupted else "pending"})
