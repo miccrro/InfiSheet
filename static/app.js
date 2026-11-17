@@ -25,6 +25,7 @@
     workflows: { items: [], categories: [] },                // boot 时从 /api/library 拉取
     wfDefaults: {},                                          // 能力分类 → 默认工作流 id（服务端存）
     inferenceWorkflow: '',                                   // 推理按钮专用工作流（全局设置）
+    expansionWorkflow: '',                                   // 文本扩写工作流（全局设置）
     name: '未命名画布',
     snap: false,
     linksHidden: false,
@@ -505,7 +506,7 @@
       ta.spellcheck = false;
       ta.setAttribute('role', 'textbox');
       ta.setAttribute('aria-multiline', 'true');
-      ta.dataset.ph = '写提示词…';
+      ta.dataset.ph = '写文本…';
       ta.innerHTML = n.html != null ? n.html : textToHtml(n.value || '');
       const syncEmpty = () => ta.classList.toggle('is-empty', !richToText(ta).length);
       const autoGrow = () => {
@@ -543,7 +544,7 @@
         if (ta.isContentEditable === on) return;      // 已经是这个状态了
         ta.contentEditable = on ? 'true' : 'false';
         el.classList.toggle('editing', on);
-        ta.title = on ? '' : '双击编辑提示词';
+        ta.title = on ? '' : '双击编辑文本';
         // 进出编辑态都要重算一次滚动条：编辑时被截断才给，退出时收起
         autoGrow();
         if (!on) return;
@@ -1053,6 +1054,7 @@
       // 默认工作流按可见分组各一份，跟列表同一份响应回来
       state.wfDefaults = lib.defaults || {};
       state.inferenceWorkflow = lib.inference_workflow || '';
+      state.expansionWorkflow = lib.expansion_workflow || '';
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
     return state.workflows;
@@ -1308,17 +1310,30 @@
         orphans.add(String(it.slot.node));
         if (it.slot.value) pruned.push(String(it.slot.value));
       });
-      // 光断线不够：ComfyUI 会校验整张图里的每个节点，孤儿 LoadImage 里那个本地文件名
-      // 只要不在 input/ 目录，整次生成就被 400 驳回。所以没人引用的 LoadImage 直接摘掉。
-      orphans.forEach((id) => {
-        const nd = g[id];
-        if (!nd || nd.class_type !== 'LoadImage') return;
-        const stillUsed = Object.entries(g).some(([nid, other]) => nid !== id
-          && Object.values((other && other.inputs) || {}).some((v) => Array.isArray(v) && String(v[0]) === id));
-        if (!stillUsed) delete g[id];
-      });
       bound = sorted.slice(0, Math.min(list.length, sorted.length)).map((it) => it.slot.key);
     }
+    // 同一张图可能同时供生成编码器和辅助图像批处理使用。只处理主组会让辅助组的
+    // image1 仍指向空 LoadImage；ComfyUI 会尝试打开整个 input 目录并报 PermissionError。
+    groups.forEach((items) => {
+      if (items === main) return;
+      const orderOf = (it) => { const m = /(\d+)$/.exec(it.name); return m ? Number(m[1]) : 0; };
+      items.slice().sort((a, b) => orderOf(a) - orderOf(b)).forEach((it, i) => {
+        if (i < list.length) { setSlot(it.slot.key, list[i]); return; }
+        const nd = g[it.nid];
+        if (!nd || !nd.inputs || !(it.name in nd.inputs)) return;
+        delete nd.inputs[it.name];
+        orphans.add(String(it.slot.node));
+        if (it.slot.value) pruned.push(String(it.slot.value));
+      });
+    });
+    // 断线后无人使用的 LoadImage 也要移除，否则其空值或残留文件仍会被 ComfyUI 校验。
+    orphans.forEach((id) => {
+      const nd = g[id];
+      if (!nd || nd.class_type !== 'LoadImage') return;
+      const stillUsed = Object.entries(g).some(([nid, other]) => nid !== id
+        && Object.values((other && other.inputs) || {}).some((v) => Array.isArray(v) && String(v[0]) === id));
+      if (!stillUsed) delete g[id];
+    });
     // 还有没送进去的图 → 挂到动态图片组上（ComfyUI 的 COMFY_AUTOGROW_V3）。
     // Qwen 编辑流的 TextEncodeQwenImage21 声明的是 images.image_1..image_16，但工作流导出时
     // 常常只连了 image_1。光按「图里有几个图片插槽」算，第 2 张起就被丢掉：用户连了 5 张、
@@ -1692,7 +1707,7 @@
       // 第 4 个参数是「哪里报错」：服务端从 execution_error 里拆出来的节点 id / 标题 / 异常。
       // 少了它，前端只能拿到一坨字符串，说不清是哪个节点坏的。
       const det = res.error_detail || null;
-      if (!res.ok) { clearInterval(timer); onDone([], res.error || '查询失败', secs, det); return; }
+      if (!res.ok) { stopped = true; clearInterval(timer); onDone([], res.error || '查询失败', secs, det); return; }
       if (res.status === 'queued' || res.status === 'running') {
         lostPolls = 0;
         onTick(res.status === 'queued' ? '排队中' : '生成中', secs, res.progress ?? null);
@@ -1701,10 +1716,12 @@
       if (res.status === 'unknown') {
         lostPolls += 1;
         if (lostPolls <= 4) { onTick('等待任务', secs); return; }
+        stopped = true;
         clearInterval(timer);
         onDone([], '任务记录已丢失（ComfyUI 可能已重启）', secs, det);
         return;
       }
+      stopped = true;
       clearInterval(timer);
       onDone(res.artifacts || [], res.error, secs, det, res.texts || []);
     }, 1500);
@@ -5060,6 +5077,25 @@
         flash('推理工作流已保存');
       };
     }
+    const expansionSelect = box.querySelector('#setExpansionWf');
+    if (expansionSelect) {
+      expansionSelect.replaceChildren(new window.Option('自动识别「扩写」工作流', ''));
+      opts.filter((o) => !o.image).forEach((o) => expansionSelect.add(new window.Option(o.label, o.id)));
+      if (state.expansionWorkflow && !opts.some((o) => o.id === state.expansionWorkflow)) {
+        expansionSelect.add(new window.Option('已删除的工作流，请重新选择', state.expansionWorkflow));
+      }
+      expansionSelect.value = state.expansionWorkflow;
+      expansionSelect.onchange = async () => {
+        const previous = state.expansionWorkflow;
+        const r = await api('/api/settings/expansion', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workflow: expansionSelect.value }),
+        });
+        if (!r.ok) { expansionSelect.value = previous; flash(r.error || '保存失败'); return; }
+        state.expansionWorkflow = r.workflow;
+        flash('扩写工作流已保存');
+      };
+    }
 
     // ---- 每个可见分组当前用的是哪一份 ----
     // 「未设」不能只是一段灰字：用户设了别的分类的默认，却以为这一份也该生效，
@@ -5660,15 +5696,25 @@
                 <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
               </div>
-              <label class="set-inference">推理提示词工作流
-                <select id="setInferenceWf" aria-label="推理提示词工作流"></select>
-              </label>
-              <p class="set-tip">图片节点有图时直接点「推理提示词」运行；这里选择后台使用的工作流，无需在图片底部切换。</p>
-              <div class="set-tip" id="setWfDefault"></div>
+              <div class="wf-specials">
+                <label class="set-inference">图片推理工作流
+                  <select id="setInferenceWf" aria-label="推理提示词工作流"></select>
+                  <small>图片节点的「推理提示词」使用</small>
+                </label>
+                <label class="set-inference">文本扩写工作流
+                  <select id="setExpansionWf" aria-label="文本扩写工作流"></select>
+                  <small>文本节点的「扩写」使用</small>
+                </label>
+              </div>
+              <details class="wf-defaults">
+                <summary>按分组默认 <span>查看各类新建节点预选的工作流</span></summary>
+                <div class="set-tip" id="setWfDefault"></div>
+              </details>
               <div class="wf-list" id="setWfList"></div>
-              <div class="set-group">分类</div>
-              <div class="wf-cats" id="setCats"></div>
-              <p class="set-tip">点分类可以改名 / 删除；点行里的胶囊给工作流换分类。分类只影响这里的归类；行里的 ☆ 才是「新建节点时用哪一份」——按能力分类各记一份，随时能换。</p>
+              <div class="wf-categories">
+                <div class="set-group">分类</div>
+                <div class="wf-cats" id="setCats"></div>
+              </div>
             </div>
             <div class="sheet-pane hidden" id="set-pane-history"></div>
             <div class="sheet-pane hidden" id="set-pane-look">
@@ -7362,7 +7408,7 @@
 
   /* ---------------- 节点创建 ---------------- */
   function addTextNode(x, y, value = '') {
-    const n = { id: uid('t'), type: 'text', title: '提示词', x, y, value };
+    const n = { id: uid('t'), type: 'text', title: '文本', x, y, value };
     state.nodes.push(n); renderAll(); queueSave(); commit(); return n;
   }
 
@@ -7560,13 +7606,24 @@
     inp.click();
   }
 
+  function uploadImageName(n, projectId, bootAt, mime) {
+    const original = String(n.filename || '');
+    const fromName = original.match(/\.([a-z0-9]{1,10})$/i);
+    const fromMime = String(mime || '').split('/')[1]?.split('+')[0];
+    const ext = (fromName?.[1] || (fromMime === 'jpeg' ? 'jpg' : fromMime) || 'png')
+      .replace(/[^a-z0-9]/gi, '').slice(0, 10).toLowerCase() || 'png';
+    const project = String(projectId || bootAt || 'session').replace(/[^a-z0-9_-]/gi, '').slice(0, 40);
+    const node = String(n.id || 'image').replace(/[^a-z0-9_-]/gi, '').slice(0, 20);
+    return `infisheet-${project}-${node}.${ext}`;
+  }
+
   async function ensureUploaded(n) {
     if (n.uploaded) return n.uploaded;
     if (!n.dataURL) throw new Error('图片节点还没有图片');
     const blob = await (await fetch(n.dataURL)).blob();
     const fd = new FormData();
-    // 文件名带节点 id：两张不同节点拖入同名文件（photo.png）时不会在 ComfyUI input/ 里互相覆盖
-    fd.append('image', blob, n.filename ? `${n.id}-${n.filename}` : `canvas-${n.id}.png`);
+    // 原文件名可能已接近系统长度上限；上传名只用项目和节点 ID，原名仍留在节点上显示。
+    fd.append('image', blob, uploadImageName(n, state.projectId, state.bootAt, blob.type));
     fd.append('overwrite', 'true');
     const res = await api('/api/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(res.error || '上传失败');
@@ -7864,7 +7921,7 @@
   function jobPhaseText(job) {
     if (!job) return '';
     if (job.phase === 'queued') return '排队中';
-    if (job.phase === 'running') return `${job.kind === 'infer' ? '推理中' : '生成中'}${pctText(job.progress)}`;
+    if (job.phase === 'running') return `${job.kind === 'infer' ? '推理中' : job.kind === 'expand' ? '扩写中' : '生成中'}${pctText(job.progress)}`;
     if (job.phase === 'done') return '完成';
     if (job.phase === 'error') return '失败';
     if (job.phase === 'canceled') return '已取消';
@@ -8021,6 +8078,11 @@
         n.inferAttempt = null;
         n.inferJob = null;
         updateImgTools();
+      }
+      if (job.kind === 'expand' && n.expandJob === job) {
+        n.expandAttempt = null;
+        n.expandJob = null;
+        updateTextTools();
       }
       if (n.timer) { clearInterval(n.timer); n.timer = null; }
       if (n.gen && job.kind === 'image') {
@@ -8740,6 +8802,7 @@
     const beforeLinks = (data.links || []).length;
     state.nodes = data.nodes.map((n) => {
       const node = { ...n, status: 'idle', timer: null };
+      if (node.type === 'text' && node.title === '提示词') node.title = '文本';
       // 提示词节点改富文本之后，老存档只有纯文本 value：补一份 html 出来
       if (node.type === 'text' && node.html == null) node.html = textToHtml(node.value || '');
       return node;
@@ -9359,7 +9422,7 @@
     // 每项前面一枚图标（和节点标题上的图标同一套 IconPark），扫一眼就知道点哪个。
     const groups = [
       ['新建节点', [
-        ['text', '提示词', () => addTextNode(p.x - 140, p.y - 60)],
+        ['text', '文本', () => addTextNode(p.x - 140, p.y - 60)],
         ['image', '图片', () => addImageNode(p.x - 125, p.y - 60)],
         // 「加载图片…」和「图片」是两件事：前者选完就带着图，后者是空白节点等拖文件进来。
         ['upload', '加载图片…', () => pickImageFiles(p.x - 125, p.y - 60)],
@@ -9583,7 +9646,7 @@
     if (text) {
       const n = addTextNode(Math.round(at.x), Math.round(at.y), text);
       selectOnly(n.id);
-      flash('已粘贴为提示词节点');
+      flash('已粘贴为文本节点');
       return;
     }
     // 什么也没认出来：把剪贴板里到底有什么说出来，比干等着强
@@ -10236,6 +10299,7 @@
   // 所以以前拖着节点走，工具条会钉在原地，松手才「瞬移」过去。这里跟布局同一个节拍补上。
   function followScreenBars() {
     positionImgTools();
+    positionTextTools();
     positionLinkDel();
   }
 
@@ -10407,7 +10471,7 @@
     if (!dst) return;
     const items = [];
     if (dst.type === 'image' || dst.type === 'wf') {
-      items.push(['文本节点（当提示词）', () => createLinkedSource(toId, key, 'text', clientX, clientY)]);
+      items.push(['文本节点', () => createLinkedSource(toId, key, 'text', clientX, clientY)]);
     }
     items.push(['图片节点（当参考图）', () => createLinkedSource(toId, key, 'image', clientX, clientY)]);
     openPopMenu({ x: clientX, y: clientY }, items, '添加上下文');
@@ -10815,7 +10879,7 @@
       };
       if (d.key === 'script') {
         btn.onclick = () => addScriptNode();
-        btn.title = '放入一个提示词节点，用来写剧本 / 分镜';
+        btn.title = '放入一个文本节点，用来写剧本 / 分镜';
       } else if (d.key === 'clip') {
         off('本地画布没有剪辑能力：视频生成后下载，用外部剪辑软件剪', null, '不支持');
       } else if (d.key === 'image') {
@@ -10873,7 +10937,7 @@
     addTextNode(c.x - 140, c.y - 90, '【剧本】\n标题：\n一句话梗概：\n角色：\n\n镜头 1（0-3s）：\n镜头 2（3-6s）：\n镜头 3（6-9s）：');
     fitView();
     queueSave();
-    flash('已放入提示词节点：写剧本 / 分镜');
+    flash('已放入文本节点：写剧本 / 分镜');
   }
 
   // 「图片生成」= 一个图片节点 + 它自带的生成面板。
@@ -10936,7 +11000,7 @@
       renderAll();
       fitView();
       queueSave();
-      flash('已放入工作流：在左侧提示词节点里写内容');
+      flash('已放入工作流：在左侧文本节点里写内容');
     } catch (err) {
       const msg = String((err && err.message) || '');
       if (/object_info|无法连接 ComfyUI|upstream|urlopen/i.test(msg)) {
@@ -11376,7 +11440,7 @@
   const IMG_TOOL_MORE = new Set(['erase', 'detext', 'cutout', 'upscale', 'infer']);
   const IMG_MORE_ORDER = ['erase', 'detext', 'cutout', 'upscale', 'infer'];
   // 收进菜单后没有图标可看，得把「点下去会发生什么」写在文字里
-  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成', infer: '写入提示词节点' };
+  const IMG_MORE_HINT = { erase: '需要生成', detext: '需要生成', cutout: '将在新节点中生成', upscale: '将在新节点中生成', infer: '写入文本节点' };
   // 低于这个宽度就收起（1024×768 那档是主要目标：整条 640px 会横着压掉半个画布）
   const IMG_NARROW_W = 1200;
   const EDIT_LABEL = { upscale: '高清', cutout: '抠图', erase: '擦除', detext: '去字' };
@@ -11692,8 +11756,8 @@
           rerenderNode(n.id, true);
           queueSave();
           commit();
-          finishJob(job, 'done', '已写入当前节点和提示词节点');
-          flash('推理完成，已生成提示词节点');
+          finishJob(job, 'done', '已写入当前节点和文本节点');
+          flash('推理完成，已生成文本节点');
         });
       renderQueue();
     } catch (err) {
@@ -11725,13 +11789,14 @@
   // 命令走 execCommand：生成的是 <b> / <i> / <h3> / <ol> / <hr> 这些语义标签，
   // 不是一堆行内 style —— 存档小、CSS 也好接管。
   const TEXT_TOOLS = [
-    { k: 'color', label: '颜色', icon: 'palette', tip: '提示词框底色（默认 #262626）' },
+    { k: 'color', label: '颜色', icon: 'palette', tip: '文本框底色（默认 #262626）' },
     { k: 'h', label: '标题', icon: 'text', tip: '这一段变成标题（再点一次退回正文）' },
     { k: 'ol', label: '列表', glyph: '1.', tip: '有序列表' },
     { k: 'b', label: '加粗', glyph: 'B', strong: true, tip: '加粗' },
     { k: 'i', label: '斜体', glyph: 'I', italic: true, tip: '斜体' },
     { k: 'hr', label: '分割线', glyph: '—', tip: '插入一条分割线' },
-    { k: 'preset', label: '预设', icon: 'book', tip: '提示词预设：把常用的存起来，一键插回来' },
+    { k: 'preset', label: '预设', icon: 'book', tip: '文本预设：把常用的存起来，一键插回来' },
+    { k: 'rewrite', label: '扩写', icon: 'magic', tip: '用全局设置中的 ComfyUI 文本工作流扩写当前文本' },
     { k: 'expand', label: '展开', icon: 'expand', tip: '全屏编辑（Esc 退出）' },
   ];
   const TEXT_BREAKS = new Set(['b', 'expand']);
@@ -11762,7 +11827,7 @@
 
   function makeTextButtons(host, skipExpand) {
     TEXT_TOOLS.forEach((t) => {
-      if (skipExpand && t.k === 'expand') return;
+      if (skipExpand && (t.k === 'expand' || t.k === 'rewrite')) return;
       if (TEXT_BREAKS.has(t.k)) {
         const s = document.createElement('span');
         s.className = 'it-sep';
@@ -11789,7 +11854,7 @@
     bar.id = 'textTools';
     bar.className = 'hidden';
     bar.setAttribute('role', 'toolbar');
-    bar.setAttribute('aria-label', '提示词格式');
+    bar.setAttribute('aria-label', '文本工具');
     // 点工具条不能把节点选丢、不能拖画布，也不能把编辑区的焦点和选区抢走——
     // 抢走了 execCommand 就不知道往哪儿加粗（按钮照样收得到 click）
     bar.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); ev.preventDefault(); });
@@ -11842,14 +11907,95 @@
     if (!show) { closeTextColor(); closePresetPop(); return; }
     const dot = bar.querySelector('[data-tool="color"] .it-dot');
     if (dot) dot.style.background = n.bg || TEXT_BG_DEFAULT;
+    const rewrite = bar.querySelector('[data-tool="rewrite"]');
+    if (rewrite) {
+      rewrite.classList.toggle('on', !!n.expandAttempt);
+      rewrite.querySelector('span').textContent = n.expandAttempt ? '取消扩写' : '扩写';
+    }
     syncTextToolStates(n);
     positionTextTools();
   }
 
+  // 扩写工作流只改一个用户文本入口。多入口时不猜，以免覆盖系统提示或错误的分支。
+  function expansionInput(graph) {
+    const slots = Object.entries(graph || {}).flatMap(([id, node]) =>
+      Object.entries((node && node.inputs) || {}).filter(([key, value]) =>
+        typeof value === 'string' && /^(?:user_?)?(?:prompt|text|input|question|instruction)(?:_text|_prompt)?$/i.test(key)
+        && !/negative|system/i.test(key)).map(([key, value]) => ({ id, key, value })));
+    const empty = slots.filter((slot) => !slot.value.trim());
+    return empty.length === 1 ? empty[0] : slots.length === 1 ? slots[0] : null;
+  }
+
+  async function expandTextNode(n) {
+    if (n.expandAttempt) {
+      n.expandAttempt = null;
+      if (n.expandJob && JOB_ALIVE.has(n.expandJob.phase)) cancelQueuedJob(n.expandJob).catch(() => {});
+      updateTextTools();
+      flash('已取消扩写');
+      return;
+    }
+    const source = String(n.value || '').trim();
+    if (!source) { flash('先在文本节点写入内容'); return; }
+    const options = wfOptions();
+    const workflow = state.expansionWorkflow
+      ? options.find((o) => o.id === state.expansionWorkflow)
+      : options.find((o) => !o.image && (o.label.includes('扩写') || o.file.includes('扩写')));
+    if (!workflow) { flash('请在全局设置中选择文本扩写工作流，或导入名为「扩写」的工作流'); return; }
+    const attempt = Symbol('expand');
+    n.expandAttempt = attempt;
+    updateTextTools();
+    const canceled = () => n.expandAttempt !== attempt;
+    const reset = () => { if (!canceled()) { n.expandAttempt = null; updateTextTools(); } };
+    try {
+      const graph = await loadGraphById(workflow.id);
+      if (canceled()) return;
+      if (!graph) throw new Error('扩写工作流已不存在');
+      const slot = expansionInput(graph);
+      if (!slot) throw new Error('扩写工作流需要恰好一个未连接的文本输入（prompt/text/input）');
+      graph[slot.id].inputs[slot.key] = source;
+      const res = await postJson('/api/run', { graph });
+      if (canceled()) {
+        if (res.ok && res.prompt_id) postJson('/api/queue/cancel', { prompt_id: res.prompt_id }).catch(() => {});
+        return;
+      }
+      if (!res.ok || !res.prompt_id) throw new Error(JSON.stringify(res.error || '提交失败').slice(0, 200));
+      const job = newJob(n, 'expand', { title: '文本扩写', wf: workflow.id });
+      job.pid = res.prompt_id;
+      n.expandJob = job;
+      job.poll = pollPrompt(res.prompt_id,
+        (label, secs, progress) => patchJob(job, { phase: label === '排队中' ? 'queued' : 'running', secs, progress }),
+        (_artifacts, error, _secs, _detail, texts) => {
+          if (canceled()) return;
+          n.expandJob = null;
+          if (getNode(n.id) !== n) { reset(); finishJob(job, 'canceled', '源节点已离开当前画布'); return; }
+          const output = (texts || []).map((item) => item.text).filter(Boolean).at(-1) || '';
+          if (error || !output) {
+            reset();
+            const message = error || '工作流没有返回文本结果';
+            finishJob(job, 'error', message);
+            flash(`扩写失败：${message}`);
+            return;
+          }
+          n.value = output;
+          n.html = textToHtml(output);
+          reset();
+          rerenderNode(n.id, true);
+          queueSave(); commit();
+          finishJob(job, 'done', '已写入文本节点');
+          flash('扩写完成');
+        });
+    } catch (err) {
+      if (canceled()) return;
+      reset();
+      flash(`扩写失败：${err.message}`);
+    }
+  }
+
   function runTextTool(kind, btn) {
     const n = textToolNode();
-    if (!n) { updateTextTools(); flash('先选中一个提示词节点'); return; }
+    if (!n) { updateTextTools(); flash('先选中一个文本节点'); return; }
     if (kind === 'expand') { openTextFull(n); return; }
+    if (kind === 'rewrite') { expandTextNode(n); return; }
     if (kind === 'color') { openTextColor(n, btn); return; }
     if (kind === 'preset') { openTextPresets(n, btn); return; }
     const ed = activeTextEd(n);

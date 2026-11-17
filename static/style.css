@@ -1597,7 +1597,7 @@ body.resizing .node-resize { opacity: 1; }
 }
 /* 高度写死：切格、搜索、列表长短都不该让面板跳一下。
    max-height 必须一起写——.sheet 上那条是 78vh，比这里的 90vh 更小，不覆盖就会悄悄把高度压下去 */
-#appSettings .sheet { width: 880px; max-width: 94vw; height: min(640px, 90vh); max-height: 90vh; }
+#appSettings .sheet { width: 1040px; max-width: 96vw; height: min(760px, 94vh); max-height: 94vh; }
 /* 面板本体不滚：滚的是右边那一格，左导航永远在 */
 #appSettings .sheet-body {
   flex: 1; min-height: 0; display: grid; grid-template-columns: 172px 1fr;
@@ -1623,7 +1623,7 @@ body.resizing .node-resize { opacity: 1; }
 /* 工作流格：列表自己撑满剩余高度并在内部滚动，分类那排永远贴在下面。
    overflow 用 auto 而不是 hidden：窗口特别矮时固定那几块（工具条 + 读数 + 分类 + 提示）
    加起来可能比这一格还高，hidden 会直接切掉，auto 至少还能滚到。 */
-#set-pane-wf { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+#set-pane-wf { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 #appSettings .prime {
   height: 32px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--panel-2); color: var(--text);
@@ -1771,11 +1771,24 @@ body.resizing .node-resize { opacity: 1; }
 }
 #appSettings .set-toolbar input:focus { outline: none; border-color: #5a5a5a; }
 #appSettings .set-toolbar .prime { height: auto; padding: 0 12px; font-size: 11.5px; white-space: nowrap; }
+#appSettings .wf-specials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#appSettings .wf-specials label { min-width: 0; gap: 5px; }
+#appSettings .wf-specials small { color: var(--faint); font-size: 10.5px; }
+#appSettings .wf-defaults { border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, 0.12); }
+#appSettings .wf-defaults summary { padding: 7px 10px; cursor: pointer; font-size: 11.5px; color: var(--text); }
+#appSettings .wf-defaults summary span { margin-left: 8px; color: var(--faint); }
+#appSettings .wf-defaults[open] #setWfDefault { padding: 2px 10px 10px; }
+#appSettings .wf-categories { border-top: 1px solid var(--line); padding-top: 6px; }
+#appSettings .wf-categories .set-group { margin: 0 0 6px; }
+@media (max-width: 700px) {
+  #appSettings .wf-specials { grid-template-columns: 1fr; gap: 8px; }
+  #appSettings .wf-specials small, #appSettings .wf-defaults summary span { display: none; }
+}
 #appSettings .wf-list {
   display: grid; gap: 1px; padding: 3px; align-content: start;
   /* 滚动容器在 grid 里的自动最小尺寸是 0（规范如此），只写 max-height 会被压成一条线：
      必须给 min-height 兜底，不然列表内容明明在 DOM 里却一个字都看不见。 */
-  flex: 1 1 auto; min-height: 120px; overflow-y: auto;
+  flex: 1 1 auto; min-height: 200px; overflow-y: auto;
   border: 1px solid var(--line); border-radius: 9px;
   background: rgba(0, 0, 0, 0.18);
 }

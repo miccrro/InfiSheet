@@ -25,7 +25,7 @@ const STOP_AT = (process.env.STOP_AT || '').trim();
 class StopRun extends Error {}
 function check(name, ok, detail = '') {
   results.push({ name, ok: !!ok, detail });
-  if (!GROUP || name.includes(GROUP)) {
+  if (!ok || !GROUP || name.includes(GROUP)) {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`);
   }
   if (STOP_AT && name.includes(STOP_AT)) throw new StopRun(`STOP_AT=${STOP_AT}`);
@@ -68,6 +68,40 @@ try {
       else if (ch === '}' && --depth === 0) return src.slice(start, j + 1);
     }
     throw new Error(`${name} 的括号没闭合`);
+  }
+  const uploadImageName = appSrc.includes('function uploadImageName(')
+    ? new Function(`${pickFn(appSrc, 'uploadImageName')}\nreturn uploadImageName;`)() : null;
+  const longImageName = '人像'.repeat(120) + '.png';
+  const safeUpload = uploadImageName?.({ id: 'i12', filename: longImageName }, 'project-a', 0, 'image/png');
+  const otherProject = uploadImageName?.({ id: 'i12', filename: longImageName }, 'project-b', 0, 'image/png');
+  check('超长中文图片名上传时缩短，保留扩展名并按项目隔离',
+    !!safeUpload && new TextEncoder().encode(safeUpload).length < 100
+      && safeUpload.endsWith('.png') && safeUpload !== otherProject,
+    String(safeUpload));
+  const expansionInput = new Function(`${pickFn(appSrc, 'expansionInput')}\nreturn expansionInput;`)();
+  const expansionSlot = expansionInput({
+    '2': { class_type: 'CR Text', inputs: { text: '' } },
+    '3': { class_type: 'TextModel', inputs: { prompt: ['2', 0], system_prompt: 'Expand carefully' } },
+    '5': { class_type: 'easy showAnything', inputs: { text: '上次输出的残留', anything: ['3', 0] } },
+  });
+  check('扩写只填写空的用户文本入口，不覆盖系统提示或旧输出预览',
+    expansionSlot?.id === '2' && expansionSlot?.key === 'text', JSON.stringify(expansionSlot));
+  // 两次轮询请求同时在途，且都读到完成时，只能交付一次结果。
+  {
+    const pending = [];
+    let tick;
+    let deliveries = 0;
+    const poll = new Function('api', 'setInterval', 'clearInterval',
+      `${pickFn(appSrc, 'pollPrompt')}\nreturn pollPrompt;`)(
+      () => new Promise((resolve) => pending.push(resolve)),
+      (fn) => { tick = fn; return 1; }, () => {});
+    poll('same-job', () => {}, () => { deliveries++; });
+    const first = tick();
+    const second = tick();
+    const done = { ok: true, status: 'success', artifacts: [{ kind: 'image', filename: 'one.png' }] };
+    pending.forEach((resolve) => resolve(done));
+    await Promise.all([first, second]);
+    check('同一任务的重叠轮询只交付一次图片', deliveries === 1, `回调 ${deliveries} 次`);
   }
   const { buildGenGraph, dimsTarget, refMarks, batchShortfall } = new Function(
     `${pickFn(appSrc, 'bindRefImages')}\n${pickFn(appSrc, 'freshNodeId')}\n${pickFn(appSrc, 'dimsTarget')}\n${pickFn(appSrc, 'dimsSwitches')}\n${pickFn(appSrc, 'refCapacity')}\n${pickFn(appSrc, 'promptPlan')}\n${pickFn(appSrc, 'planSeed')}\n${pickFn(appSrc, 'batchShortfall')}\n${pickFn(appSrc, 'refMarks')}\n${pickFn(appSrc, 'buildGenGraph')}\nreturn { buildGenGraph, dimsTarget, dimsSwitches, promptPlan, planSeed, refMarks, batchShortfall, bindRefImages };`)();
@@ -309,6 +343,33 @@ try {
   check('单图工作流原样保留，只把画布图填进去',
     single.pruned.length === 0 && single.graph['12'].inputs['images.image_1'][0] === '11'
     && single.graph['11'].inputs.image === 'canvas.png', JSON.stringify(single.pruned));
+
+  // 同一工作流有两个图片消费者：生成编码器只需图 1，辅助图像批处理还连着一个空 LoadImage。
+  // 留空时 ComfyUI 会把 input 目录当文件打开并报 PermissionError。
+  const dualConsumer = buildGenGraph({
+    '425': { class_type: 'LoadImage', inputs: { image: 'old.png' } },
+    '430': { class_type: 'TextEncodeQwenImage21', inputs: { prompt: 'old', 'images.image_1': ['425', 0] } },
+    '431': { class_type: 'LoadImage', inputs: { image: '' } },
+    '451': { class_type: 'BatchImagesNode', inputs: { 'images.image0': ['425', 0], 'images.image1': ['431', 0] } },
+  }, [imgSlot('425', 'old.png'), imgSlot('431', '')],
+  { width: 512, height: 512 }, 1, 'flower', 'canvas.png');
+  check('单张参考图会从第二个图片消费组移除空 LoadImage',
+    dualConsumer.graph['425'].inputs.image === 'canvas.png'
+      && !dualConsumer.graph['431']
+      && !('images.image1' in dualConsumer.graph['451'].inputs),
+    JSON.stringify(dualConsumer.graph['451'].inputs));
+  const twoRefs = buildGenGraph({
+    '425': { class_type: 'LoadImage', inputs: { image: 'old.png' } },
+    '430': { class_type: 'TextEncodeQwenImage21', inputs: { prompt: 'old', 'images.image_1': ['425', 0] } },
+    '431': { class_type: 'LoadImage', inputs: { image: '' } },
+    '451': { class_type: 'BatchImagesNode', inputs: { 'images.image0': ['425', 0], 'images.image1': ['431', 0] } },
+  }, [imgSlot('425', 'old.png'), imgSlot('431', '')],
+  { width: 512, height: 512 }, 1, 'flower', ['first.png', 'second.png']);
+  check('两张参考图分别填入两个图片入口',
+    twoRefs.graph['425'].inputs.image === 'first.png'
+      && twoRefs.graph['431'].inputs.image === 'second.png'
+      && 'images.image1' in twoRefs.graph['451'].inputs,
+    JSON.stringify([twoRefs.graph['425'].inputs.image, twoRefs.graph['431'].inputs.image]));
 
   // ---- 多图：Qwen 编辑流的 images.image_1..4 能吃好几张 ----
   // 画布给了 3 张就按顺序填 image_1/2/3，第 4 个槽断开——顺序错了「图2」就指到别的图上。
@@ -2290,10 +2351,10 @@ try {
       nodeTop: Math.round(document.querySelector('#nodes .node.text').getBoundingClientRect().top),
     };
   })()`);
-  check('提示词格式条：单选文本节点就浮出，7 个按钮齐全且顺序对',
+  check('文本工具条：单选文本节点就浮出，扩写按钮齐全且顺序对',
     !!tbar && tbar.hidden === false
-      && tbar.btns.join(',') === 'color,h,ol,b,i,hr,preset,expand'
-      && tbar.labels.join(',') === '颜色,标题,列表,加粗,斜体,分割线,预设,展开',
+      && tbar.btns.join(',') === 'color,h,ol,b,i,hr,preset,rewrite,expand'
+      && tbar.labels.join(',') === '颜色,标题,列表,加粗,斜体,分割线,预设,扩写,展开',
     JSON.stringify(tbar));
   check('格式条与图片工具条同一套壳：12px 圆角、按钮 8px、浮在节点上方',
     !!tbar && tbar.h >= 30 && tbar.h <= 40 && tbar.radius === '12px' && tbar.btnRadius === '8px'
@@ -2301,6 +2362,32 @@ try {
   check('颜色按钮上带当前底色的小圆点（默认 #262626）',
     !!tbar && tbar.dot === 'rgb(38, 38, 38)' && tbar.dotSize >= 6 && tbar.dotSize <= 12,
     JSON.stringify({ dot: tbar && tbar.dot, size: tbar && tbar.dotSize }));
+
+  const textBarFollow = await page.evaluate(`(async () => {
+    const node = document.querySelector('#nodes .node.text.selected');
+    const title = node.querySelector('.node-title').getBoundingClientRect();
+    const bar = document.getElementById('textTools');
+    const base = { bubbles: true, cancelable: true, button: 0, buttons: 1,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    const at = (dx, dy) => ({ ...base, clientX: title.left + 25 + dx, clientY: title.top + 8 + dy });
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const pos = () => ({ node: node.getBoundingClientRect().left,
+      bar: bar.getBoundingClientRect().left });
+    node.querySelector('.node-title').dispatchEvent(new PointerEvent('pointerdown', at(0, 0)));
+    await frame();
+    const before = pos();
+    window.dispatchEvent(new PointerEvent('pointermove', at(70, 40)));
+    await frame();
+    const during = pos();
+    window.dispatchEvent(new PointerEvent('pointermove', at(0, 0)));
+    window.dispatchEvent(new PointerEvent('pointerup', at(0, 0)));
+    return { before, during };
+  })()`);
+  check('拖动文本节点时顶部工具条实时跟随',
+    Math.abs(textBarFollow.during.node - textBarFollow.before.node) > 20
+      && Math.abs((textBarFollow.during.bar - textBarFollow.before.bar)
+        - (textBarFollow.during.node - textBarFollow.before.node)) < 3,
+    JSON.stringify(textBarFollow));
 
   // 逐项验证命令真的写进 html（语义标签，不是一堆行内 style）。
   // 每次都从同一段干净内容起：选中整段再点按钮，等价于用户拖选后点格式。
@@ -2604,11 +2691,11 @@ try {
     const tab = tabs[0];
     return {
       w: Math.round(s.width), h: Math.round(s.height),
-      // 期望值按视口算：窗口够大时就是 880×640，小屏被 max-width / 90vh 兜底。
+      // 期望值按视口算：窗口够大时就是 1040×760，小屏被 max-width / 94vh 兜底。
       // 基准取 documentElement.clientHeight 而不是 innerHeight——后者含横向滚动条那十几个像素，
       // 和 CSS 里 vh 的基准对不上，算出来的期望值会凭空高出 16px。
-      expectW: Math.min(880, Math.round(document.documentElement.clientWidth * 0.94)),
-      expectH: Math.min(640, Math.round(document.documentElement.clientHeight * 0.9)),
+      expectW: Math.min(1040, Math.round(document.documentElement.clientWidth * 0.96)),
+      expectH: Math.min(760, Math.round(document.documentElement.clientHeight * 0.94)),
       sideBySide: Math.round(nav.right) <= Math.round(panes.left) + 1,
       navW: Math.round(nav.width), panesW: Math.round(panes.width),
       tabRadius: parseFloat(getComputedStyle(tab).borderRadius),
@@ -2642,6 +2729,37 @@ try {
   check('工作流库就是设置的第一格：搜索 / 导入 / 说明 / 列表 / 分类都在',
     wfPane.missing.length === 0 && wfPane.rows > 0 && wfPane.chips > 0,
     JSON.stringify(wfPane));
+  const wfLayout = await page.evaluate(`(() => {
+    const pane = document.getElementById('set-pane-wf');
+    const details = pane.querySelector('.wf-defaults');
+    const list = pane.querySelector('.wf-list');
+    const selectors = [...pane.querySelectorAll('.wf-specials label')]
+      .map((el) => el.getBoundingClientRect());
+    const before = { collapsed: !details.open, listH: Math.round(list.getBoundingClientRect().height),
+      paneH: Math.round(pane.getBoundingClientRect().height), sideBySide: selectors.length === 2
+        && Math.abs(selectors[0].top - selectors[1].top) < 2 };
+    details.querySelector('summary').click();
+    const expanded = details.open && !!details.querySelector('.wf-def-row');
+    details.querySelector('summary').click();
+    return { ...before, expanded, collapsedAgain: !details.open };
+  })()`);
+  check('工作流设置：推理与扩写并排、默认分组可展开、列表占主要空间',
+    wfLayout.collapsed && wfLayout.sideBySide && wfLayout.expanded && wfLayout.collapsedAgain
+      && wfLayout.listH >= 200 && wfLayout.listH >= wfLayout.paneH * 0.4,
+    JSON.stringify(wfLayout));
+  await page.setViewport(870, 627);
+  const wfNarrow = await page.evaluate(`(() => {
+    const pane = document.getElementById('set-pane-wf');
+    const list = pane.querySelector('.wf-list').getBoundingClientRect();
+    const categories = pane.querySelector('.wf-categories').getBoundingClientRect();
+    const sheet = document.querySelector('#appSettings .sheet').getBoundingClientRect();
+    return { listH: Math.round(list.height), categoriesBottom: Math.round(categories.bottom),
+      sheetBottom: Math.round(sheet.bottom), horizontalOverflow: pane.scrollWidth > pane.clientWidth + 2 };
+  })()`);
+  check('窄窗口中工作流列表和分类仍可见，内容不横向溢出',
+    wfNarrow.listH >= 200 && wfNarrow.categoriesBottom <= wfNarrow.sheetBottom + 2
+      && !wfNarrow.horizontalOverflow, JSON.stringify(wfNarrow));
+  await page.clearViewport();
   // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「可见分组的默认」，第 5 颗是放大镜「查残留」——
   // 导入时弹过一次之后，文件就躺在列表里了，想再确认一遍（或怀疑某张图不是自己出的）
   // 原来没有任何入口。
@@ -2711,7 +2829,7 @@ try {
   }))()`);
   check('搜索能过滤：一个词把列表收到「没有匹配」',
     emptyHit.rows === 0 && /没有匹配/.test(emptyHit.tip), JSON.stringify(emptyHit));
-  check('设置面板尺寸固定 880×640：内容塌成一句「没有匹配」也不变',
+  check('设置面板尺寸固定：内容塌成一句「没有匹配」也不变',
     sSet.w === sEmpty.w && sSet.h === sEmpty.h
       && Math.abs(sSet.w - sSet.expectW) <= 2 && Math.abs(sSet.h - sSet.expectH) <= 2,
     `${sSet.w}×${sSet.h} → ${sEmpty.w}×${sEmpty.h}（期望 ${sSet.expectW}×${sSet.expectH}）`);
@@ -3796,7 +3914,7 @@ try {
     return { focusedMenu: first, one, two, closed: m.classList.contains('hidden') };
   })()`);
   check('双击菜单能用键盘选（↓ 走第一项、再 ↓ 走第二项、Esc 关闭）',
-    addMenuKeys.focusedMenu && addMenuKeys.one === '提示词' && addMenuKeys.two === '图片'
+    addMenuKeys.focusedMenu && addMenuKeys.one === '文本' && addMenuKeys.two === '图片'
       && addMenuKeys.closed, JSON.stringify(addMenuKeys));
 
   // ---- 「加载图片…」：选完就带着图，不是空白节点 ----
@@ -3985,7 +4103,7 @@ try {
     const x = ${tBlank ? tBlank.x : 300}, y = ${tBlank ? tBlank.y : 300};
     st.dispatchEvent(new MouseEvent('dblclick', { clientX: x, clientY: y, bubbles: true }));
     await new Promise((r) => setTimeout(r, 150));
-    const b = [...document.querySelectorAll('#addMenu button')].find((x) => x.textContent === '提示词');
+    const b = [...document.querySelectorAll('#addMenu button')].find((x) => x.textContent === '文本');
     if (!b) return null;
     b.click();
     await new Promise((r) => setTimeout(r, 250));
@@ -5005,7 +5123,7 @@ try {
       && /去字 · 需要生成/.test(moreMenu.items[1])
       && /抠图 · 将在新节点中生成/.test(moreMenu.items[2])
       && /高清 · 将在新节点中生成/.test(moreMenu.items[3])
-      && /推理提示词 · 写入提示词节点/.test(moreMenu.items[4])
+      && /推理提示词 · 写入文本节点/.test(moreMenu.items[4])
       && moreMenu.icons === 5,
     JSON.stringify(moreMenu));
 
@@ -8357,6 +8475,114 @@ try {
   check('再次点击推理可取消任务，已有提示词保持不变',
     inferCancel.canceled.includes('infer-cancel') && !inferCancel.active
       && inferCancel.prompt === inferred.prompt, JSON.stringify(inferCancel));
+
+  // 文本扩写：工作流接收当前节点内容，结果写回同一节点。
+  await page.evaluate(`(async () => {
+    await fetch('/api/library/' + encodeURIComponent('e2e-文本扩写'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'e2e-文本扩写', graph: {
+        '1': { class_type: 'TextInput', inputs: { text: '' } },
+        '2': { class_type: 'ShowText|pysssss', inputs: { text: ['1', 0] } },
+      } }),
+    });
+    const canvas = { version: 2, name: 'e2e 扩写', seq: 2, bootAt: Date.now(),
+      view: { x: 80, y: 90, k: 1 }, groups: [], links: [],
+      nodes: [{ id: 't1', type: 'text', title: '文本', x: 240, y: 220, value: '雨夜街道' }] };
+    const created = await (await fetch('/api/projects', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: canvas.name }) })).json();
+    await fetch('/api/projects/' + created.id, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canvas }) });
+    localStorage.setItem('infisheet-project', created.id);
+    location.hash = '#canvas'; location.reload();
+  })()`);
+  await page.waitFor(`!!document.querySelector('#nodes .node[data-id="t1"]')`, 8000);
+  const expansionSetting = await page.evaluate(`(async () => {
+    document.querySelector('[data-act="settings"]').click();
+    const select = document.getElementById('setExpansionWf');
+    const choices = [...select.options].map((o) => o.value);
+    select.value = 'lib:e2e-文本扩写';
+    select.dispatchEvent(new Event('change'));
+    for (let k = 0; k < 20; k++) {
+      const lib = await (await fetch('/api/library')).json();
+      if (lib.expansion_workflow === select.value) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const saved = (await (await fetch('/api/library')).json()).expansion_workflow;
+    document.querySelector('#appSettings .x').click();
+    return { choices, saved };
+  })()`);
+  check('全局设置可保存文本扩写工作流',
+    expansionSetting.choices.includes('lib:e2e-文本扩写')
+      && expansionSetting.saved === 'lib:e2e-文本扩写', JSON.stringify(expansionSetting));
+  await pickNode('t1', false);
+  const expanded = await page.evaluate(`(async () => {
+    const real = window.fetch.bind(window);
+    const json = (value) => new Response(JSON.stringify(value), { status: 200,
+      headers: { 'Content-Type': 'application/json' } });
+    let submitted = null;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith('/api/run')) {
+        submitted = JSON.parse(opts.body).graph;
+        return json({ ok: true, prompt_id: 'expand-e2e' });
+      }
+      if (u.startsWith('/api/job?pid=expand-e2e')) return json({ ok: true, status: 'success',
+        texts: [{ node: '2', text: '雨夜街道，霓虹映在湿润的路面上' }] });
+      return real(url, opts);
+    };
+    try {
+      document.querySelector('#textTools [data-tool="rewrite"]').click();
+      for (let k = 0; k < 50; k++) {
+        if (document.querySelector('#nodes .node[data-id="t1"] .text-body')?.textContent.includes('霓虹')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { input: submitted?.['1']?.inputs?.text,
+        output: document.querySelector('#nodes .node[data-id="t1"] .text-body')?.textContent,
+        nodes: document.querySelectorAll('#nodes .node').length };
+    } finally { window.fetch = real; }
+  })()`);
+  check('文本扩写把当前文本送进工作流并写回原节点',
+    expanded.input === '雨夜街道' && expanded.output.includes('霓虹') && expanded.nodes === 1,
+    JSON.stringify(expanded));
+
+  const longImageImport = await page.evaluate(`(async () => {
+    const original = '人像'.repeat(120) + '.png';
+    const canvas = document.createElement('canvas');
+    canvas.width = 12; canvas.height = 8;
+    canvas.getContext('2d').fillRect(0, 0, 12, 8);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], original, { type: 'image/png' }));
+    const real = window.fetch.bind(window);
+    const before = new Set([...document.querySelectorAll('#nodes .node')].map((el) => el.dataset.id));
+    let uploadName = '';
+    window.fetch = async (url, opts) => {
+      if (String(url).startsWith('/api/upload')) {
+        uploadName = opts.body.get('image').name;
+        return new Response(JSON.stringify({ ok: false, error: 'e2e offline' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return real(url, opts);
+    };
+    try {
+      const event = new MouseEvent('drop', { bubbles: true, cancelable: true,
+        clientX: window.innerWidth - 80, clientY: window.innerHeight - 80 });
+      Object.defineProperty(event, 'dataTransfer', { value: transfer });
+      document.getElementById('stage').dispatchEvent(event);
+      let loaded = false;
+      for (let k = 0; k < 30; k++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const node = [...document.querySelectorAll('#nodes .node.image')]
+          .find((el) => !before.has(el.dataset.id));
+        const img = node?.querySelector('.thumb img');
+        if (img?.naturalWidth === 12) { loaded = true; break; }
+      }
+      return { loaded, uploadName, bytes: new TextEncoder().encode(uploadName).length };
+    } finally { window.fetch = real; }
+  })()`);
+  check('拖入超长文件名图片仍可显示，上传使用短文件名',
+    longImageImport.loaded && longImageImport.bytes < 100
+      && longImageImport.uploadName.endsWith('.png'), JSON.stringify(longImageImport));
 
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。

@@ -3343,6 +3343,7 @@ class Handler(BaseHTTPRequestHandler):
                                   # 单独再发一次请求只会多一次往返和一处失败点。
                                   "defaults": load_wf_defaults(),
                                   "inference_workflow": str(load_settings().get("inference_workflow") or ""),
+                                  "expansion_workflow": str(load_settings().get("expansion_workflow") or ""),
                                   "categories": load_categories()})
 
         if path == "/api/wf/defaults":
@@ -3921,6 +3922,19 @@ class Handler(BaseHTTPRequestHandler):
                 ):
                     return self.fail("请选择包含 LoadImage 的工作流", 400)
             save_settings({"inference_workflow": wf_id})
+            return self.json_out({"ok": True, "workflow": wf_id})
+
+        if path == "/api/settings/expansion":
+            payload = self.read_json() or {}
+            wf_id = payload.get("workflow", "")
+            if not isinstance(wf_id, str) or (wf_id and not wf_id.startswith("lib:")):
+                return self.fail("工作流 ID 无效", 400)
+            if wf_id:
+                resolved = resolve_workflow_id(wf_id)
+                graph = resolved.get("graph") if isinstance(resolved, dict) else None
+                if resolved.get("id") != wf_id or not isinstance(graph, dict):
+                    return self.fail("请选择有效的文本工作流", 400)
+            save_settings({"expansion_workflow": wf_id})
             return self.json_out({"ok": True, "workflow": wf_id})
 
         if not path.startswith("/api/library/"):
