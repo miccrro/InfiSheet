@@ -3361,6 +3361,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/library/"):
             name = urllib.parse.unquote(path.split("/api/library/", 1)[1])
+            if name.endswith("/original"):
+                f = safe_library_path(name[:-len("/original")])
+                if not f or not f.is_file():
+                    return self.fail("工作流不存在", 404)
+                data = json.loads(f.read_text(encoding="utf-8"))
+                original = data.get("original_json")
+                if not isinstance(original, str):
+                    return self.fail("没有保存导入原版", 404)
+                filename = urllib.parse.quote(f.stem + ".json")
+                return self._send(200, original.encode("utf-8"), "application/json; charset=utf-8",
+                                  {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
             f = safe_library_path(name)
             if not f or not f.exists():
                 return self.fail("工作流不存在", 404)
@@ -3948,6 +3959,16 @@ class Handler(BaseHTTPRequestHandler):
         graph = payload.get("graph")
         if not isinstance(graph, dict) or not graph:
             return self.fail("缺少 API 图", 400)
+        original = payload.get("original_json")
+        if original is not None:
+            if not isinstance(original, str) or len(original.encode("utf-8")) > 32 * 1024 * 1024:
+                return self.fail("原版工作流文件过大或格式错误", 400)
+            try:
+                parsed_original = json.loads(original)
+            except (TypeError, ValueError):
+                return self.fail("原版工作流不是有效 JSON", 400)
+            if not isinstance(parsed_original, dict):
+                return self.fail("原版工作流必须是 JSON 对象", 400)
         LIBRARY.mkdir(parents=True, exist_ok=True)
         # 覆盖已有条目时保住它的标题 / 分类：从画布「存入工作流库」只带 graph 过来，
         # 要是整份重写，用户好不容易归好的类就被打回「按能力猜」了。
@@ -3958,6 +3979,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 —— 旧存档坏了就当没有，直接覆盖
                 old = {}
         data = {**old, "name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "graph": graph}
+        if original is not None:
+            data["original_json"] = original
+            data["original_format"] = "ui" if isinstance(parsed_original.get("nodes"), list) else "api"
         title = str(payload.get("title") or "").strip()[:40]
         if title:
             data["title"] = title
@@ -4646,6 +4670,7 @@ def list_library() -> list[dict]:
                     "file": f.name, "nodes": len(g.get("graph") or {}),
                     "saved_at": g.get("saved_at"),
                     "icon": meta["icon"],
+                    "original_format": g.get("original_format") if isinstance(g.get("original_json"), str) else "",
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],

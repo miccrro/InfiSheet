@@ -50,6 +50,25 @@ try {
   const health = await (await fetch(server.base + 'api/health')).json();
   check('server 起来且 /api/health 正常', health.ok === true, `comfy=${health.comfy}`);
 
+  const shareName = 'e2e-原版分享';
+  const originalWorkflow = '{\n  "version": 0.4,\n  "nodes": [{"id": 1, "type": "LoadImage"}],\n  "links": []\n}\n';
+  const shareUrl = server.base + 'api/library/' + encodeURIComponent(shareName);
+  const sharePut = await fetch(shareUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph: { '1': { class_type: 'LoadImage', inputs: { image: '' } } },
+      original_json: originalWorkflow }) });
+  const originalResponse = await fetch(shareUrl + '/original');
+  const downloadedOriginal = await originalResponse.text();
+  const shareListed = await (await fetch(server.base + 'api/library')).json();
+  check('导入后保留原版 JSON，可原样下载分享', sharePut.ok && originalResponse.ok
+    && downloadedOriginal === originalWorkflow
+    && shareListed.items.some((x) => x.name === shareName && x.original_format === 'ui'),
+    JSON.stringify({ put: sharePut.status, download: originalResponse.status,
+      same: downloadedOriginal === originalWorkflow }));
+  await fetch(shareUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph: { '1': { class_type: 'LoadImage', inputs: { image: 'changed.png' } } } }) });
+  check('修改运行图不覆盖导入原版', await (await fetch(shareUrl + '/original')).text() === originalWorkflow);
+  await fetch(shareUrl, { method: 'DELETE' });
+
   // ---- 提交前裁掉工作流自带的残留图 ----
   // 这段是纯 Node：不需要 Chrome，也不需要 ComfyUI。实现从 app.js 里按函数名抠出来跑，
   // 测的是真正上线的那份代码（复制一份到测试里迟早会跟实现跑偏）。
@@ -2797,8 +2816,8 @@ try {
   // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「可见分组的默认」，第 5 颗是放大镜「查残留」——
   // 导入时弹过一次之后，文件就躺在列表里了，想再确认一遍（或怀疑某张图不是自己出的）
   // 原来没有任何入口。
-  check('每行七件套：图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除',
-    wfPane.shape === 7 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
+  check('每行八件套：图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 下载原版 / 删除',
+    wfPane.shape === 8 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
       && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows
       && wfPane.checks === wfPane.rows,
     JSON.stringify(wfPane));
@@ -3241,8 +3260,8 @@ try {
   check('设置里的工作流区不再重复：一组按钮 + 一份列表，旧的「新增 / 管理预设、管理库工作流」全删了',
     wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
     JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
-  check('工作流列表每行是「图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除」七件套',
-    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-del'
+  check('工作流列表每行提供下载原版入口',
+    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-share|button.wf-del'
       && wfSet.stars === wfSet.rows,
     JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
   check('列表按内容撑开（不被压成一条线），预设和自己存进库的工作流在同一份列表里',

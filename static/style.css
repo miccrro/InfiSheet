@@ -1794,7 +1794,7 @@ body.resizing .node-resize { opacity: 1; }
 }
 #appSettings .wf-list .tip { margin: 6px 4px; }
 #appSettings .wf-item {
-  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 22px 22px 22px;
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 22px 22px 22px 22px;
   align-items: center; gap: 6px; padding: 3px 5px; border-radius: 7px;
 }
 #appSettings .wf-item:hover { background: rgba(255, 255, 255, 0.05); }
@@ -1844,13 +1844,14 @@ body.resizing .node-resize { opacity: 1; }
 #appSettings .wf-del:hover { color: var(--err); background: rgba(248, 113, 113, 0.12); }
 /* 「查残留」：和 × 同尺寸的图标键。放大镜放得下 22px 的框里，别做成带文字的按钮——
    这一行已经有名字、分类、「加到画布」三样，再加一颗字多的键会把名字挤没。 */
-#appSettings .wf-check {
+#appSettings .wf-check, #appSettings .wf-share {
   width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
   display: grid; place-items: center;
   background: transparent; color: var(--dim); cursor: pointer;
 }
-#appSettings .wf-check svg { width: 14px; height: 14px; }
-#appSettings .wf-check:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-check svg, #appSettings .wf-share svg { width: 14px; height: 14px; }
+#appSettings .wf-check:hover, #appSettings .wf-share:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-share:disabled { opacity: 0.3; cursor: default; }
 /* 「加到画布」：以前这一步只在资产库弹窗的卡片上，现在回到这一行——
    挑和管是同一个对象的两个动作，没必要分成两个面板 */
 #appSettings .wf-use {
@@ -2533,7 +2534,7 @@ button.primary { border-radius: 999px; }
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。
    底栏的 .dock-btn 也是：它现在是「图标 + 文字」的宽按钮，要的是 10px 圆角矩形，
    做成 999px 会变成一颗药丸。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-share):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }

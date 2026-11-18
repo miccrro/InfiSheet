@@ -1005,6 +1005,7 @@
         catLabel: catName(it.group || cat),
         nodes: it.nodes || 0,
         kinds: it.kinds || [],
+        originalFormat: it.original_format || '',
         // 删除 / 覆盖写回都要真实库名（文件名去掉 .json），id 里带着前缀不能直接用
         file: it.name,
         // 星号跟这一行可见的分组走，避免分组标签与默认状态指向两套分类。
@@ -5270,6 +5271,21 @@
       chk.title = '查残留：这份工作流里有没有导出者留下的图 / 文字';
       chk.onclick = (ev) => { ev.stopPropagation(); checkWfItem(o); };
 
+      const share = document.createElement('button');
+      share.type = 'button';
+      share.className = 'wf-share';
+      share.innerHTML = icon('download');
+      share.title = o.originalFormat
+        ? `下载导入原版（${o.originalFormat === 'ui' ? 'ComfyUI 界面格式' : 'API 格式'}）`
+        : '没有导入原版；重新导入后可下载分享';
+      share.disabled = !o.originalFormat;
+      share.onclick = () => {
+        const a = document.createElement('a');
+        a.href = `/api/library/${encodeURIComponent(o.file)}/original`;
+        a.download = `${o.label}.json`;
+        a.click();
+      };
+
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'wf-del';
@@ -5277,7 +5293,7 @@
       del.title = '删除这个工作流';
       del.onclick = () => deleteWfItem(o);
 
-      row.append(ico, name, cat, use, star, chk, del);
+      row.append(ico, name, cat, use, star, chk, share, del);
       listEl.appendChild(row);
     });
 
@@ -5604,7 +5620,7 @@
       const name = title.trim().slice(0, 40) || defTitle;
       const res = await api(`/api/library/${encodeURIComponent(name)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: clean, title: name }),
+        body: JSON.stringify({ graph: clean, title: name, original_json: await f.text() }),
       });
       if (!res.ok) { flash(res.error || '导入失败'); return; }
       await refreshWorkflows();
@@ -7585,18 +7601,20 @@
     return null;
   }
 
-  async function addWorkflowAt(graph, title, x, y) {
+  async function addWorkflowAt(graph, title, x, y, originalWorkflow = '') {
     const n = await addWorkflowNode(graph, title || '工作流', true);
     if (!n) return null;
     n.x = Math.round(x);
     n.y = Math.round(y);
+    if (originalWorkflow) n.originalWorkflow = originalWorkflow;
     renderAll(); queueSave(); commit();
     return n;
   }
 
   async function addWorkflowFromFile(file, x, y) {
     let data;
-    try { data = JSON.parse(await file.text()); } catch { flash('不是有效的 JSON 文件'); return null; }
+    const original = await file.text();
+    try { data = JSON.parse(original); } catch { flash('不是有效的 JSON 文件'); return null; }
     let graph = extractApiGraph(data);
     if (!graph && !(data && Array.isArray(data.nodes))) {
       flash('没有识别到工作流（需要 API 图，或 ComfyUI 界面格式的 nodes）');
@@ -7607,7 +7625,7 @@
     // 放在 analyze 之前，节点的 values 才会是清干净之后的那份（否则面板上还显示着旧图名）。
     const g = await guardResidue(graph || data);
     if (!g) { flash('已取消导入'); return null; }
-    const n = await addWorkflowAt(g, name, x, y);
+    const n = await addWorkflowAt(g, name, x, y, original);
     if (n) flash('已导入工作流：' + name);
     return n;
   }
@@ -9147,7 +9165,8 @@
     const name = prompt('工作流名称', n.title || 'workflow');
     if (!name) return;
     const res = await api(`/api/library/${encodeURIComponent(name)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ graph: n.graph }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph: n.graph, ...(n.originalWorkflow ? { original_json: n.originalWorkflow } : {}) }),
     });
     flash(res.ok ? `已存入工作流库：${name}` : (res.error || '保存失败'));
     if (res.ok) await refreshWorkflows();     // 存完立刻出现在下拉/首页/快速开始里
