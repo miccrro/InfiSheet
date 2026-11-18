@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -353,6 +355,32 @@ def main() -> int:
 
         status, got = jget(base, f"/api/library/{lib_name}")
         c.check("GET 单条工作流含 graph", status == 200 and isinstance((got or {}).get("graph"), dict))
+
+        # 批量下载：一个 zip，api/ 放 API 图，manifest 说明每份的来源与格式
+        def unzip(raw_body):
+            with zipfile.ZipFile(io.BytesIO(raw_body)) as zf:
+                return zf.namelist(), {n: zf.read(n) for n in zf.namelist()}
+
+        status, headers, raw_zip = http("GET", f"{base}/api/library/export")
+        entries, blobs = unzip(raw_zip) if status == 200 else ([], {})
+        manifest = json.loads(blobs["manifest.json"]) if "manifest.json" in blobs else {}
+        c.check("批量下载返回 zip + manifest + API 图",
+                status == 200 and "application/zip" in headers.get("Content-Type", "")
+                and "manifest.json" in entries and any(n.startswith("api/") for n in entries)
+                and (manifest.get("count") or 0) >= 1,
+                f"HTTP {status} entries={len(entries)}")
+
+        status, headers2, raw_one = http(
+            "GET", f"{base}/api/library/export?only={urllib.parse.quote('自测-快速')}")
+        entries2, blobs2 = unzip(raw_one) if status == 200 else ([], {})
+        manifest2 = json.loads(blobs2["manifest.json"]) if "manifest.json" in blobs2 else {}
+        c.check("批量下载 only 只打包选中项",
+                status == 200 and (manifest2.get("count") or 0) == 1
+                and "api/自测-快速.json" in entries2,
+                f"HTTP {status} entries={entries2}")
+
+        status, _, _ = http("GET", f"{base}/api/library/export?only={urllib.parse.quote('不存在的工作流')}")
+        c.check("批量下载空选集返回 404", status == 404, f"HTTP {status}")
 
         status, _, _ = http("DELETE", f"{base}/api/library/{lib_name}")
         status2, lib3 = jget(base, "/api/library")
