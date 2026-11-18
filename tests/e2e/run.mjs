@@ -3303,7 +3303,7 @@ try {
     wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
     JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
   check('工作流列表每行提供下载原版入口',
-    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-share|button.wf-del'
+    wfSet.shape.join('|') === 'input.wf-pick|button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-share|button.wf-del'
       && wfSet.stars === wfSet.rows,
     JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
   check('列表按内容撑开（不被压成一条线），预设和自己存进库的工作流在同一份列表里',

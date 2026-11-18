@@ -41,6 +41,8 @@
   let drag = null;      // {mode:'pan'|'node'|'link', ...}
   let saveTimer = null;
   let linkTemp = null;
+  // 推理 / 扩写这类「单选工作流」正在保存：期间刷新工作流库不能拿旧响应把选择顶回去
+  let specialSettingsSaving = 0;
 
   /* ---------------- 撤销 / 重做（快照式） ---------------- */
   // 名字不能叫 history：模块作用域里会遮住 window.history，路由改写 hash 时会炸
@@ -1054,8 +1056,12 @@
       };
       // 默认工作流按可见分组各一份，跟列表同一份响应回来
       state.wfDefaults = lib.defaults || {};
-      state.inferenceWorkflow = lib.inference_workflow || '';
-      state.expansionWorkflow = lib.expansion_workflow || '';
+      // 这两个下拉是「点完立刻存」的单选值。保存请求还没回来时，别拿刷新前的旧响应
+      // 把用户刚选的项顶回空白（设置面板随后重画会照着 state 还原）。
+      if (!specialSettingsSaving) {
+        state.inferenceWorkflow = lib.inference_workflow || '';
+        state.expansionWorkflow = lib.expansion_workflow || '';
+      }
     } catch { /* 拉不到就沿用旧值 */ }
     if (!state.nodes.length) renderCapRow();
     return state.workflows;
@@ -5093,13 +5099,24 @@
       inferenceSelect.value = state.inferenceWorkflow;
       inferenceSelect.onchange = async () => {
         const previous = state.inferenceWorkflow;
-        const r = await api('/api/settings/inference', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workflow: inferenceSelect.value }),
-        });
-        if (!r.ok) { inferenceSelect.value = previous; flash(r.error || '保存失败'); return; }
-        state.inferenceWorkflow = r.workflow;
-        flash('推理工作流已保存');
+        const next = inferenceSelect.value;
+        // 先认下用户的选择：保存期间工作流库刷新回来，不会把下拉顶回旧值
+        state.inferenceWorkflow = next;
+        specialSettingsSaving += 1;
+        try {
+          const r = await api('/api/settings/inference', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workflow: next }),
+          });
+          if (!r.ok) {
+            state.inferenceWorkflow = previous;
+            inferenceSelect.value = previous;
+            flash(r.error || '保存失败');
+            return;
+          }
+          state.inferenceWorkflow = r.workflow;
+          flash('推理工作流已保存');
+        } finally { specialSettingsSaving -= 1; }
       };
     }
     const expansionSelect = box.querySelector('#setExpansionWf');
@@ -5112,13 +5129,24 @@
       expansionSelect.value = state.expansionWorkflow;
       expansionSelect.onchange = async () => {
         const previous = state.expansionWorkflow;
-        const r = await api('/api/settings/expansion', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workflow: expansionSelect.value }),
-        });
-        if (!r.ok) { expansionSelect.value = previous; flash(r.error || '保存失败'); return; }
-        state.expansionWorkflow = r.workflow;
-        flash('扩写工作流已保存');
+        const next = expansionSelect.value;
+        // 先认下用户的选择：保存期间工作流库刷新回来，不会把下拉顶回旧值
+        state.expansionWorkflow = next;
+        specialSettingsSaving += 1;
+        try {
+          const r = await api('/api/settings/expansion', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workflow: next }),
+          });
+          if (!r.ok) {
+            state.expansionWorkflow = previous;
+            expansionSelect.value = previous;
+            flash(r.error || '保存失败');
+            return;
+          }
+          state.expansionWorkflow = r.workflow;
+          flash('扩写工作流已保存');
+        } finally { specialSettingsSaving -= 1; }
       };
     }
 
