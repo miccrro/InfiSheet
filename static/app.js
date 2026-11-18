@@ -1005,6 +1005,7 @@
         catLabel: catName(it.group || cat),
         nodes: it.nodes || 0,
         kinds: it.kinds || [],
+        originalFormat: it.original_format || '',
         // 删除 / 覆盖写回都要真实库名（文件名去掉 .json），id 里带着前缀不能直接用
         file: it.name,
         // 星号跟这一行可见的分组走，避免分组标签与默认状态指向两套分类。
@@ -5067,6 +5068,9 @@
   let setWfQuery = '';
   // 顶部芯片点了某个能力分类 → 列表只列这一类（挑默认时不用自己认哪份是文生图）
   let setWfOnly = '';
+  // 批量下载的勾选：存库文件名（不含 .json），面板关掉就清空。
+  // 不放进 state：这只是面板里的临时选择，不该跟着画布存档跑。
+  let wfPicked = new Set();
   function renderSetWorkflows(box) {
     const listEl = box.querySelector('#setWfList');
     const catsEl = box.querySelector('#setCats');
@@ -5074,6 +5078,9 @@
     if (!listEl || !catsEl) return;
     const opts = wfOptions();
     const cats = wfCategories();
+    // 库里删掉 / 改名后，残留的勾选要一起清掉：下载时再按旧名字找只会得到 404
+    const libFiles = new Set(opts.map((o) => o.file));
+    wfPicked.forEach((f) => { if (!libFiles.has(f)) wfPicked.delete(f); });
     const inferenceSelect = box.querySelector('#setInferenceWf');
     if (inferenceSelect) {
       inferenceSelect.replaceChildren(new window.Option('自动识别「推理」工作流', ''));
@@ -5173,6 +5180,7 @@
     // 顶部点了某个分类的「未设」→ 只列这一类。挑默认时眼前只有候选，不用在
     // 十几份工作流里自己认哪份是文生图。
     if (setWfOnly) hits = hits.filter((o) => o.group === setWfOnly);
+    renderWfPickbar(box, hits);
     listEl.innerHTML = '';
     if (setWfOnly) {
       // 过滤条先摆上：哪怕这一类一份都没有，也要留着「显示全部」的出口
@@ -5199,6 +5207,19 @@
       const row = document.createElement('div');
       row.className = 'wf-item';
       row.dataset.id = o.id;
+
+      // 批量下载的勾选格：常驻而不是「先点批量再出现」——少一次模式切换，
+      // 也不用担心切模式时把已经勾好的选择清掉。
+      const pick = document.createElement('input');
+      pick.type = 'checkbox';
+      pick.className = 'wf-pick';
+      pick.checked = wfPicked.has(o.file);
+      pick.title = '勾选后可批量下载（下载的是 API 图 + 导入原版）';
+      pick.onchange = () => {
+        if (pick.checked) wfPicked.add(o.file); else wfPicked.delete(o.file);
+        row.classList.toggle('sel', pick.checked);
+        renderWfPickbar(box, hits);
+      };
 
       const name = document.createElement('b');
       name.textContent = o.label;
@@ -5270,6 +5291,21 @@
       chk.title = '查残留：这份工作流里有没有导出者留下的图 / 文字';
       chk.onclick = (ev) => { ev.stopPropagation(); checkWfItem(o); };
 
+      const share = document.createElement('button');
+      share.type = 'button';
+      share.className = 'wf-share';
+      share.innerHTML = icon('download');
+      share.title = o.originalFormat
+        ? `下载导入原版（${o.originalFormat === 'ui' ? 'ComfyUI 界面格式' : 'API 格式'}）`
+        : '没有导入原版；重新导入后可下载分享';
+      share.disabled = !o.originalFormat;
+      share.onclick = () => {
+        const a = document.createElement('a');
+        a.href = `/api/library/${encodeURIComponent(o.file)}/original`;
+        a.download = `${o.label}.json`;
+        a.click();
+      };
+
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'wf-del';
@@ -5277,7 +5313,7 @@
       del.title = '删除这个工作流';
       del.onclick = () => deleteWfItem(o);
 
-      row.append(ico, name, cat, use, star, chk, del);
+      row.append(pick, ico, name, cat, use, star, chk, share, del);
       listEl.appendChild(row);
     });
 
@@ -5315,6 +5351,102 @@
   function refreshSetWf() {
     const box = document.getElementById('appSettings');
     if (box) renderSetWorkflows(box);
+  }
+
+  // ---- 批量下载：勾选条 ----
+  // 「全选」只选**当前列表里看得到的**（搜索 / 分类过滤之后），这样筛出「Qwen」
+  // 再全选，不会把藏在别的分类里的工作流也一起打包。
+  function renderWfPickbar(box, hits) {
+    const bar = box.querySelector('#setWfPickbar');
+    if (!bar) return;
+    const visible = hits || [];
+    const total = (state.workflows && state.workflows.items ? state.workflows.items : []).length;
+    bar.innerHTML = '';
+    if (!total) { bar.classList.add('hidden'); return; }
+    bar.classList.remove('hidden');
+
+    const pickedTotal = wfPicked.size;
+    const pickedVisible = visible.filter((o) => wfPicked.has(o.file)).length;
+    const allVisible = visible.length > 0 && pickedVisible === visible.length;
+
+    const all = document.createElement('label');
+    all.className = 'wf-pick-all';
+    all.title = '全选当前列表里的工作流（搜索 / 分类过滤也生效）';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = allVisible;
+    cb.indeterminate = !allVisible && pickedVisible > 0;
+    cb.disabled = !visible.length;
+    cb.onchange = () => {
+      visible.forEach((o) => {
+        if (cb.checked) wfPicked.add(o.file); else wfPicked.delete(o.file);
+      });
+      renderSetWorkflows(box);       // 行里的勾也要跟着变，直接重画最省事
+    };
+    all.append(cb, document.createTextNode('全选'));
+    bar.appendChild(all);
+
+    const info = document.createElement('span');
+    info.className = 'wf-pick-info';
+    info.textContent = pickedTotal
+      ? `已选 ${pickedTotal} / ${total}${visible.length !== total ? `（当前列表 ${visible.length} 份）` : ''}`
+      : `共 ${total} 份`;
+    bar.appendChild(info);
+
+    if (pickedTotal) {
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'wf-pick-clear';
+      clear.textContent = '清空';
+      clear.onclick = () => { wfPicked.clear(); renderSetWorkflows(box); };
+      bar.appendChild(clear);
+    }
+
+    const dl = document.createElement('button');
+    dl.type = 'button';
+    dl.className = 'wf-dl';
+    dl.textContent = pickedTotal ? `下载所选（${pickedTotal}）` : '下载所选';
+    dl.disabled = !pickedTotal;
+    dl.title = pickedTotal
+      ? '打包成 zip：每份含 API 图，导入时带原版的还会附上原文件'
+      : '先勾选上面的工作流，或点「全选」';
+    dl.onclick = () => downloadWfSelection();
+    bar.appendChild(dl);
+  }
+
+  async function downloadWfSelection() {
+    const names = [...wfPicked];
+    if (!names.length) { flash('先勾选要下载的工作流'); return; }
+    const url = `/api/library/export?only=${encodeURIComponent(names.join('\n'))}`;
+    flash(`正在打包 ${names.length} 份工作流…`);
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      flash(`打包失败：${e.message || e}`);
+      return;
+    }
+    if (!res.ok) {
+      // 服务端的失败是 JSON；这里不能直接交给浏览器导航，否则用户只会看到一片空白
+      let msg = `打包失败（HTTP ${res.status}）`;
+      try {
+        const j = await res.json();
+        if (j && j.error) msg = j.error;
+      } catch { /* 不是 JSON 就保留 HTTP 状态 */ }
+      flash(msg);
+      return;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const hit = /filename="([^"]+)"/.exec(cd);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = hit ? hit[1] : 'infisheet-workflows.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    flash(`已打包下载 ${names.length} 份工作流`);
   }
 
   async function renameWfItem(o) {
@@ -5578,33 +5710,42 @@
 
   // 设置里那个「导入工作流…」：存进工作流库。库里就是全部工作流，
   // 存完立刻能在节点的选择器里选到，也能设成某个分类的默认。
+  //
+  // 批量导入和单个走同一套校验，只差两件事：
+  //   1. 不逐个弹「工作流名称」——文件名 / 文件里的 title 就是名字，重名自动加 -2；
+  //   2. 残留检查不逐个弹卡片——图片类残留（auto）直接清，文本类保留（见 cleanResidueAuto）。
+  function parseWorkflowFile(text) {
+    let data;
+    try { data = JSON.parse(text); } catch { throw new Error('不是有效的 JSON 文件'); }
+    if (data && data.version === 2 && Array.isArray(data.nodes)
+      && data.nodes.some((nd) => nd && ['text', 'image', 'wf', 'out'].includes(nd.type))) {
+      throw new Error('这是画布存档，不是工作流：请选 API / 界面格式的工作流 JSON');
+    }
+    const graph = extractApiGraph(data) || (data && data.graph)
+      || (data && Array.isArray(data.nodes) ? data : null);
+    if (!graph) throw new Error('没有识别到工作流（API 图或界面格式都行）');
+    return { data, graph };
+  }
+
   function importWorkflowToLibrary() {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.accept = '.json,application/json';
     inp.onchange = async () => {
       const f = inp.files && inp.files[0];
       if (!f) return;
-      let data;
-      try { data = JSON.parse(await f.text()); } catch { flash('不是有效的 JSON 文件'); return; }
-      if (data && data.version === 2 && Array.isArray(data.nodes)
-        && data.nodes.some((nd) => nd && ['text', 'image', 'wf', 'out'].includes(nd.type))) {
-        flash('这是画布存档，不是工作流：请选 API / 界面格式的工作流 JSON');
-        return;
-      }
-      const graph = extractApiGraph(data) || (data && data.graph)
-        || (data && Array.isArray(data.nodes) ? data : null);
-      if (!graph) { flash('没有识别到工作流（API 图或界面格式都行）'); return; }
+      let parsed;
+      try { parsed = parseWorkflowFile(await f.text()); } catch (e) { flash(e.message); return; }
       // 存进工作流库之前先体检：库里的东西以后每次都被反复用，
       // 残留一旦存进去，就成了「每次生成都带着别人的图」。
-      const clean = await guardResidue(graph);
+      const clean = await guardResidue(parsed.graph);
       if (!clean) { flash('已取消导入'); return; }
-      const defTitle = String(data.title || data.name || f.name.replace(/\.json$/i, '')).slice(0, 40);
+      const defTitle = String(parsed.data.title || parsed.data.name || f.name.replace(/\.json$/i, '')).slice(0, 40);
       const title = prompt('工作流名称', defTitle);
       if (title == null) return;
       const name = title.trim().slice(0, 40) || defTitle;
       const res = await api(`/api/library/${encodeURIComponent(name)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: clean, title: name }),
+        body: JSON.stringify({ graph: clean, title: name, original_json: await f.text() }),
       });
       if (!res.ok) { flash(res.error || '导入失败'); return; }
       await refreshWorkflows();
@@ -5612,6 +5753,144 @@
       flash(`已导入「${name}」——在列表里能换分类、设默认`);
     };
     inp.click();
+  }
+
+  // 库名是文件名，服务端只放行「字母 / 数字 / 汉字 / 空格 / 点 / 横线 / 下划线」。
+  // 文件名里常见的括号、方括号、& 在这里都会被拒，先换掉再提交，别让用户对着
+  // 「名称非法」猜哪颗字符有问题。
+  function normalizeWfName(raw) {
+    return String(raw || '')
+      .replace(/[^\p{L}\p{N}_ .-]/gu, '-')
+      .replace(/[ ]{2,}/g, ' ')
+      .trim()
+      .slice(0, 40);
+  }
+
+  // Windows 的文件名不区分大小写：库里有「Krea」，再导一份「krea」会**静默覆盖**
+  // 前一份。所以去重时统一按小写比较。
+  function uniqueWfName(base, taken) {
+    const name = normalizeWfName(base) || '工作流';
+    if (!taken.has(name.toLowerCase())) return name;
+    for (let i = 2; i < 1000; i += 1) {
+      const suffix = `-${i}`;
+      const head = name.slice(0, 40 - suffix.length).replace(/[ .-]+$/, '');
+      const cand = (head || '工作流') + suffix;
+      if (!taken.has(cand.toLowerCase())) return cand;
+    }
+    return name;
+  }
+
+  // 批量导入的残留检查：不再一张卡片一张卡片地弹（十份文件要点十次）。
+  // 图片类残留的 fix 是清空文件名，清掉不影响模板语义，直接清；
+  // 文本类可能是模板自带的系统提示词，保留原值，结果卡片里如实报数量，
+  // 想清就之后逐份点列表里的放大镜。
+  async function cleanResidueAuto(graph) {
+    let res;
+    try { res = await postJson('/api/residue', { graph }); } catch { return { graph, cleaned: 0, kept: 0, partial: true }; }
+    if (!res || !res.ok) return { graph, cleaned: 0, kept: 0, partial: true };
+    const out = res.graph || graph;            // 界面格式已经在这里转成 API 图了
+    const list = res.residue || [];
+    const auto = list.filter((x) => x.auto);
+    auto.forEach((hit) => {
+      const nd = out[hit.node];
+      if (nd && nd.inputs && Object.prototype.hasOwnProperty.call(nd.inputs, hit.input)) {
+        nd.inputs[hit.input] = hit.fix;
+      }
+    });
+    return { graph: out, cleaned: auto.length, kept: list.length - auto.length, partial: !!res.partial };
+  }
+
+  function importWorkflowsToLibraryBatch() {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.json,application/json'; inp.multiple = true;
+    inp.onchange = async () => {
+      const files = [...(inp.files || [])];
+      if (!files.length) return;
+      const taken = new Set((state.workflows && state.workflows.items ? state.workflows.items : []
+      ).map((it) => String(it.name || '').toLowerCase()));
+      const rows = [];
+      flash(`正在导入 ${files.length} 份工作流…`);
+      for (const f of files) {
+        const row = { file: f.name, ok: false, why: '' };
+        try {
+          const original = await f.text();
+          const parsed = parseWorkflowFile(original);
+          const clean = await cleanResidueAuto(parsed.graph);
+          // 界面格式要靠 ComfyUI 的 object_info 才能转 API 图；连不上时服务端只能原样回来，
+          // 这时候存进库就是一份跑不了的图。宁可在结果里报失败，也不留坏条目。
+          if (clean.graph && Array.isArray(clean.graph.nodes)) {
+            throw new Error('界面格式没能转成 API 图（ComfyUI 未连接？），先连上再导入');
+          }
+          // 名字优先用文件里写着的 title：导出者起的名字通常比文件名可读
+          const base = parsed.data.title || parsed.data.name || f.name.replace(/\.json$/i, '');
+          const name = uniqueWfName(base, taken);
+          const res = await api(`/api/library/${encodeURIComponent(name)}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ graph: clean.graph, title: name, original_json: original }),
+          });
+          if (!res.ok) throw new Error(res.error || '导入失败');
+          taken.add(name.toLowerCase());
+          row.ok = true; row.name = name;
+          row.cleaned = clean.cleaned; row.kept = clean.kept; row.partial = clean.partial;
+        } catch (e) {
+          row.why = e.message || String(e);
+        }
+        rows.push(row);
+      }
+      await refreshWorkflows();
+      refreshSetWf();
+      showWfBatchResult(rows);
+    };
+    inp.click();
+  }
+
+  // 批量导入结果：一行一份文件，成功也列出来——用户刚选了十份，得能核对
+  // 「哪几份真的进来了、被改成了什么名字、哪份失败了」。全部成功也不弹 toast 了事。
+  function showWfBatchResult(rows) {
+    const old = document.getElementById('batchWfCard');
+    if (old) old.remove();
+    const ok = rows.filter((r) => r.ok).length;
+    const body = rows.map((r) => {
+      const tag = r.ok ? '已导入' : '失败';
+      let note;
+      if (!r.ok) note = r.why;
+      else {
+        const bits = [`存为「${r.name}」`];
+        if (r.cleaned) bits.push(`清了 ${r.cleaned} 处图片残留`);
+        if (r.kept) bits.push(`保留 ${r.kept} 处文本残留`);
+        if (r.partial) bits.push('ComfyUI 未连接，文本残留未检查');
+        note = bits.join(' · ');
+      }
+      return `<div class="bw-row ${r.ok ? 'ok' : 'bad'}">
+        <span class="bw-tag">${tag}</span>
+        <span class="bw-name" title="${esc(r.file)}">${esc(r.file)}</span>
+        <span class="bw-note" title="${esc(note)}">${esc(note)}</span>
+      </div>`;
+    }).join('');
+    const wrap = document.createElement('div');
+    wrap.id = 'batchWfCard';
+    wrap.innerHTML = `
+      <div class="sheet rs-sheet" role="dialog" aria-label="批量导入结果">
+        <header><strong>批量导入：成功 ${ok} / ${rows.length}</strong></header>
+        <div class="rs-body">
+          <p class="rs-lead">名字按文件里的 title 或文件名自动取，重名加了 -2；这些都能在列表里改名。</p>
+          <div class="bw-list">${body}</div>
+        </div>
+        <footer class="rs-foot"><button type="button" class="bw-close">关闭</button></footer>
+      </div>`;
+    document.body.appendChild(wrap);
+    const done = () => {
+      wrap.remove();
+      document.removeEventListener('keydown', onKey, true);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation();
+      done();
+    };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.bw-close').onclick = done;
+    wrap.onclick = (ev) => { if (ev.target === wrap) done(); };
   }
 
   // ComfyUI 地址编辑器：设置面板和首页页脚的小弹层**共用这一份**。
@@ -5685,6 +5964,7 @@
   function openSettingsSheet(focus) {
     closeSettingsSheet();
     setWfOnly = '';          // 上次「只看某一类」的过滤不带到下一次打开
+    wfPicked = new Set();    // 批量下载的勾选也不带过去（库可能已经变了）
     const box = document.createElement('div');
     box.id = 'appSettings';
     box.innerHTML = `
@@ -5713,7 +5993,9 @@
               <div class="set-toolbar">
                 <input type="text" id="setWfSearch" placeholder="搜名字或分类…" spellcheck="false" autocomplete="off" />
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
+                <button type="button" id="setImportWfBatch" title="一次选多份 JSON，全部导进工作流库">批量导入…</button>
               </div>
+              <div class="wf-pickbar" id="setWfPickbar"></div>
               <div class="wf-specials">
                 <label class="set-inference">图片推理工作流
                   <select id="setInferenceWf" aria-label="推理提示词工作流"></select>
@@ -5958,6 +6240,7 @@
     };
     box.querySelector('.x').onclick = closeSettingsSheet;
     box.querySelector('#setImportWf').onclick = () => importWorkflowToLibrary();
+    box.querySelector('#setImportWfBatch').onclick = () => importWorkflowsToLibraryBatch();
     // 搜索：只重画列表（不重画工具条），输入框不会失焦
     const wfSearch = box.querySelector('#setWfSearch');
     wfSearch.value = setWfQuery;
@@ -7585,18 +7868,20 @@
     return null;
   }
 
-  async function addWorkflowAt(graph, title, x, y) {
+  async function addWorkflowAt(graph, title, x, y, originalWorkflow = '') {
     const n = await addWorkflowNode(graph, title || '工作流', true);
     if (!n) return null;
     n.x = Math.round(x);
     n.y = Math.round(y);
+    if (originalWorkflow) n.originalWorkflow = originalWorkflow;
     renderAll(); queueSave(); commit();
     return n;
   }
 
   async function addWorkflowFromFile(file, x, y) {
     let data;
-    try { data = JSON.parse(await file.text()); } catch { flash('不是有效的 JSON 文件'); return null; }
+    const original = await file.text();
+    try { data = JSON.parse(original); } catch { flash('不是有效的 JSON 文件'); return null; }
     let graph = extractApiGraph(data);
     if (!graph && !(data && Array.isArray(data.nodes))) {
       flash('没有识别到工作流（需要 API 图，或 ComfyUI 界面格式的 nodes）');
@@ -7607,7 +7892,7 @@
     // 放在 analyze 之前，节点的 values 才会是清干净之后的那份（否则面板上还显示着旧图名）。
     const g = await guardResidue(graph || data);
     if (!g) { flash('已取消导入'); return null; }
-    const n = await addWorkflowAt(g, name, x, y);
+    const n = await addWorkflowAt(g, name, x, y, original);
     if (n) flash('已导入工作流：' + name);
     return n;
   }
@@ -9147,7 +9432,8 @@
     const name = prompt('工作流名称', n.title || 'workflow');
     if (!name) return;
     const res = await api(`/api/library/${encodeURIComponent(name)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ graph: n.graph }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph: n.graph, ...(n.originalWorkflow ? { original_json: n.originalWorkflow } : {}) }),
     });
     flash(res.ok ? `已存入工作流库：${name}` : (res.error || '保存失败'));
     if (res.ok) await refreshWorkflows();     // 存完立刻出现在下拉/首页/快速开始里

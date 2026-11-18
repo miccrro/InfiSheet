@@ -42,6 +42,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+import zipfile
 from datetime import datetime
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3359,8 +3360,37 @@ class Handler(BaseHTTPRequestHandler):
             kinds = [k for k in (query.get("kinds") or [""])[0].split(",") if k]
             return self.json_out(resolve_workflow_id(wid, kinds or None))
 
+        if path == "/api/library/export":
+            # 批量下载：?only=名字1\n名字2 只打包勾选的，不传就是整库。
+            # 名字里可能带空格 / 点，所以按行或逗号切，别拿 query 的 key 当数组。
+            only = (query.get("only") or [""])[0].strip()
+            items = list_library()
+            if only:
+                wanted = {x.strip() for x in only.replace(",", "\n").split("\n") if x.strip()}
+                items = [it for it in items if it["name"] in wanted or it["file"] in wanted]
+                if not items:
+                    return self.fail("没有可下载的工作流", 404)
+            blob = build_library_zip(items)
+            if blob is None:
+                return self.fail("工作流文件读不出来，打包失败", 500)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            filename = f"infisheet-workflows-{stamp}.zip"
+            return self._send(200, blob, "application/zip",
+                              {"Content-Disposition": f'attachment; filename="{filename}"'})
+
         if path.startswith("/api/library/"):
             name = urllib.parse.unquote(path.split("/api/library/", 1)[1])
+            if name.endswith("/original"):
+                f = safe_library_path(name[:-len("/original")])
+                if not f or not f.is_file():
+                    return self.fail("工作流不存在", 404)
+                data = json.loads(f.read_text(encoding="utf-8"))
+                original = data.get("original_json")
+                if not isinstance(original, str):
+                    return self.fail("没有保存导入原版", 404)
+                filename = urllib.parse.quote(f.stem + ".json")
+                return self._send(200, original.encode("utf-8"), "application/json; charset=utf-8",
+                                  {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
             f = safe_library_path(name)
             if not f or not f.exists():
                 return self.fail("工作流不存在", 404)
@@ -3948,6 +3978,16 @@ class Handler(BaseHTTPRequestHandler):
         graph = payload.get("graph")
         if not isinstance(graph, dict) or not graph:
             return self.fail("缺少 API 图", 400)
+        original = payload.get("original_json")
+        if original is not None:
+            if not isinstance(original, str) or len(original.encode("utf-8")) > 32 * 1024 * 1024:
+                return self.fail("原版工作流文件过大或格式错误", 400)
+            try:
+                parsed_original = json.loads(original)
+            except (TypeError, ValueError):
+                return self.fail("原版工作流不是有效 JSON", 400)
+            if not isinstance(parsed_original, dict):
+                return self.fail("原版工作流必须是 JSON 对象", 400)
         LIBRARY.mkdir(parents=True, exist_ok=True)
         # 覆盖已有条目时保住它的标题 / 分类：从画布「存入工作流库」只带 graph 过来，
         # 要是整份重写，用户好不容易归好的类就被打回「按能力猜」了。
@@ -3958,6 +3998,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 —— 旧存档坏了就当没有，直接覆盖
                 old = {}
         data = {**old, "name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "graph": graph}
+        if original is not None:
+            data["original_json"] = original
+            data["original_format"] = "ui" if isinstance(parsed_original.get("nodes"), list) else "api"
         title = str(payload.get("title") or "").strip()[:40]
         if title:
             data["title"] = title
@@ -4646,11 +4689,60 @@ def list_library() -> list[dict]:
                     "file": f.name, "nodes": len(g.get("graph") or {}),
                     "saved_at": g.get("saved_at"),
                     "icon": meta["icon"],
+                    "original_format": g.get("original_format") if isinstance(g.get("original_json"), str) else "",
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],
                     **graph_takes(g.get("graph") or {})})
     return out
+
+
+def build_library_zip(items: list[dict]) -> bytes | None:
+    """把选中的工作流打成一份 zip（批量下载）。
+
+    包里分两个目录，理由不一样：
+      * `api/` —— 库里的 API 图。ComfyUI 的 /api/prompt 能直接提交，InfiSheet 也能再导入；
+      * `original/` —— 导入时随文件带进来的原版（界面格式就是 ComfyUI 里能直接打开的）。
+        只有导入时存过 original_json 的才有这一份，没有就只在 manifest 里写明「仅 API 图」。
+    文件名用库名（已经是唯一的），不拿标题当文件名：标题可以重名，解压时就会互相覆盖。
+    """
+    buf = io.BytesIO()
+    manifest = {
+        "tool": "InfiSheet",
+        "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "note": "api/ 是 ComfyUI API 图；original/ 是导入时的原文件（有才导出）。",
+        "items": [],
+    }
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for it in items:
+            f = LIBRARY / it["file"]
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue                      # 单个坏文件不该让整包下载失败
+            graph = data.get("graph")
+            if not isinstance(graph, dict) or not graph:
+                continue
+            api_arc = f"api/{it['name']}.json"
+            zf.writestr(api_arc, json.dumps(graph, ensure_ascii=False, indent=1))
+            original = data.get("original_json")
+            original_arc = ""
+            if isinstance(original, str) and original.strip():
+                original_arc = f"original/{it['name']}.json"
+                # 原样写回，不重新序列化：界面格式的 widgets_values 顺序不能被动
+                zf.writestr(original_arc, original)
+            manifest["items"].append({
+                "name": it["name"], "title": it.get("title") or it["name"],
+                "group": it.get("group") or "", "category": it.get("category") or "",
+                "nodes": it.get("nodes") or 0,
+                "original_format": it.get("original_format") or "",
+                "api": api_arc, "original": original_arc,
+            })
+        if not manifest["items"]:
+            return None
+        manifest["count"] = len(manifest["items"])
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
+    return buf.getvalue()
 
 
 ALIASES_FILE = ROOT / "presets-aliases.json"

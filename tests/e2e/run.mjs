@@ -50,6 +50,25 @@ try {
   const health = await (await fetch(server.base + 'api/health')).json();
   check('server 起来且 /api/health 正常', health.ok === true, `comfy=${health.comfy}`);
 
+  const shareName = 'e2e-原版分享';
+  const originalWorkflow = '{\n  "version": 0.4,\n  "nodes": [{"id": 1, "type": "LoadImage"}],\n  "links": []\n}\n';
+  const shareUrl = server.base + 'api/library/' + encodeURIComponent(shareName);
+  const sharePut = await fetch(shareUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph: { '1': { class_type: 'LoadImage', inputs: { image: '' } } },
+      original_json: originalWorkflow }) });
+  const originalResponse = await fetch(shareUrl + '/original');
+  const downloadedOriginal = await originalResponse.text();
+  const shareListed = await (await fetch(server.base + 'api/library')).json();
+  check('导入后保留原版 JSON，可原样下载分享', sharePut.ok && originalResponse.ok
+    && downloadedOriginal === originalWorkflow
+    && shareListed.items.some((x) => x.name === shareName && x.original_format === 'ui'),
+    JSON.stringify({ put: sharePut.status, download: originalResponse.status,
+      same: downloadedOriginal === originalWorkflow }));
+  await fetch(shareUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph: { '1': { class_type: 'LoadImage', inputs: { image: 'changed.png' } } } }) });
+  check('修改运行图不覆盖导入原版', await (await fetch(shareUrl + '/original')).text() === originalWorkflow);
+  await fetch(shareUrl, { method: 'DELETE' });
+
   // ---- 提交前裁掉工作流自带的残留图 ----
   // 这段是纯 Node：不需要 Chrome，也不需要 ComfyUI。实现从 app.js 里按函数名抠出来跑，
   // 测的是真正上线的那份代码（复制一份到测试里迟早会跟实现跑偏）。
@@ -94,6 +113,22 @@ try {
     refScaleDims?.(1024, 768) === null && refScaleDims?.(800, 800) === null,
     JSON.stringify(refScaleDims?.(1024, 768)));
   check('尺寸读不出来时不缩放', refScaleDims?.(0, 0) === null && refScaleDims?.(NaN, 10) === null);
+  // 批量导入的名字规则：文件名里的括号 / 斜杠在服务端是非法字符，先换掉；
+  // 重名按 Windows 的大小写不敏感比较，避免静默覆盖前一份。
+  const normalizeWfName = new Function(`${pickFn(appSrc, 'normalizeWfName')}\nreturn normalizeWfName;`)();
+  const uniqueWfName = new Function(
+    `${pickFn(appSrc, 'normalizeWfName')}\n${pickFn(appSrc, 'uniqueWfName')}\nreturn uniqueWfName;`)();
+  const longWfName = '长'.repeat(50);
+  check('批量导入命名：非法字符换成横线 / 空名留空 / 超长截到 40',
+    normalizeWfName('Qwen (2.1)/测试*图') === 'Qwen -2.1--测试-图'
+      && normalizeWfName('   ') === '' && normalizeWfName(longWfName).length === 40,
+    JSON.stringify(normalizeWfName('Qwen (2.1)/测试*图')));
+  check('批量导入命名：重名加 -2，且大小写不同也算重名',
+    uniqueWfName('Krea2-文生图.API', new Set(['krea2-文生图.api'])) === 'Krea2-文生图.API-2'
+      && uniqueWfName('新名字', new Set()) === '新名字'
+      && uniqueWfName(longWfName, new Set([normalizeWfName(longWfName).toLowerCase()])).endsWith('-2'),
+    JSON.stringify([uniqueWfName('Krea2-文生图.API', new Set(['krea2-文生图.api'])),
+      uniqueWfName(longWfName, new Set([normalizeWfName(longWfName).toLowerCase()]))]));
   const refEncodeType = appSrc.includes('function refEncodeType(')
     ? new Function(`${pickFn(appSrc, 'refEncodeType')}\nreturn refEncodeType;`)() : null;
   check('缩放副本沿用原格式，GIF 之类落 PNG',
@@ -2747,10 +2782,11 @@ try {
     const pane = document.getElementById('set-pane-wf');
     const rows = [...pane.querySelectorAll('.wf-item')];
     return {
-      missing: ['setWfSearch', 'setWfList', 'setCats', 'setImportWf', 'setWfDefault']
+      missing: ['setWfSearch', 'setWfList', 'setCats', 'setImportWf', 'setImportWfBatch', 'setWfPickbar', 'setWfDefault']
         .filter((id) => !document.getElementById(id)),
       rows: rows.length,
       shape: rows.length ? rows[0].children.length : 0,
+      picks: rows.filter((r) => r.querySelector('.wf-pick')).length,
       stars: rows.filter((r) => r.querySelector('.wf-star')).length,
       uses: rows.filter((r) => r.querySelector('.wf-use')).length,
       dels: rows.filter((r) => r.querySelector('.wf-del')).length,
@@ -2794,14 +2830,39 @@ try {
     wfNarrow.listH >= 200 && wfNarrow.categoriesBottom <= wfNarrow.sheetBottom + 2
       && !wfNarrow.horizontalOverflow, JSON.stringify(wfNarrow));
   await page.clearViewport();
-  // 七件套：第 1 颗是图标（点开换标），第 4 颗 ☆ 设「可见分组的默认」，第 5 颗是放大镜「查残留」——
-  // 导入时弹过一次之后，文件就躺在列表里了，想再确认一遍（或怀疑某张图不是自己出的）
-  // 原来没有任何入口。
-  check('每行七件套：图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除',
-    wfPane.shape === 7 && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
+  // 九件套：第 1 颗是批量下载的勾选框，第 2 颗是图标（点开换标），第 5 颗 ☆ 设「可见分组的默认」，
+  // 第 6 颗是放大镜「查残留」——导入时弹过一次之后，文件就躺在列表里了，想再确认一遍
+  // （或怀疑某张图不是自己出的）原来没有任何入口。
+  check('每行九件套：勾选 / 图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 下载原版 / 删除',
+    wfPane.shape === 9 && wfPane.picks === wfPane.rows && wfPane.stars === wfPane.rows && wfPane.uses === wfPane.rows
       && wfPane.dels === wfPane.rows && wfPane.cats === wfPane.rows
       && wfPane.checks === wfPane.rows,
     JSON.stringify(wfPane));
+
+  // 批量下载：勾一份 → 「下载所选」从灰变亮；点「全选」→ 当前列表全部勾上。
+  // 只验 UI 状态，不真触发下载（打包内容由 selftest 的 /api/library/export 用例断言）。
+  const pickOne = await page.evaluate(`(() => {
+    const row = document.querySelector('#setWfList .wf-item');
+    row.querySelector('.wf-pick').click();
+    const bar = document.getElementById('setWfPickbar');
+    const dl = bar.querySelector('.wf-dl');
+    return { checked: row.querySelector('.wf-pick').checked, sel: row.classList.contains('sel'),
+      disabled: dl.disabled, text: dl.textContent, info: bar.querySelector('.wf-pick-info').textContent };
+  })()`);
+  check('批量下载：勾一份后「下载所选」可用并报出已选数量',
+    pickOne.checked && pickOne.sel && !pickOne.disabled && /（1）/.test(pickOne.text)
+      && /已选 1/.test(pickOne.info), JSON.stringify(pickOne));
+  const pickAll = await page.evaluate(`(() => {
+    document.querySelector('#setWfPickbar .wf-pick-all input').click();
+    const rows = [...document.querySelectorAll('#setWfList .wf-item')];
+    return { rows: rows.length, picked: rows.filter((r) => r.querySelector('.wf-pick').checked).length,
+      text: document.querySelector('#setWfPickbar .wf-dl').textContent };
+  })()`);
+  check('批量下载：「全选」勾上当前列表全部',
+    pickAll.picked === pickAll.rows && new RegExp(`（${pickAll.rows}）`).test(pickAll.text),
+    JSON.stringify(pickAll));
+  // 取消全选，后面的用例从「什么都没勾」的干净状态开始
+  await page.evaluate(`document.querySelector('#setWfPickbar .wf-pick-all input').click()`);
   check('那一行读数报「每个分组当前用哪一份」，夹具没设过就写「未设」',
     /^按分组默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
 
@@ -3241,8 +3302,8 @@ try {
   check('设置里的工作流区不再重复：一组按钮 + 一份列表，旧的「新增 / 管理预设、管理库工作流」全删了',
     wfSet.has && wfSet.gone === 0 && wfSet.dup.length === 0,
     JSON.stringify({ has: wfSet.has, gone: wfSet.gone, dup: wfSet.dup }));
-  check('工作流列表每行是「图标 / 名字 / 分类 / 加到画布 / ☆ 设默认 / 查残留 / 删除」七件套',
-    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-del'
+  check('工作流列表每行提供下载原版入口',
+    wfSet.shape.join('|') === 'button.wf-ico-btn|b|button.wf-cat|button.wf-use|button.wf-star|button.wf-check|button.wf-share|button.wf-del'
       && wfSet.stars === wfSet.rows,
     JSON.stringify({ shape: wfSet.shape, stars: wfSet.stars }));
   check('列表按内容撑开（不被压成一条线），预设和自己存进库的工作流在同一份列表里',

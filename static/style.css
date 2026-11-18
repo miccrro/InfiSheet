@@ -1771,6 +1771,9 @@ body.resizing .node-resize { opacity: 1; }
 }
 #appSettings .set-toolbar input:focus { outline: none; border-color: #5a5a5a; }
 #appSettings .set-toolbar .prime { height: auto; padding: 0 12px; font-size: 11.5px; white-space: nowrap; }
+/* 工具条上的按钮统一成 8px 圆角矩形：全局的「带文字控件 → 胶囊」规则会把手动加的
+   「批量导入…」压成药丸，和旁边的导入按钮不是一套。 */
+#appSettings .set-toolbar button { height: auto; padding: 0 12px; font-size: 11.5px; border-radius: 8px; }
 #appSettings .wf-specials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 #appSettings .wf-specials label { min-width: 0; gap: 5px; }
 #appSettings .wf-specials small { color: var(--faint); font-size: 10.5px; }
@@ -1794,10 +1797,31 @@ body.resizing .node-resize { opacity: 1; }
 }
 #appSettings .wf-list .tip { margin: 6px 4px; }
 #appSettings .wf-item {
-  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 22px 22px 22px;
+  display: grid; grid-template-columns: 16px 22px minmax(0, 1fr) auto auto 22px 22px 22px 22px;
   align-items: center; gap: 6px; padding: 3px 5px; border-radius: 7px;
 }
 #appSettings .wf-item:hover { background: rgba(255, 255, 255, 0.05); }
+#appSettings .wf-item.sel { background: rgba(255, 255, 255, 0.06); }
+/* 批量下载的勾选框：常驻一格，不靠「先点批量再出现」的模式切换 */
+#appSettings .wf-pick { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* 勾选条：全选 / 已选数量 / 清空 / 下载所选 */
+#appSettings .wf-pickbar { display: flex; align-items: center; gap: 10px; padding: 0 2px 7px; font-size: 11px; color: var(--faint); }
+#appSettings .wf-pickbar.hidden { display: none; }
+#appSettings .wf-pick-all { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); cursor: pointer; }
+#appSettings .wf-pickbar input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+#appSettings .wf-pick-info { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#appSettings .wf-pick-clear {
+  padding: 0; border: 0; background: none; color: var(--faint);
+  font: inherit; cursor: pointer; text-decoration: underline;
+}
+#appSettings .wf-pick-clear:hover { color: var(--text); }
+#appSettings .wf-dl {
+  margin-left: auto; height: 24px; padding: 0 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer;
+}
+#appSettings .wf-dl:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+#appSettings .wf-dl:disabled { opacity: 0.35; cursor: default; }
 /* 工作流图标：预设模型标 / 自己传的图，统一画成圆角小方块。
    svg / img 铺满 100% 而不是固定像素——给多大就画多大，20px 和 16px 都清楚。 */
 .wf-ico {
@@ -1844,13 +1868,14 @@ body.resizing .node-resize { opacity: 1; }
 #appSettings .wf-del:hover { color: var(--err); background: rgba(248, 113, 113, 0.12); }
 /* 「查残留」：和 × 同尺寸的图标键。放大镜放得下 22px 的框里，别做成带文字的按钮——
    这一行已经有名字、分类、「加到画布」三样，再加一颗字多的键会把名字挤没。 */
-#appSettings .wf-check {
+#appSettings .wf-check, #appSettings .wf-share {
   width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
   display: grid; place-items: center;
   background: transparent; color: var(--dim); cursor: pointer;
 }
-#appSettings .wf-check svg { width: 14px; height: 14px; }
-#appSettings .wf-check:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-check svg, #appSettings .wf-share svg { width: 14px; height: 14px; }
+#appSettings .wf-check:hover, #appSettings .wf-share:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+#appSettings .wf-share:disabled { opacity: 0.3; cursor: default; }
 /* 「加到画布」：以前这一步只在资产库弹窗的卡片上，现在回到这一行——
    挑和管是同一个对象的两个动作，没必要分成两个面板 */
 #appSettings .wf-use {
@@ -2533,7 +2558,7 @@ button.primary { border-radius: 999px; }
    它们都是 6~8px 的圆角矩形，不是胶囊，也必须在这条链里排除，否则写了也盖不住。
    底栏的 .dock-btn 也是：它现在是「图标 + 文字」的宽按钮，要的是 10px 圆角矩形，
    做成 999px 会变成一颗药丸。 */
-button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
+button:not(#newCanvas):not(.cap-btn):not(.quick-card):not(.recent-card):not(.pm):not(.proj-card):not(.swatch):not(.dot-i):not(.go-ratio):not(.go-opt):not(.tab):not(.sp-cell):not(.sp-x):not(.chip):not(.gen-run):not(.of-btn):not(.wf-del):not(.wf-check):not(.wf-share):not(.wf-star):not(.dock-orb):not(.pc-more):not(.cover-cell):not(.it-btn):not(.tcp-swatch):not(.tcp-reset):not(.tf-done):not(.tpp-btn):not(.icon-pick):not(.wf-ico-btn):not(.dock-btn):not(.rb-btn):not(.pc-check):not(.sm-tool):not(.sm-btn) {
   border-radius: 999px;
 }
 #viewTools .vt.zoom { border-radius: 999px; }
@@ -2692,6 +2717,27 @@ button.primary:hover,
 /* 「在哪」是这一屏最该被看见的一行：给个强调色，别和下面的元信息混成一片 */
 #errCard .err-row.where .err-v { color: var(--danger, #ff7b72); font-weight: 600; }
 #errCard .err-row.msg .err-v { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+
+/* 批量导入结果：同样是 .rs-sheet 骨架，一行一份文件。
+   成功也要列出来——用户刚选了十份，需要核对「哪几份进来了、被改成了什么名字」。 */
+#batchWfCard {
+  position: fixed; inset: 0; z-index: 3200;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+#batchWfCard .rs-sheet { width: 620px; max-width: 94vw; }
+#batchWfCard .bw-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
+#batchWfCard .bw-row {
+  display: grid; grid-template-columns: 52px minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px;
+  align-items: baseline; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px;
+  font-size: 11px;
+}
+#batchWfCard .bw-tag { text-align: center; padding: 1px 0; border-radius: 999px; font-size: 10px; }
+#batchWfCard .bw-row.ok .bw-tag { color: #7ee787; background: rgba(126, 231, 135, 0.12); }
+#batchWfCard .bw-row.bad .bw-tag { color: #ff7b72; background: rgba(255, 123, 114, 0.12); }
+#batchWfCard .bw-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#batchWfCard .bw-note { color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#batchWfCard .bw-close { padding: 7px 13px; border-radius: 8px; font-size: 12px; cursor: pointer; }
 
 /* =========================================================
    生成器 · 参考图缩略图（连线 / @ 引用）与 @ 选择菜单
