@@ -78,6 +78,30 @@ try {
     !!safeUpload && new TextEncoder().encode(safeUpload).length < 100
       && safeUpload.endsWith('.png') && safeUpload !== otherProject,
     String(safeUpload));
+  // 图生图的输入图长边封顶：原图直送 VAE 编码太慢，缩的只是送进 ComfyUI 的副本。
+  const refMax = Number((appSrc.match(/const REF_MAX_LONG = (\d+);/) || [])[1]);
+  const refScaleDims = appSrc.includes('function refScaleDims(')
+    ? new Function(`const REF_MAX_LONG = ${refMax};\n${pickFn(appSrc, 'refScaleDims')}\nreturn refScaleDims;`)() : null;
+  check('参考图长边超限时等比缩小', refMax === 1024 && !!refScaleDims,
+    `REF_MAX_LONG=${refMax}`);
+  const tall = refScaleDims?.(4000, 6000);
+  check('竖图按长边缩到 1024，宽高比不变',
+    tall?.h === 1024 && tall?.w === 683, JSON.stringify(tall));
+  const wide = refScaleDims?.(6000, 4000);
+  check('横图按长边缩到 1024，宽高比不变',
+    wide?.w === 1024 && wide?.h === 683, JSON.stringify(wide));
+  check('本来就不超限的图不缩放',
+    refScaleDims?.(1024, 768) === null && refScaleDims?.(800, 800) === null,
+    JSON.stringify(refScaleDims?.(1024, 768)));
+  check('尺寸读不出来时不缩放', refScaleDims?.(0, 0) === null && refScaleDims?.(NaN, 10) === null);
+  const refEncodeType = appSrc.includes('function refEncodeType(')
+    ? new Function(`${pickFn(appSrc, 'refEncodeType')}\nreturn refEncodeType;`)() : null;
+  check('缩放副本沿用原格式，GIF 之类落 PNG',
+    refEncodeType?.('image/jpeg').ext === 'jpg' && refEncodeType?.('image/jpeg').q === 0.92
+      && refEncodeType?.('', 'a.WEBP').ext === 'webp'
+      && refEncodeType?.('image/png').ext === 'png'
+      && refEncodeType?.('image/gif').ext === 'png',
+    JSON.stringify([refEncodeType?.('image/jpeg'), refEncodeType?.('image/gif')]));
   const expansionInput = new Function(`${pickFn(appSrc, 'expansionInput')}\nreturn expansionInput;`)();
   const expansionSlot = expansionInput({
     '2': { class_type: 'CR Text', inputs: { text: '' } },
@@ -343,6 +367,16 @@ try {
   check('单图工作流原样保留，只把画布图填进去',
     single.pruned.length === 0 && single.graph['12'].inputs['images.image_1'][0] === '11'
     && single.graph['11'].inputs.image === 'canvas.png', JSON.stringify(single.pruned));
+  const bypassUpscaleResize = appSrc.includes('function bypassUpscaleResize(')
+    ? new Function(`${pickFn(appSrc, 'bypassUpscaleResize')}\nreturn bypassUpscaleResize;`)() : null;
+  const vosrGraph = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'workflows',
+    'Vosr-2图像高清化-10秒4K.api.json'), 'utf8'));
+  const directUpscale = bypassUpscaleResize?.(vosrGraph.graph);
+  check('高清工作流使用原图直连 Vosr，保留 4 倍放大并移除预缩放节点',
+    !!directUpscale && !directUpscale['7']
+      && directUpscale['1'].inputs.image[0] === '3'
+      && directUpscale['1'].inputs.upscale === 4,
+    JSON.stringify(directUpscale?.['1']?.inputs?.image));
 
   // 同一工作流有两个图片消费者：生成编码器只需图 1，辅助图像批处理还连着一个空 LoadImage。
   // 留空时 ComfyUI 会把 input 目录当文件打开并报 PermissionError。

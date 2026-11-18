@@ -1517,6 +1517,22 @@
     return { want: w, got: g, note: `只回来 ${g} 张（提交了 ${w} 张）` };
   }
 
+  function bypassUpscaleResize(graph) {
+    const out = JSON.parse(JSON.stringify(graph));
+    for (const node of Object.values(out)) {
+      if (node.class_type !== 'VOSR2Upscale') continue;
+      const link = node.inputs?.image;
+      const resize = Array.isArray(link) && out[String(link[0])];
+      if (resize?.class_type !== 'PDIMAGE_LongerSize' || !Array.isArray(resize.inputs?.image)) continue;
+      node.inputs.image = resize.inputs.image.slice();
+      const resizeId = String(link[0]);
+      const stillUsed = Object.values(out).some((other) => Object.values(other.inputs || {}).some((value) =>
+        Array.isArray(value) && value.length === 2 && typeof value[1] === 'number' && String(value[0]) === resizeId));
+      if (!stillUsed) delete out[resizeId];
+    }
+    return out;
+  }
+
   // 把提示词 / 画幅 / 张数 / 种子写进 API 图
   function buildGenGraph(graph, slots, dims, batch, prompt, refImages, seedOpt, autogrow) {
     const out = JSON.parse(JSON.stringify(graph));
@@ -3518,12 +3534,13 @@
     // 参考图全上传（能传几张算几张）。以前只传第一张：用户 @ 了两张，第二张根本进不去，
     // 提示词里还留着指代——「@ 的图识别不准」有一半是这里。
     const refs = refsOf(n);
+    const upscaleFlow = wfOptions().some((o) => o.id === g.wf && o.category === 'upscale');
     const labelOf = refLabelFn(n);
     const picked = [];
     stage = '上传参考图';
     for (const r of refs) {
       try {
-        const name = await ensureUploaded(r.node);
+        const name = await (upscaleFlow ? ensureUploaded(r.node) : ensureRefUploaded(r.node));
         if (canceled()) return;
         if (name) picked.push({ node: r.node, name, label: labelOf(r.node) });
       } catch {
@@ -3590,7 +3607,7 @@
     // 遮罩、扩图已在上面准备了对应的工作图，不能再送一张普通原图覆盖它。
     if (!needMask && !bake && srcURL && wfNow && wfNow.image && wfNow.category !== 'txt2img') {
       try {
-        const name = await ensureUploaded(n);
+        const name = await (wfNow.category === 'upscale' ? ensureUploaded(n) : ensureRefUploaded(n));
         if (canceled()) return;
         if (name) picked.unshift({ node: n, name, label: labelOf(n) });
       } catch (err) {
@@ -3636,6 +3653,7 @@
       stage = '构建参数';
       const built = buildGenGraph(graph, a.slots, dims, Number(g.batch) || 1, prompt, use.map((x) => x.name),
         { mode: g.seedMode, value: g.seed }, a.autogrow);
+      if (wfNow?.category === 'upscale') built.graph = bypassUpscaleResize(built.graph);
       // 结果节点继承的参数在**提交这一刻**定格：扩图会在提交成功后把边框收起、尺寸档还回去，
       // 等结果回来再读 g.size，新节点继承到的就是原图那套尺寸了。
       const inheritSnap = {
@@ -7636,6 +7654,68 @@
     queueSave();
     rerenderNode(n.id, true);
     return n.uploaded;
+  }
+
+  // 图生图的输入图长边上限：超过就等比缩到这个值再上传。
+  // 原图像素直接进 VAE 编码很慢（4000×6000 的照片要跑几十秒），而图生图真正能用的
+  // 细节远不到那个量级。**节点上仍然显示原图**，缩的只是送进 ComfyUI 的那一份副本。
+  const REF_MAX_LONG = 1024;
+
+  // 纯函数：长边超限时按比例缩，返回 null 表示不用缩（或尺寸读不出来）。
+  // 短边跟着长边算，保证不改变构图——只按长边封顶，不裁不拉伸。
+  function refScaleDims(w, h, max = REF_MAX_LONG) {
+    const W = Math.round(Number(w) || 0), H = Math.round(Number(h) || 0);
+    if (W <= 0 || H <= 0) return null;
+    const long = Math.max(W, H);
+    if (long <= max) return null;
+    const k = max / long;
+    return { w: Math.max(1, Math.round(W * k)), h: Math.max(1, Math.round(H * k)) };
+  }
+
+  // 缩放副本沿用原格式：PNG 仍无损，JPEG / WebP 按 0.92 重编。
+  // GIF / BMP 这类 canvas 编不出来的一律落 PNG——参考图本来只取第一帧。
+  function refEncodeType(mime, name) {
+    const m = String(mime || '').toLowerCase();
+    if (m === 'image/jpeg' || m === 'image/jpg') return { mime: 'image/jpeg', ext: 'jpg', q: 0.92 };
+    if (m === 'image/webp') return { mime: 'image/webp', ext: 'webp', q: 0.92 };
+    if (m === 'image/png') return { mime: 'image/png', ext: 'png' };
+    const ext = (/\.([a-z0-9]{2,5})$/i.exec(String(name || '')) || [])[1];
+    const e = String(ext || '').toLowerCase();
+    if (e === 'jpg' || e === 'jpeg') return { mime: 'image/jpeg', ext: 'jpg', q: 0.92 };
+    if (e === 'webp') return { mime: 'image/webp', ext: 'webp', q: 0.92 };
+    return { mime: 'image/png', ext: 'png' };
+  }
+
+  // 图生图上传：长边超过 REF_MAX_LONG 时传一份等比缩小的副本。
+  // **不能复用 ensureUploaded**：它上传完会把 n.dataURL 换成服务端地址，节点显示的就变成
+  // 缩略图了；这里只回文件名，节点上的图一动不动。
+  // 副本名固定成 <节点id>-ref.<ext> + overwrite，不按时间戳堆垃圾（和遮罩同一个口径）；
+  // 缓存键带上图本身的指纹，换图后自动失效。
+  async function ensureRefUploaded(n, max = REF_MAX_LONG) {
+    if (!n || !n.dataURL) return '';
+    const src = String(n.dataURL);
+    const key = `${imgKeyOf(n)}|${src.length}|${src.slice(0, 48)}`;
+    if (n.refUploaded && n.refUploaded.key === key) return n.refUploaded.name;
+    let img = null, dims = null;
+    try {
+      img = await loadImageEl(src);
+      dims = refScaleDims(img.naturalWidth, img.naturalHeight, max);
+    } catch { /* 读不出尺寸就当它不用缩 */ }
+    if (!dims) return ensureUploaded(n);      // 本来就够小：走原路，不多造一份副本
+    let mime = '';
+    try { mime = (await (await fetch(src)).blob()).type; } catch { /* 拿不到就按文件名猜 */ }
+    const enc = refEncodeType(mime, n.filename);
+    const cv = canvasOf(dims.w, dims.h);
+    cv.getContext('2d').drawImage(img, 0, 0, dims.w, dims.h);
+    const blob = await new Promise((res) => cv.toBlob(res, enc.mime, enc.q));
+    if (!blob) throw new Error('参考图缩放失败');
+    const fd = new FormData();
+    fd.append('image', blob, `${n.id}-ref.${enc.ext}`);
+    fd.append('overwrite', 'true');
+    const res = await api('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(res.error || '参考图上传失败');
+    n.refUploaded = { key, name: res.image };
+    return res.image;
   }
 
   /* ---------------- 运行 ---------------- */
