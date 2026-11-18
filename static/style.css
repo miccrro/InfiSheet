@@ -351,11 +351,18 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 /* ---------- 画布 ---------- */
 #stage {
   position: absolute; inset: 0; overflow: hidden; cursor: default;
+  /* 触屏手势自己接管：单指平移、双指捏合；别让浏览器把页面一起滚/缩 */
+  touch-action: none; overscroll-behavior: none;
   /* 点阵底：细点、28px 间距 */
   background-image: radial-gradient(var(--grid) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 #stage.panning { cursor: grabbing; }
+#stage.pinching { cursor: grabbing; }
+#stage textarea, #stage input, #stage select, #stage [contenteditable="true"] {
+  /* 节点里的输入框仍要能自己滚，不要把长提示词的手势一起吃掉 */
+  touch-action: auto;
+}
 #stage.space-pan { cursor: grab; }
 #stage.space-pan.panning { cursor: grabbing; }
 #stage.marquee { cursor: crosshair; }

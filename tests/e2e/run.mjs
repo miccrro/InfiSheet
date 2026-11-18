@@ -129,6 +129,21 @@ try {
       && uniqueWfName(longWfName, new Set([normalizeWfName(longWfName).toLowerCase()])).endsWith('-2'),
     JSON.stringify([uniqueWfName('Krea2-文生图.API', new Set(['krea2-文生图.api'])),
       uniqueWfName(longWfName, new Set([normalizeWfName(longWfName).toLowerCase()]))]));
+  // 双指捏合：开始时中点下的世界点必须一直钉在手指中点下，缩放范围跟滚轮一致。
+  const pinchView = new Function(`${pickFn(appSrc, 'pinchView')}\nreturn pinchView;`)();
+  const pinchAtCenter = pinchView(
+    { x: 0, y: 0, k: 1 }, { x: 100, y: 100 }, { x: 120, y: 100 }, 100, 200, 0.15, 8);
+  check('双指捏合以两指中点为中心缩放',
+    Math.abs(pinchAtCenter.k - 2) < 1e-9 && Math.abs(pinchAtCenter.x + 80) < 1e-9
+      && Math.abs(pinchAtCenter.y + 100) < 1e-9, JSON.stringify(pinchAtCenter));
+  const pinchCapped = pinchView(
+    { x: 0, y: 0, k: 1 }, { x: 100, y: 100 }, { x: 100, y: 100 }, 100, 1000, 0.15, 8);
+  check('双指捏合缩放钳在 15% ~ 800%', pinchCapped.k === 8,
+    JSON.stringify(pinchCapped));
+  const pinchZero = pinchView(
+    { x: 10, y: 20, k: 0.5 }, { x: 1, y: 1 }, { x: 2, y: 2 }, 0, 100, 0.15, 8);
+  check('双指距离为 0 时不动视图',
+    pinchZero.x === 10 && pinchZero.y === 20 && pinchZero.k === 0.5, JSON.stringify(pinchZero));
   const refEncodeType = appSrc.includes('function refEncodeType(')
     ? new Function(`${pickFn(appSrc, 'refEncodeType')}\nreturn refEncodeType;`)() : null;
   check('缩放副本沿用原格式，GIF 之类落 PNG',
@@ -8678,6 +8693,48 @@ try {
   check('拖入超长文件名图片仍可显示，上传使用短文件名',
     longImageImport.loaded && longImageImport.bytes < 100
       && longImageImport.uploadName.endsWith('.png'), JSON.stringify(longImageImport));
+
+  // ---- 触屏手势：单指拖空白平移，双指捏合以两指中点缩放 ----
+  const gestures = await page.evaluate(`(async () => {
+    const stage = document.getElementById('stage');
+    const world = document.getElementById('world');
+    const parse = (s) => {
+      const m = String(s).match(/translate\\(([-\\d.]+)px, ([-\\d.]+)px\\) scale\\(([-\\d.]+)\\)/);
+      return m ? { x: +m[1], y: +m[2], k: +m[3] } : null;
+    };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const pe = (type, id, x, y, target = window) => (target || window).dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', isPrimary: id === 11 || id === 21,
+      clientX: x, clientY: y, bubbles: true, cancelable: true,
+    }));
+    const before = parse(world.style.transform);
+    pe('pointerdown', 11, 500, 400, stage);
+    pe('pointermove', 11, 540, 420);
+    pe('pointerup', 11, 540, 420);
+    await sleep(150);
+    const afterPan = parse(world.style.transform);
+    pe('pointerdown', 21, 400, 400, stage);
+    pe('pointerdown', 22, 600, 400, stage);
+    pe('pointermove', 21, 300, 400);
+    pe('pointermove', 22, 700, 400);
+    pe('pointerup', 21, 300, 400);
+    pe('pointerup', 22, 700, 400);
+    await sleep(150);
+    const afterPinch = parse(world.style.transform);
+    return { before, afterPan, afterPinch, pinching: stage.classList.contains('pinching') };
+  })()`);
+  check('触屏单指拖空白平移画布',
+    !!gestures.afterPan && Math.abs(gestures.afterPan.x - gestures.before.x - 40) < 0.6
+      && Math.abs(gestures.afterPan.y - gestures.before.y - 20) < 0.6
+      && gestures.afterPan.k === gestures.before.k, JSON.stringify(gestures));
+  const start = gestures.afterPan;
+  const expectK = Math.min(8, start.k * 2);
+  const ratio = expectK / start.k;
+  check('触屏双指捏合以两指中点缩放',
+    !!gestures.afterPinch && Math.abs(gestures.afterPinch.k - expectK) < 0.01
+      && Math.abs(gestures.afterPinch.x - (500 - (500 - start.x) * ratio)) < 1
+      && Math.abs(gestures.afterPinch.y - (400 - (400 - start.y) * ratio)) < 1
+      && gestures.pinching === false, JSON.stringify(gestures));
 
   // ---- 关闭服务：设置里的「服务」分组 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。

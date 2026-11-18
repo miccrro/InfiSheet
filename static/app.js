@@ -339,6 +339,19 @@
     };
   }
 
+  // 双指捏合：开始时两指中点下的那个世界点，要一直钉在当前两指中点下。
+  // 返回新视图；缩放边界由调用方给，纯函数便于单独测。
+  function pinchView(view, startMid, mid, startDist, dist, minK, maxK) {
+    const k0 = Math.max(0.01, Number(view.k) || 1);
+    const d0 = Number(startDist);
+    const d1 = Number(dist);
+    if (!(d0 > 0) || !(d1 > 0)) return { x: view.x, y: view.y, k: view.k };
+    const k = Math.min(maxK, Math.max(minK, k0 * (d1 / d0)));
+    const wx = (startMid.x - view.x) / k0;
+    const wy = (startMid.y - view.y) / k0;
+    return { x: mid.x - wx * k, y: mid.y - wy * k, k };
+  }
+
   function centerOfView() {
     const r = stage.getBoundingClientRect();
     return screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
@@ -7433,6 +7446,7 @@
     const up = (e) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (e.__infisheetCancel) { finish(); return; }
       const target = document.elementFromPoint(e.clientX, e.clientY);
       const inPort = target && target.closest ? target.closest('.port.in') : null;
 
@@ -7539,6 +7553,7 @@
     revCtx = null;
     renderLinks();
     if (!ctx) return;
+    if (ev.__infisheetCancel) return;
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
     const outPort = target && target.closest ? target.closest('.port.out') : null;
     if (outPort && portNear(outPort, ev.clientX, ev.clientY)) {
@@ -7596,6 +7611,7 @@
     const up = (e) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (e.__infisheetCancel) { if (moved) finishReverseLink(e); return; }
       if (!moved) { openSlotSheet(n); return; }
       finishReverseLink(e);
     };
@@ -9676,13 +9692,152 @@
   if (queueClearEl) queueClearEl.addEventListener('click', () => clearFinishedJobs());
   renderQueue();
 
+  // ---- 触屏手势：单指拖空白平移，双指捏合缩放（双指同向拖也平移） ----
+  // 手指坐标统一存成相对 #stage 的本地坐标；触控板/鼠标的滚轮缩放仍然走下面的 wheel。
+  const touchPoints = new Map();
+  let touchRect = null;
+  let pinch = null;
+  let touchResidualPan = null;
+
+  function touchPoint(ev) {
+    const r = touchRect || stage.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top, cx: ev.clientX, cy: ev.clientY };
+  }
+
+  // 第二根手指落下时，第一根手指可能已经开始了拖节点 / 平移 / 拉线。
+  // 这些手势都只听 window 的 pointerup；发一个合成 up 让它们收尾，再进捏合。
+  function cancelTouchPointerDrag() {
+    const p = touchPoints.values().next().value;
+    if (!p) return;
+    const cancelEvent = new PointerEvent('pointerup', {
+      pointerId: -1, pointerType: 'touch', isPrimary: false,
+      clientX: p.cx, clientY: p.cy, bubbles: false, cancelable: false,
+    });
+    // 拖线 / 框选的 up 会按松手坐标决定「连到哪 / 选哪些」。捏合不是真的松手，
+    // 打个标记让它们只收尾，不要顺手连一条线或弹一个新建菜单。
+    cancelEvent.__infisheetCancel = true;
+    window.dispatchEvent(cancelEvent);
+  }
+
+  function startTouchPinch() {
+    const pair = [...touchPoints.entries()].slice(0, 2);
+    if (pair.length < 2) return;
+    const [, a] = pair[0];
+    const [, b] = pair[1];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (d < 12) { pinch = null; stage.classList.remove('pinching'); return; }
+    pinch = {
+      ids: [pair[0][0], pair[1][0]],
+      m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      d0: d,
+      view: { ...state.view },
+    };
+    stage.classList.add('pinching');
+  }
+
+  function beginTouchResidualPan() {
+    const entry = [...touchPoints.entries()][0];
+    if (!entry) { touchResidualPan = null; return; }
+    const [id, p] = entry;
+    touchResidualPan = { id, x: p.x, y: p.y, vx: state.view.x, vy: state.view.y };
+  }
+
+  function onTouchDown(ev) {
+    if (ev.pointerType !== 'touch' || isFieldTarget(ev.target)) return;
+    if (!touchPoints.size) touchRect = stage.getBoundingClientRect();
+    touchPoints.set(ev.pointerId, touchPoint(ev));
+    if (touchPoints.size === 2) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      touchResidualPan = null;
+      cancelTouchPointerDrag();
+      startTouchPinch();
+    } else if (touchPoints.size > 2) {
+      // 已经进入捏合后再落第三根手指：别让它落成一次新的节点拖动
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  }
+
+  function onTouchMove(ev) {
+    if (!touchPoints.has(ev.pointerId)) return;
+    touchPoints.set(ev.pointerId, touchPoint(ev));
+    if (pinch) {
+      ev.preventDefault();
+      const a = touchPoints.get(pinch.ids[0]);
+      const b = touchPoints.get(pinch.ids[1]);
+      if (!a || !b) return;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      state.view = pinchView(pinch.view, pinch.m0, mid, pinch.d0, d, ZOOM_MIN, ZOOM_MAX);
+      applyView();
+      return;
+    }
+    if (touchPoints.size >= 2) {
+      ev.preventDefault();
+      if (!pinch) startTouchPinch();
+      return;
+    }
+    if (touchResidualPan && ev.pointerId === touchResidualPan.id) {
+      ev.preventDefault();
+      const p = touchPoints.get(ev.pointerId);
+      if (!p) return;
+      state.view.x = touchResidualPan.vx + (p.x - touchResidualPan.x);
+      state.view.y = touchResidualPan.vy + (p.y - touchResidualPan.y);
+      applyView();
+    }
+  }
+
+  function onTouchUp(ev) {
+    if (!touchPoints.has(ev.pointerId)) return;
+    const before = touchPoints.size;
+    touchPoints.delete(ev.pointerId);
+    if (pinch) {
+      if (touchPoints.size >= 2) {
+        // 三指里抬起一根：用剩下的两根重新定基准，别把缩放跳一下
+        pinch = null;
+        stage.classList.remove('pinching');
+        startTouchPinch();
+      } else {
+        pinch = null;
+        stage.classList.remove('pinching');
+        if (touchPoints.size === 1) beginTouchResidualPan();
+        else touchResidualPan = null;
+        if (!touchPoints.size) touchRect = null;
+        queueSave();
+      }
+      return;
+    }
+    // 两根手指都没来得及拉开（比如刚落下就抬起一根）：剩下那根继续当平移用
+    if (before >= 2 && touchPoints.size === 1) beginTouchResidualPan();
+    else if (touchResidualPan && ev.pointerId === touchResidualPan.id) {
+      touchResidualPan = null;
+      queueSave();
+    }
+    if (!touchPoints.size) touchRect = null;
+  }
+
+  stage.addEventListener('pointerdown', onTouchDown, { capture: true, passive: false });
+  window.addEventListener('pointermove', onTouchMove, { capture: true, passive: false });
+  window.addEventListener('pointerup', onTouchUp, { capture: true });
+  window.addEventListener('pointercancel', onTouchUp, { capture: true });
+
   stage.addEventListener('pointerdown', (ev) => {
     if (ev.target.closest('.group-head')) return;
     const onNode = ev.target.closest('.node, .port');
-    const wantPan = state.panMode || spaceDown || ev.button === 1;
+    const touchPan = ev.pointerType === 'touch' && !onNode;
+    const wantPan = state.panMode || spaceDown || ev.button === 1 || touchPan;
     if (onNode && !wantPan) return;          // 点在节点上：交给节点自己拖动
 
-    if (wantPan) {                            // 平移：移动模式 / 空格+拖 / 中键拖
+    if (wantPan) {                            // 平移：移动模式 / 空格+拖 / 中键拖 / 触屏拖空白
+      if (touchPan) {
+        // 触屏单指拖空白是平移，不再画框；先清掉当前选择（保留「点空白取消选择」）。
+        // 已经开了「移动」模式时只平移，不动用户的选择。
+        if (!state.panMode && !spaceDown) {
+          if (state.linkSel.size) { state.linkSel.clear(); renderLinks(); }
+          selectOnly(null);
+        }
+      }
       const startPan = { x: ev.clientX, y: ev.clientY, vx: state.view.x, vy: state.view.y };
       stage.classList.add('panning');
       const move = (e) => {
@@ -9759,6 +9914,7 @@
       window.removeEventListener('pointerup', up);
       stage.classList.remove('marquee');
       box.remove();
+      if (e.__infisheetCancel) return;
       if (!moved) return;                    // 只是点了一下空白：清空选择即可，不算框选
       const a = screenToWorld(ev.clientX, ev.clientY);
       const b = screenToWorld(e.clientX, e.clientY);
