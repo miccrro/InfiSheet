@@ -2,8 +2,8 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-rem 找 Python：py 启动器 > PATH 里的 python > 常见安装位置。
-rem 旧版把某个 python.exe 的绝对路径写死在这里，换一台机器就废了。
+rem Find Python: py launcher, python on PATH, common install locations.
+rem Older versions hard-coded a python.exe path here, which broke on other machines.
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY (
