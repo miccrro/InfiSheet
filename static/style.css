@@ -493,21 +493,22 @@ select option { background: #1f1f1f; color: var(--text); }
 }
 
 /* 文本节点 */
-.node.text { width: 280px; }
+.node.text { width: 640px; }
 /* 提示词框无边框：直接写在卡片上（和生成面板里的提示词同一个观感）。
    原来它吃 `.node textarea` 那套「深色井 + 1px 描边 + 聚焦蓝框」，节点里套一个框，
    看着像两张卡片叠在一起。高度由 JS 管：没手动拉过就按内容长，拉过就固定并自己滚。
    富文本之后是 contenteditable，排版元素（标题 / 列表 / 分割线）的样式在下面一组。 */
+.node.text .node-body { padding: 0; }
 .node.text .text-body {
-  background: transparent; border: none; box-shadow: none;
-  border-radius: 0; padding: 0; outline: none;
+  box-sizing: border-box; background: transparent; border: none; box-shadow: none;
+  border-radius: 0; padding: 10px; outline: none;
   min-height: 0; overflow: hidden;
   font-size: 12.5px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
 }
 /* 空框才要 88px 的底：有字时高度由 autoGrow() 按内容算（min-height 留着的话，
    一段短提示词下面会多出一截空白，四边留白就不等了） */
-.node.text .text-body.is-empty { min-height: 88px; }
+.node.text .text-body.is-empty { min-height: 360px; }
 /* contenteditable 没有 ::placeholder，用 :empty 不可靠（浏览器会留一个 <br>），
    所以 JS 里按纯文本长度打 .is-empty，这里画提示语。 */
 .text-body.is-empty::before {
@@ -561,6 +562,10 @@ select option { background: #1f1f1f; color: var(--text); }
    悬停 / 选中时照旧浮出边界，不然不知道点到了谁——这两条的优先级本来就比我高，不用额外写。
    底色默认 #262626（可在格式条里按节点改），JS 用行内 style 覆盖。 */
 .node.text .node-card { border-color: transparent; box-shadow: none; background: #262626; }
+.node.text .node-card { border: 0; border-radius: 10px; }
+.node.text.selected .node-card {
+  box-shadow: 0 0 0 1.5px rgba(168, 168, 168, 0.85), 0 10px 26px rgba(0, 0, 0, 0.42);
+}
 /* 只读 = 不是输入框：没有光标，鼠标是普通箭头（不然看着随时能打字） */
 .node.text .text-body { cursor: default; caret-color: transparent; }
 /* 双击进入编辑：浮出一圈边 + 光标回来，明确「现在可以打字了」 */
@@ -1104,10 +1109,12 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .port[data-kind="media"] { border-color: #a78bfa; }
 .port[data-kind="any"] { border-color: #cbd5e1; }
 /* 文本/图片节点：左右各一个点，垂直居中 */
-.node.text .port.in, .node.image .port.in, .node.wf .port.in { top: calc(50% - 10px); }
+.node.text .port.in, .node.image .port.in, .node.video .port.in, .node.wf .port.in { top: calc(50% - 10px); }
 
 /* 图片节点：更大的画布区 */
-.node.image { width: 380px; }
+.node.image { width: 640px; }
+/* 视频节点：和图片节点同宽，中间是一块播放器 */
+.node.video { width: 640px; }
 /* 框的尺寸完全交给图片：JS 把真实比例写进 --ar，框用 aspect-ratio 自己算高。
    宽取 min(可用宽, 高度上限 760px×比例) —— 横图铺满宽度，竖图被 760 封顶后自动收窄，
    两种情况下框和图片都严丝合缝，object-fit 没有多余空间可补（黑边就是这么来的） */
@@ -1121,7 +1128,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   display: flex; align-items: center; justify-content: center;
 }
 /* 空态没有图片可依，才需要自己占满并垫高度 */
-.node.image .thumb.is-empty { width: 100%; aspect-ratio: auto; min-height: 200px; }
+.node.image .thumb.is-empty { width: 100%; aspect-ratio: auto; min-height: 360px; }
 /* 左上角：查看大图 */
 .img-zoom {
   position: absolute; top: 6px; left: 6px; z-index: 2;
@@ -1176,6 +1183,62 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 }
 /* 图片撑满框：框已经是图片比例，width/height 都 100% 也不会变形、更不会出现补边 */
 .node.image .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; background: #101010; -webkit-user-drag: none; user-select: none; }
+
+/* 视频节点：播放器按视频自身比例撑开，空态给一块和图片节点等高的占位。
+   比例由 JS 写进 --video-ar（loadedmetadata 之后才拿得到），捧不动就退回 16:9。 */
+.video-body { display: flex; flex-direction: column; gap: 6px; }
+.node.video .video-frame {
+  position: relative;
+  width: min(100%, calc(760px * var(--video-ar, 16 / 9)));
+  aspect-ratio: var(--video-ar, 16 / 9);
+  margin-inline: auto;
+  background: #101010; border-radius: 8px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.node.video .video-frame.is-empty { width: 100%; aspect-ratio: auto; min-height: 360px; }
+.node.video .video-frame video {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  background: #101010;
+}
+.video-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  color: var(--faint); font-size: 12px;
+}
+.video-empty svg { width: 38px; height: 38px; opacity: 0.5; }
+/* 右上角下载 / 左下角「第几段」/ 两侧翻页：和图片节点那套角标同一个语言，
+   悬停才浮出，不压画面 */
+.video-download {
+  position: absolute; right: 8px; bottom: 8px; z-index: 2;
+  padding: 3px 9px; border-radius: 7px; text-decoration: none;
+  border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(20, 20, 20, 0.72);
+  color: #e6e6e6; font-size: 10.5px;
+  opacity: 0.72; transition: opacity 0.15s, background 0.15s, color 0.15s;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.node.video:hover .video-download, .node.video.selected .video-download { opacity: 1; }
+.video-download:hover { background: rgba(48, 48, 48, 0.92); color: #fff; }
+.video-count {
+  position: absolute; left: 8px; bottom: 8px; z-index: 2;
+  padding: 2px 8px; border-radius: 999px; pointer-events: none;
+  background: rgba(20, 20, 20, 0.72); border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #ededed; font-size: 10.5px; letter-spacing: 0.04em;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.video-nav { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.video-nav-btn {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 54px; display: grid; place-items: center; padding: 0;
+  border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(20, 20, 20, 0.66); color: #e6e6e6;
+  font-size: 20px; line-height: 1; cursor: pointer; pointer-events: auto;
+  opacity: 0.42; transition: opacity 0.15s, background 0.15s, color 0.15s;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.video-nav-btn.prev { left: 8px; }
+.video-nav-btn.next { right: 8px; }
+.node.video:hover .video-nav-btn, .node.video.selected .video-nav-btn { opacity: 0.95; }
+.video-nav-btn:hover { background: rgba(48, 48, 48, 0.92); color: #fff; opacity: 1; }
+.node.video .video-status { text-align: left; }
 .thumb-empty {
   display: flex; flex-direction: column; width: 100%;
   padding: 14px 12px 10px; gap: 10px;
@@ -1515,6 +1578,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 
 /* 占位/其它节点微调，让新外壳更协调 */
 .node.text .node-body, .node.wf .node-body, .node.out .node-body { padding: 10px; }
+.node.text .node-body { padding: 0; }
 .node.out .out-empty { min-height: 96px; }
 
 
@@ -1781,17 +1845,27 @@ body.resizing .node-resize { opacity: 1; }
 /* 工具条上的按钮统一成 8px 圆角矩形：全局的「带文字控件 → 胶囊」规则会把手动加的
    「批量导入…」压成药丸，和旁边的导入按钮不是一套。 */
 #appSettings .set-toolbar button { height: auto; padding: 0 12px; font-size: 11.5px; border-radius: 8px; }
-#appSettings .wf-specials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#appSettings .wf-section-title {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 2px -5px;
+  color: var(--text); font-size: 11.5px; font-weight: 600;
+}
+#appSettings .wf-section-title span { color: var(--faint); font-size: 10.5px; font-weight: 400; }
+#appSettings .wf-specials {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+  padding: 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: rgba(0, 0, 0, 0.12);
+}
 #appSettings .wf-specials label { min-width: 0; gap: 5px; }
+#appSettings .wf-specials select { min-width: 0; }
 #appSettings .wf-specials small { color: var(--faint); font-size: 10.5px; }
 #appSettings .wf-defaults { border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, 0.12); }
 #appSettings .wf-defaults summary { padding: 7px 10px; cursor: pointer; font-size: 11.5px; color: var(--text); }
 #appSettings .wf-defaults summary span { margin-left: 8px; color: var(--faint); }
 #appSettings .wf-defaults[open] #setWfDefault { padding: 2px 10px 10px; }
-#appSettings .wf-categories { border-top: 1px solid var(--line); padding-top: 6px; }
+#appSettings .wf-categories { flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 6px; }
 #appSettings .wf-categories .set-group { margin: 0 0 6px; }
 @media (max-width: 700px) {
-  #appSettings .wf-specials { grid-template-columns: 1fr; gap: 8px; }
+  #appSettings .wf-specials { grid-template-columns: 1fr; gap: 8px; padding: 8px; }
   #appSettings .wf-specials small, #appSettings .wf-defaults summary span { display: none; }
 }
 #appSettings .wf-list {
@@ -1812,10 +1886,19 @@ body.resizing .node-resize { opacity: 1; }
 /* 批量下载的勾选框：常驻一格，不靠「先点批量再出现」的模式切换 */
 #appSettings .wf-pick { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 /* 勾选条：全选 / 已选数量 / 清空 / 下载所选 */
-#appSettings .wf-pickbar { display: flex; align-items: center; gap: 10px; padding: 0 2px 7px; font-size: 11px; color: var(--faint); }
+#appSettings .wf-pickbar {
+  display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 7px;
+  border: 1px solid var(--line); border-radius: 8px 8px 0 0;
+  background: rgba(0, 0, 0, 0.12); font-size: 11px; color: var(--faint);
+}
+#appSettings .wf-pickbar:not(.hidden) + .wf-list { margin-top: -10px; border-top-left-radius: 0; border-top-right-radius: 0; }
 #appSettings .wf-pickbar.hidden { display: none; }
 #appSettings .wf-pick-all { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); cursor: pointer; }
-#appSettings .wf-pickbar input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+#appSettings .wf-pickbar input,
+#appSettings .wf-pick {
+  box-sizing: border-box; width: 14px; height: 14px; min-width: 14px; min-height: 14px;
+  margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer;
+}
 #appSettings .wf-pick-info { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #appSettings .wf-pick-clear {
   padding: 0; border: 0; background: none; color: var(--faint);
@@ -2642,7 +2725,7 @@ button.primary:hover,
   background: transparent; border: 0; border-radius: 8px;
   transition: background 0.14s ease;
 }
-.gen-bar .gensel .gm-btn { font-size: 12.5px; }
+.gen-bar .gensel .gm-btn { font-size: 13px; line-height: 18px; }
 .gen-bar .gensel .gensel-icon svg { width: 14px; height: 14px; }
 .gen-bar .gensel .gm-caret { opacity: 0.5; }
 .gen-bar .gensel:hover { background: rgba(255, 255, 255, 0.07); border: 0; }
@@ -2675,7 +2758,7 @@ button.primary:hover,
    圆角从正圆（50%）改成 8px 圆角矩形，和这一排其它控件统一——
    一颗白圆点挤在三个方角控件中间，看着像从别的设计稿里剪过来的。 */
 .gen-bar .gen-run { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px; }
-.gen-bar .gen-run .oi { width: 17px; height: 17px; }
+.gen-bar .gen-run .oi { width: 16px; height: 16px; }
 /* 取消图标用偶数尺寸落在 28px 按钮的整数像素中心，避免 17px 的半像素偏移。 */
 .gen-run.busy .oi, .gen-bar .gen-run.busy .oi { width: 18px; height: 18px; }
 /* 放大编辑区里那颗发送键是同一个按钮，圆角也得跟着走，不然两处长得不一样 */
@@ -3902,12 +3985,21 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
    点了还要再确认一次（面板里就地展开，不弹第二个窗）。 */
 #appSettings .set-actions button.danger { border-color: rgba(248, 113, 113, 0.5); color: #f8a1a1; }
 #appSettings .set-actions button.danger:hover { border-color: var(--err); color: var(--err); background: rgba(248, 113, 113, 0.12); }
+#appSettings .set-program-close {
+  padding: 14px; border: 1px solid rgba(248, 113, 113, 0.24); border-radius: 12px;
+  background: rgba(248, 113, 113, 0.035);
+}
+#appSettings .set-program-close .set-group { margin-top: 0; color: #f0b4b4; }
+#appSettings #setShutdown { min-height: 38px; padding: 8px 16px; font-size: 13px; font-weight: 600; }
+#appSettings #setShutdown span { margin-right: 4px; font-size: 16px; }
 #appSettings .set-srv-confirm {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 10px; border-radius: 10px;
   border: 1px solid rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.08);
   font-size: 11.5px; color: #f0b4b4;
 }
+#appSettings .set-srv-confirm > span { flex: 1 1 100%; }
+#appSettings .set-srv-confirm #setSrvGo { background: rgba(248, 113, 113, 0.13); }
 
 #serverDown {
   position: fixed; inset: 0; z-index: 200;
@@ -3980,6 +4072,18 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 }
 #appSettings .set-comfy input:focus { outline: none; border-color: var(--accent); }
 #appSettings .set-comfy input::placeholder { color: var(--faint); }
+#set-pane-conn .set-group { color: var(--text); letter-spacing: 0; }
+#set-pane-conn .conn-subtitle { margin-left: 8px; color: var(--faint); font-size: 10.5px; font-weight: 400; letter-spacing: 0; }
+#set-pane-conn .set-comfy { gap: 6px; }
+#set-pane-conn .set-comfy input { margin-top: 1px; }
+#set-pane-conn .mcp-block { margin-top: 8px; }
+#set-pane-conn .mcp-pane { padding: 0; border: 0; background: transparent; }
+#set-pane-conn .mcp-json { max-height: 220px; }
+@media (max-width: 700px) {
+  #set-pane-conn .conn-subtitle { display: block; margin: 4px 0 0; }
+  #set-pane-conn .mcp-block .mcp-row { flex-wrap: wrap; }
+  #set-pane-conn .mcp-block .mcp-k { flex-basis: 100%; }
+}
 #appSettings .set-tip.ok { color: var(--ok); }
 #appSettings .set-tip.bad { color: #f8a1a1; }
 

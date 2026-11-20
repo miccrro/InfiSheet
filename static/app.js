@@ -14,7 +14,7 @@
   const state = {
     nodes: [],
     links: [],
-    view: { x: 80, y: 60, k: 0.85 },
+    view: { x: 80, y: 60, k: 1 },
     seq: 1,
     selected: new Set(),
     // 选中的连线。以前是单个 id，框选要能一次选中一片，所以改成 Set。
@@ -138,7 +138,7 @@
 
   // 新节点的 id 前缀按类型走，方便在小地图/调试里一眼看出这是哪类节点
   function nextNodeId(type) {
-    const p = type === 'text' ? 't' : type === 'image' ? 'i' : type === 'wf' ? 'w' : type === 'out' ? 'o' : 'n';
+    const p = type === 'text' ? 't' : type === 'image' ? 'i' : type === 'video' ? 'v' : type === 'wf' ? 'w' : type === 'out' ? 'o' : 'n';
     return uid(p);
   }
 
@@ -372,7 +372,9 @@
   function nodeWidth(n) {
     if (n && n.w) return n.w;
     if (n && n.type === 'wf') return 360;
-    if (n && n.type === 'image') return 380;
+    if (n && n.type === 'image') return 640;
+    if (n && n.type === 'video') return 640;
+    if (n && n.type === 'text') return 640;
     if (n && n.type === 'out') return 300;
     return 280;
   }
@@ -381,6 +383,7 @@
   const NODE_ICON = {
     text: icon('text'),
     image: icon('image'),
+    video: icon('video'),
     wf: icon('wf'),
     out: icon('out'),
   };
@@ -527,13 +530,16 @@
       const autoGrow = () => {
         // 手动拉过高度就听用户的：再按内容算高度，一打字框就弹回去
         if (n.h) {
-          ta.style.height = `${n.h}px`;
+          ta.style.height = `${Math.round(n.h)}px`;
         } else {
-          ta.style.height = 'auto';
-          // 88px 只留给「空框」：有字的时候按内容算，四个方向留白才一样宽。
-          // 以前不分有字没字都兜 88px，一段三行的提示词下面会空出 10px，看着像下边距更大。
-          const floor = ta.classList.contains('is-empty') ? 88 : 0;
-          ta.style.height = `${Math.min(420, Math.max(floor, ta.scrollHeight + 2))}px`;
+          const empty = ta.classList.contains('is-empty');
+          if (empty) {
+            // 图片预览区固定 360px。直接设定整数高度，避免 scrollHeight 已含内边距后又被重复计入。
+            ta.style.height = '360px';
+          } else {
+            ta.style.height = 'auto';
+            ta.style.height = `${Math.min(420, Math.max(0, Math.round(ta.scrollHeight + 2)))}px`;
+          }
         }
         // 只有「真被截断」并且「正在编辑」时才给滚动条：
         // 只读时滚轮要留给画布缩放（这块字占着节点一大片，抢滚轮等于画布滚不动），
@@ -754,6 +760,15 @@
       const imgOut = outPortOf(n.id);
       imgOut.dataset.kind = 'image';
       card.appendChild(imgOut);
+    } else if (n.type === 'video') {
+      body.appendChild(buildVideoBody(n));
+      const videoIn = makeTypedPort(n, 'in', 'media', linkedInputs.has('in'), '接收视频生成工作流的结果');
+      videoIn.onpointerdown = (ev) => { ev.stopPropagation(); startPortDrag(ev, n.id, 'in'); };
+      card.appendChild(videoIn);
+      const videoOut = outPortOf(n.id);
+      videoOut.dataset.kind = 'media';
+      videoOut.title = '输出视频结果';
+      card.appendChild(videoOut);
     } else if (n.type === 'wf') {
       body.appendChild(buildWfBody(n, linkedInputs));
       const wfIn = makeTypedPort(n, 'in', 'any', linkedInputs.size > 0, '拖动可反向接线；点一下打开设置');
@@ -3288,7 +3303,12 @@
     // 选了就是选了——之后没有任何「按参考图 / 纯文生图自动换一个」。
     const wfBox = mkMenu(ICON.wf,
       // 第 4 项是图标：菜单里不画（一行字已经够长），但芯片要跟着换
-      () => wfOptions().map((o) => [o.id, o.label, `${o.catLabel} · ${o.label}`, o.icon]),
+      () => {
+        const dedicated = new Set([state.inferenceWorkflow, state.expansionWorkflow].filter(Boolean));
+        return wfOptions()
+          .filter((o) => !dedicated.has(o.id) || o.id === g.wf)
+          .map((o) => [o.id, o.label, o.label, o.icon]);
+      },
       g.wf || '',
       (v) => {
         g.wf = v;
@@ -3925,6 +3945,77 @@
       ph.className = 'out-empty';
       ph.textContent = n.linked ? '等待生成…' : '把工作流节点右侧的圆点连到这里';
       wrap.appendChild(ph);
+    }
+    return wrap;
+  }
+
+  function buildVideoBody(n) {
+    const wrap = document.createElement('div');
+    wrap.className = 'video-body';
+    const frame = document.createElement('div');
+    frame.className = 'video-frame';
+    const videos = (n.artifacts || []).filter((item) => item.kind === 'video');
+    if (!videos.length) {
+      frame.classList.add('is-empty');
+      const empty = document.createElement('div');
+      empty.className = 'video-empty';
+      empty.innerHTML = `${NODE_ICON.video}<span>${n.linked ? '等待视频生成…' : '连接视频工作流输出'}</span>`;
+      frame.appendChild(empty);
+    } else {
+      const index = ((Number(n.videoIndex) || 0) % videos.length + videos.length) % videos.length;
+      n.videoIndex = index;
+      const artifact = videos[index];
+      const url = artifactURL(artifact);
+      const player = document.createElement('video');
+      player.src = url;
+      player.controls = true;
+      player.preload = 'metadata';
+      player.playsInline = true;
+      player.addEventListener('loadedmetadata', () => {
+        if (player.videoWidth && player.videoHeight) {
+          frame.style.setProperty('--video-ar', `${player.videoWidth} / ${player.videoHeight}`);
+          scheduleLayout();
+        }
+      });
+      frame.appendChild(player);
+      const download = document.createElement('a');
+      download.className = 'video-download';
+      download.href = url;
+      download.download = artifact.filename || 'video';
+      download.textContent = '下载视频';
+      download.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      download.addEventListener('click', (ev) => ev.stopPropagation());
+      frame.appendChild(download);
+      if (videos.length > 1) {
+        const count = document.createElement('span');
+        count.className = 'video-count';
+        count.textContent = `${index + 1} / ${videos.length}`;
+        frame.appendChild(count);
+        const nav = document.createElement('div');
+        nav.className = 'video-nav';
+        [['prev', -1, '‹', '上一个视频'], ['next', 1, '›', '下一个视频']].forEach(([side, step, label, title]) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = `video-nav-btn ${side}`;
+          button.textContent = label;
+          button.title = title;
+          button.onclick = (ev) => {
+            ev.stopPropagation();
+            n.videoIndex = (index + step + videos.length) % videos.length;
+            rerenderNode(n.id, true);
+            queueSave(); commit();
+          };
+          nav.appendChild(button);
+        });
+        frame.appendChild(nav);
+      }
+    }
+    wrap.appendChild(frame);
+    if (n.statusText) {
+      const status = document.createElement('div');
+      status.className = `wf-status video-status${n.status === 'error' ? ' error' : n.status === 'done' ? ' done' : n.status === 'running' || n.status === 'queued' ? ' running' : ''}`;
+      status.textContent = n.statusText;
+      wrap.appendChild(status);
     }
     return wrap;
   }
@@ -6036,13 +6127,13 @@
                 <button type="button" class="prime" id="setImportWf">导入工作流…</button>
                 <button type="button" id="setImportWfBatch" title="一次选多份 JSON，全部导进工作流库">批量导入…</button>
               </div>
-              <div class="wf-pickbar" id="setWfPickbar"></div>
+              <div class="wf-section-title">功能指定</div>
               <div class="wf-specials">
-                <label class="set-inference">图片推理工作流
+                <label class="set-inference">图片推理
                   <select id="setInferenceWf" aria-label="推理提示词工作流"></select>
                   <small>图片节点的「推理提示词」使用</small>
                 </label>
-                <label class="set-inference">文本扩写工作流
+                <label class="set-inference">文本扩写
                   <select id="setExpansionWf" aria-label="文本扩写工作流"></select>
                   <small>文本节点的「扩写」使用</small>
                 </label>
@@ -6051,6 +6142,7 @@
                 <summary>按分组默认 <span>查看各类新建节点预选的工作流</span></summary>
                 <div class="set-tip" id="setWfDefault"></div>
               </details>
+              <div class="wf-pickbar" id="setWfPickbar"></div>
               <div class="wf-list" id="setWfList"></div>
               <div class="wf-categories">
                 <div class="set-group">分类</div>
@@ -6084,21 +6176,21 @@
               <label class="set-row"><input type="checkbox" id="setAutosave" /> 自动保存（关闭后只存本机）</label>
             </div>
             <div class="sheet-pane hidden" id="set-pane-conn">
-              <div class="set-group">ComfyUI 连接</div>
-              <label class="set-comfy">地址
-                <input type="text" id="setComfyUrl" spellcheck="false" autocomplete="off"
-                       placeholder="http://127.0.0.1:8188" />
-              </label>
-              <p class="set-tip" id="setComfyHint">正在读取…</p>
-              <div class="set-actions">
-                <button type="button" class="prime" id="setComfySave">保存并测试</button>
-                <button type="button" id="setComfyReset">恢复默认</button>
-              </div>
+              <div class="set-group">ComfyUI 服务地址</div>
+                <label class="set-comfy" aria-label="ComfyUI 服务地址">
+                  <input type="text" id="setComfyUrl" spellcheck="false" autocomplete="off"
+                         placeholder="http://127.0.0.1:8188" />
+                </label>
+                <p class="set-tip" id="setComfyHint">正在读取…</p>
+                <div class="set-actions">
+                  <button type="button" class="prime" id="setComfySave">保存并测试</button>
+                  <button type="button" id="setComfyReset">恢复默认</button>
+                </div>
               <div class="set-sep"></div>
               <!-- MCP 接入：和上面那条 ComfyUI 地址是同一类事——这台机器怎么和外面连。
                    以前它是一个单独的整屏面板（顶栏那盏灯点开），现在灯只负责把人送到这一格。
                    MCP 的门槛全在第一步（端点、stdio 命令、路径），所以能抄的配置直接摆在这儿。 -->
-              <div class="set-group">MCP 接入 · 让 AI 直接操作这块画布</div>
+              <div class="set-group">MCP <span class="conn-subtitle">连接 AI 客户端与当前画布</span></div>
               <div class="mcp-block" id="setMcp">
                 <div class="mcp-status" id="mcpSetupStatus">
                   <span class="dot" id="mcpSetupDot"></span>
@@ -6109,10 +6201,7 @@
                   <input type="text" class="mcp-val" id="mcpSetupEndpoint" readonly spellcheck="false" autocomplete="off" value="…" />
                   <button type="button" class="mcp-btn" data-copy="endpoint">复制</button>
                 </div>
-                <p class="mcp-tip">
-                  两种接法，任选其一：<b>stdio 桥</b>（推荐，客户端自己拉起进程，服务没起会自动启动）；
-                  或者自己先跑 <code>python server.py</code>，在客户端里填上面的 HTTP 端点。
-                </p>
+                <p class="mcp-tip">选择一种连接方式。stdio 桥会由客户端自动启动服务；HTTP 方式需要先运行 InfiSheet。</p>
                 <div class="mcp-tabs" id="mcpSetupTabs"></div>
                 <div class="mcp-pane">
                   <div class="mcp-row">
@@ -6132,15 +6221,16 @@
                   Claude Desktop / Codex 重启客户端即可。接上之后顶栏那盏灯会自己变绿，不用刷新页面。
                 </p>
               </div>
-              <div class="set-sep"></div>
-              <div class="set-group">服务</div>
-              <p class="set-tip">本地服务 <b>${location.host}</b>（ComfyUI 由它代理）。关掉之后所有标签页都会断连，
-                要重新运行项目里的启动脚本（启动.bat / 启动.command / start.sh）才能再开。</p>
-              <div class="set-actions" id="setSrvActions">
-                <button type="button" class="danger" id="setShutdown">关闭服务…</button>
-              </div>
             </div>
             <div class="sheet-pane hidden" id="set-pane-adv">
+              <section class="set-program-close" aria-labelledby="setProgramTitle">
+                <div class="set-group" id="setProgramTitle">关闭程序</div>
+                <p class="set-tip">关闭后会中断正在运行的生成，并断开所有标签页。重新运行启动脚本即可打开。</p>
+              <div class="set-actions" id="setSrvActions">
+                <button type="button" class="danger" id="setShutdown"><span aria-hidden="true">⏻</span> 关闭程序…</button>
+              </div>
+              </section>
+              <div class="set-sep"></div>
               <div class="set-group">画布数据</div>
               <div class="set-actions">
                 <button type="button" id="setFit">适配视图</button>
@@ -6182,15 +6272,35 @@
         if (result.error === '接口不存在') throw new Error('当前服务仍在运行旧代码，请关闭并重新启动 InfiSheet');
         if (!result.ok) throw new Error(result.error || '读取失败');
         box.querySelector('#setLogPath').textContent = `本地文件：${result.file}`;
-        const events = { server_started: '服务启动', job_submitted: '任务已提交',
-          job_finished: '任务结束', job_canceled: '任务已取消',
-          workflow_rejected: '工作流被拒绝', service_error: '服务异常' };
-        output.textContent = (result.entries || []).map((item) =>
-          `${item.time || ''}  ${(item.level || '').toUpperCase()}  ${events[item.event] || item.event || ''}`
-          + `${item.prompt_id ? `  ${item.prompt_id}` : ''}`
-          + `${item.status ? `  ${item.status}` : ''}`
-          + `${item.node_ids?.length ? `  节点 ${item.node_ids.join(', ')}` : ''}`
-          + `${item.error ? `  ${item.error}` : ''}`).join('\n') || '暂无日志';
+        const events = { server_started: '服务启动', server_bind_failed: '端口绑定失败',
+          job_submitted: '生成任务已提交', job_finished: '生成任务完成',
+          job_canceled: '生成任务已取消', workflow_rejected: '工作流提交失败',
+          service_error: '服务异常' };
+        const formatTime = (value) => {
+          const date = new Date(value);
+          return Number.isNaN(date.getTime()) ? String(value || '')
+            : date.toLocaleString(undefined, { hour12: false });
+        };
+        const lines = (result.entries || []).slice().reverse().map((item) => {
+          const level = (item.level || 'info').toUpperCase();
+          let title = events[item.event] || item.event || '程序事件';
+          if (item.event === 'job_finished') {
+            title = item.status === 'success' ? '生成成功' : '生成失败';
+          }
+          const detail = [];
+          if (item.prompt_id) detail.push(`任务 ${String(item.prompt_id).slice(0, 8)}`);
+          if (item.node_count != null) detail.push(`${item.node_count} 个节点`);
+          if (item.status && item.event !== 'job_finished') detail.push(`状态 ${item.status}`);
+          if (item.was) detail.push(`取消时处于${item.was === 'running' ? '运行中' : '排队中'}`);
+          if (item.node_id || item.node_type) {
+            detail.push(`节点 ${item.node_id || '?'}${item.node_type ? `（${item.node_type}）` : ''}`);
+          }
+          if (item.node_ids?.length) detail.push(`问题节点 ${item.node_ids.join(', ')}`);
+          if (item.http_status || item.status_code) detail.push(`HTTP ${item.http_status || item.status_code}`);
+          if (item.error) detail.push(String(item.error).replace(/[\r\n]+/g, ' ').trim());
+          return `${formatTime(item.time)}  ${level}  ${title}${detail.length ? `\n    ${detail.join(' · ')}` : ''}`;
+        });
+        output.textContent = lines.join('\n') || '暂无日志';
       } catch (err) { output.textContent = `读取日志失败：${err.message}`; }
     };
     box.querySelector('#setRefreshLogs').onclick = loadProgramLogs;
@@ -6383,7 +6493,7 @@
       shut.onclick = () => {
         const wrap = box.querySelector('#setSrvActions');
         wrap.className = 'set-srv-confirm';
-        wrap.innerHTML = '<span>确定关闭？正在跑的生成会中断。</span>'
+        wrap.innerHTML = '<span>关闭后，正在运行的生成会中断，所有标签页都会断开。</span>'
           + '<button type="button" id="setSrvCancel">取消</button>'
           + '<button type="button" class="danger" id="setSrvGo">确定关闭</button>';
         wrap.querySelector('#setSrvCancel').onclick = () => openSettingsSheet();
@@ -7422,7 +7532,7 @@
 
   function startLink(ev, fromId) {
     const src = getNode(fromId);
-    const kindWanted = src.type === 'text' ? 'text' : src.type === 'wf' ? 'media' : 'image';
+    const kindWanted = src.type === 'text' ? 'text' : src.type === 'wf' || src.type === 'video' ? 'media' : 'image';
     const rect0 = stage.getBoundingClientRect();
     drag = { mode: 'link', from: fromId, kind: kindWanted };
     stage.classList.add('linking');
@@ -7630,7 +7740,7 @@
     // 受影响的终点重算一次（图片输出节点的「已连接」态、参考图缩略图）
     new Set(gone.map((l) => l.to)).forEach((id) => {
       const dst = getNode(id);
-      if (dst && dst.type === 'out') dst.linked = state.links.some((x) => x.to === id);
+      if (dst && (dst.type === 'out' || dst.type === 'video')) dst.linked = state.links.some((x) => x.to === id);
       rerenderNode(id);
       refreshRefsFor(id);
     });
@@ -7692,8 +7802,8 @@
     }
     state.links.push({ id: uid('l'), from, to, toKey: key });
     const src = getNode(from);
-    if (src && src.type === 'wf' && dst && dst.type === 'out') {
-      dst.artifacts = src.artifacts || [];
+    if (src && src.type === 'wf' && dst && (dst.type === 'out' || dst.type === 'video')) {
+      dst.artifacts = artifactsForNode(dst, src.artifacts || []);
       dst.statusText = src.statusText || '';
       dst.linked = true;
     }
@@ -7708,7 +7818,7 @@
   function removeLink(toId, key) {
     state.links = state.links.filter((l) => !(l.to === toId && l.toKey === key));
     const dst = getNode(toId);
-    if (dst && dst.type === 'out') dst.linked = false;
+    if (dst && (dst.type === 'out' || dst.type === 'video')) dst.linked = false;
     rerenderNode(toId);
     refreshRefsFor(toId);
     renderLinks();
@@ -7770,21 +7880,37 @@
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
 
+  // 视频节点：只收视频产物。它不挂生成面板——作用是把视频生成工作流的结果
+  // 单独摆在画布上，能播放、能翻看同一批里的其它视频、能下载。
+  function addVideoNode(x, y, extra = {}, raw = false) {
+    const n = {
+      id: uid('v'), type: 'video', title: '视频', x, y,
+      artifacts: [], statusText: '', linked: false, videoIndex: 0, ...extra,
+    };
+    state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
+  }
+
   function addOutNode(x, y, extra = {}, raw = false) {
     const n = { id: uid('o'), type: 'out', title: '图片输出', x, y, artifacts: [], statusText: '', linked: false, ...extra };
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
 
-  // 把工作流的结果推给所有连着的输出节点
+  // 视频节点只收视频：接到图片工作流上时，图片产物不该塞进播放器里冒充视频
+  function artifactsForNode(n, arts) {
+    return n && n.type === 'video' ? arts.filter((a) => a.kind === 'video') : arts.slice();
+  }
+
+  // 把工作流的结果推给所有连着的输出节点（图片输出 / 视频）
   function syncOutputs(wf) {
     state.links
-      .filter((l) => l.from === wf.id && (getNode(l.to) || {}).type === 'out')
+      .filter((l) => l.from === wf.id)
       .forEach((l) => {
-        const out = getNode(l.to);
-        out.artifacts = (wf.artifacts || []).slice();
-        out.statusText = wf.statusText || '';
-        out.linked = true;
-        rerenderNode(out.id);
+        const dst = getNode(l.to);
+        if (!dst || (dst.type !== 'out' && dst.type !== 'video')) return;
+        dst.artifacts = artifactsForNode(dst, wf.artifacts || []);
+        dst.statusText = wf.statusText || '';
+        dst.linked = true;
+        rerenderNode(dst.id);
       });
   }
 
@@ -9459,7 +9585,7 @@
   }
 
   function fitView() {
-    if (!state.nodes.length) { state.view = { x: 80, y: 60, k: 0.85 }; applyView(); return; }
+    if (!state.nodes.length) { state.view = { x: 80, y: 60, k: 1 }; applyView(); return; }
     const r = stage.getBoundingClientRect();
     const boxes = state.nodes.map(nodeBox);      // 用实测宽高，别再拿固定 520 估算高度
     const minX = Math.min(...boxes.map((b) => b.x)) - 40;
@@ -9470,6 +9596,11 @@
     const k = clamp(Math.min(r.width / (maxX - minX), r.height / (maxY - minY)), ZOOM_MIN, 1.2);
     state.view = { k, x: -minX * k + (r.width - (maxX - minX) * k) / 2, y: -minY * k + 30 };
     applyView(); queueSave();
+  }
+
+  function resetEmptyView() {
+    if (state.nodes.length) return;
+    state.view = { x: 140, y: 120, k: 1 };
   }
 
   async function saveToLibrary(n) {
@@ -9974,6 +10105,7 @@
       ['新建节点', [
         ['text', '文本', () => addTextNode(p.x - 140, p.y - 60)],
         ['image', '图片', () => addImageNode(p.x - 125, p.y - 60)],
+        ['video', '视频', () => addVideoNode(p.x - 320, p.y - 60)],
         // 「加载图片…」和「图片」是两件事：前者选完就带着图，后者是空白节点等拖文件进来。
         ['upload', '加载图片…', () => pickImageFiles(p.x - 125, p.y - 60)],
         ['out', '图片输出', () => addOutNode(p.x - 150, p.y - 60)],
@@ -10902,6 +11034,7 @@
       wf: ['rgba(110,168,254,0.32)', 'rgba(110,168,254,0.7)'],
       image: ['rgba(52,211,153,0.3)', 'rgba(52,211,153,0.68)'],
       out: ['rgba(167,139,250,0.3)', 'rgba(167,139,250,0.68)'],
+      video: ['rgba(251,146,60,0.3)', 'rgba(251,146,60,0.68)'],
       text: ['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.34)'],
     };
     // 选中的那个必须一眼能找回来：其余节点保持低饱和，只把它提亮成白块。
@@ -11736,7 +11869,7 @@
     const res = await createProject('未命名画布');
     if (!res) return;
     state.nodes = []; state.links = []; state.groups = []; state.selected = new Set();
-    state.seq = 1; state.view = { x: 140, y: 120, k: 0.85 };
+    state.seq = 1; state.view = { x: 140, y: 120, k: 1 };
     load(res.canvas || { nodes: [], links: [], groups: [], view: state.view });
     state.hydrated = true;
     applyView(); renderAll(); renderLinks();
@@ -15921,6 +16054,7 @@
       // 最后一档兜底：之后不再读 restored，所以只取 load() 的副作用（把画布装进 state）
       if (server.canvas) load(server.canvas);
     }
+    resetEmptyView();
     if (state.projectId) { try { localStorage.setItem('infisheet-project', state.projectId); } catch { /* noop */ } }
     applyView(); renderAll();
     applyGlobalViewPrefs();

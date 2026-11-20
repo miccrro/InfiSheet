@@ -3830,7 +3830,7 @@ class Handler(BaseHTTPRequestHandler):
             name = str(payload.get("name") or "未命名画布")[:40]
             pid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
             canvas = {"version": 2, "name": name, "nodes": [], "links": [], "groups": [],
-                      "view": {"x": 140, "y": 120, "k": 0.85}, "seq": 1,
+                      "view": {"x": 140, "y": 120, "k": 1}, "seq": 1,
                       "rev": 0, "lastWriter": "canvas",
                       "savedAt": int(time.time() * 1000)}
             projects_dir()

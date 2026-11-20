@@ -8736,11 +8736,16 @@ try {
       && Math.abs(gestures.afterPinch.y - (400 - (400 - start.y) * ratio)) < 1
       && gestures.pinching === false, JSON.stringify(gestures));
 
-  // ---- 关闭服务：设置里的「服务」分组 ----
+  // ---- 关闭程序：高级设置顶部 ----
   // 关掉后端是不可逆动作（所有标签页 + MCP 客户端一起断），所以必须二次确认。
   // 这里先验确认条，再真的关一次——e2e 起的就是个临时实例，关掉正好把收尾也验了。
   await page.evaluate(`document.querySelector('[data-act="settings"]').click()`);
+  await page.evaluate(`document.querySelector('#setTabs [data-set="adv"]').click()`);
   await page.waitFor(`!!document.getElementById('setShutdown')`, 5000);
+  check('关闭程序按钮在高级设置顶部可见', await page.evaluate(`(() => {
+    const b = document.getElementById('setShutdown');
+    return !!b && b.getBoundingClientRect().height > 0 && b.closest('.sheet-pane').id === 'set-pane-adv';
+  })()`));
   await page.evaluate(`document.getElementById('setShutdown').click()`);
   await new Promise((r) => setTimeout(r, 250));
   const confirmUi = await page.evaluate(`(() => ({
@@ -8764,6 +8769,7 @@ try {
     !afterCancel.bar && !afterCancel.overlay && afterCancel.btn, JSON.stringify(afterCancel));
 
   // 真关：先点确认，再等页面把「服务已关闭」写出来
+  await page.evaluate(`document.querySelector('#setTabs [data-set="adv"]').click()`);
   await page.evaluate(`document.getElementById('setShutdown').click()`);
   await new Promise((r) => setTimeout(r, 200));
   await page.evaluate(`document.getElementById('setSrvGo').click()`);
