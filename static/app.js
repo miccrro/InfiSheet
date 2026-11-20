@@ -762,7 +762,8 @@
       card.appendChild(imgOut);
     } else if (n.type === 'video') {
       body.appendChild(buildVideoBody(n));
-      const videoIn = makeTypedPort(n, 'in', 'media', linkedInputs.has('in'), '接收视频生成工作流的结果');
+      el.appendChild(buildVideoGenPanel(n));
+      const videoIn = makeTypedPort(n, 'in', 'any', linkedInputs.has('in'), '接文本作为提示词、图片作为首帧，或接收工作流视频结果');
       videoIn.onpointerdown = (ev) => { ev.stopPropagation(); startPortDrag(ev, n.id, 'in'); };
       card.appendChild(videoIn);
       const videoOut = outPortOf(n.id);
@@ -3949,6 +3950,13 @@
     return wrap;
   }
 
+  function videoReferenceOf(n) {
+    if (n && n.gen && n.gen.reference) return n.gen.reference;
+    const source = state.links.filter((link) => link.to === n.id && link.toKey === 'in')
+      .map((link) => getNode(link.from)).find((node) => node && node.type === 'image' && node.dataURL);
+    return source ? source.dataURL : '';
+  }
+
   function buildVideoBody(n) {
     const wrap = document.createElement('div');
     wrap.className = 'video-body';
@@ -3957,9 +3965,21 @@
     const videos = (n.artifacts || []).filter((item) => item.kind === 'video');
     if (!videos.length) {
       frame.classList.add('is-empty');
+      const reference = videoReferenceOf(n);
+      if (reference) {
+        frame.classList.add('has-reference');
+        const image = document.createElement('img');
+        image.className = 'video-reference-preview';
+        image.draggable = false;
+        image.src = reference; image.alt = '视频首帧参考图';
+        image.addEventListener('dragstart', (ev) => ev.preventDefault());
+        frame.appendChild(image);
+      }
       const empty = document.createElement('div');
       empty.className = 'video-empty';
-      empty.innerHTML = `${NODE_ICON.video}<span>${n.linked ? '等待视频生成…' : '连接视频工作流输出'}</span>`;
+      empty.innerHTML = reference
+        ? `${NODE_ICON.video}<span>首帧参考 · 输入提示词后生成</span>`
+        : `${NODE_ICON.video}<span>${n.linked ? '等待视频生成…' : '输入提示词后生成视频'}</span>`;
       frame.appendChild(empty);
     } else {
       const index = ((Number(n.videoIndex) || 0) % videos.length + videos.length) % videos.length;
@@ -4018,6 +4038,362 @@
       wrap.appendChild(status);
     }
     return wrap;
+  }
+
+  function buildVideoGenPanel(n) {
+    const g = n.gen || (n.gen = {});
+    const defaults = { prompt: '', wf: '', aspect: '16:9', resolution: '720p', duration: 5, busy: false, status: n.statusText || '' };
+    Object.keys(defaults).forEach((key) => { if (g[key] === undefined) g[key] = defaults[key]; });
+
+    const panel = document.createElement('div');
+    panel.className = 'gen-panel video-generator';
+    panel.dataset.panelFor = n.id;
+    panel.dataset.side = 'bottom';
+    panel.onpointerdown = (ev) => ev.stopPropagation();
+
+    const chips = document.createElement('div');
+    chips.className = 'gen-chips';
+    const actions = document.createElement('div');
+    actions.className = 'gen-chips-main';
+    chips.appendChild(actions);
+    const addChip = (label, glyph, onClick, title) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.innerHTML = `${glyph}<span>${label}</span>`;
+      button.title = title;
+      button.addEventListener('pointerdown', (ev) => ev.preventDefault());
+      button.onclick = (ev) => { ev.stopPropagation(); onClick(button); };
+      actions.appendChild(button);
+      return button;
+    };
+
+    const referenceRow = document.createElement('div');
+    referenceRow.className = 'video-reference hidden';
+    const syncReference = () => {
+      referenceRow.innerHTML = '';
+      referenceRow.classList.toggle('hidden', !g.reference);
+      if (!g.reference) return;
+      const image = document.createElement('img');
+      image.src = g.reference; image.alt = '视频首帧参考图';
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.textContent = '移除';
+      remove.onclick = (ev) => {
+        ev.stopPropagation(); g.reference = ''; syncReference(); queueSave(); commit();
+      };
+      referenceRow.append(image, remove);
+    };
+    syncReference();
+    const upload = addChip('上传', icon('plus'), () => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'image/*';
+      input.onchange = () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => { g.reference = String(reader.result || ''); syncReference(); queueSave(); commit(); };
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    }, '上传视频首帧参考图');
+    upload.classList.add('gen-upload');
+    addChip('画布素材', icon('material'), (button) => {
+      if (popAnchor === button) { closePopMenu(); return; }
+      const candidates = state.nodes.filter((node) => node.type === 'image' && node.dataURL);
+      const items = candidates.map((node) => [node.title || '图片', () => {
+        g.reference = node.dataURL; syncReference(); queueSave(); commit();
+      }, '', `<span class="pm-thumb"><img src="${esc(node.dataURL)}" alt=""></span>`]);
+      if (!items.length) items.push(['画布上还没有图片', () => {}, 'disabled']);
+      openPopMenu(button, items, '选择视频首帧');
+    }, '从画布选择视频首帧');
+    addChip('清空', icon('clear'), () => {
+      g.prompt = '';
+      prompt.textContent = '';
+      prompt.classList.add('is-empty');
+      queueSave(); commit();
+    }, '清空提示词');
+    const styleButton = addChip('风格', icon('palette'), (button) => openStyleMenu(button, n), '给视频提示词套用风格');
+    styleButton.classList.add('gen-style');
+    styleButton.innerHTML = `<span class="gs-ico">${icon('palette')}</span><span class="gs-name">风格</span>`;
+    paintStyleChip(styleButton, g.style);
+    const expand = document.createElement('button');
+    expand.type = 'button'; expand.className = 'chip icon-only gen-expand';
+    expand.innerHTML = icon('expand'); expand.title = '把整个面板放到大窗口里编辑';
+    expand.onclick = (ev) => { ev.stopPropagation(); openBigEditor(n); };
+    chips.appendChild(expand);
+    panel.appendChild(chips);
+    panel.appendChild(referenceRow);
+
+    const prompt = document.createElement('div');
+    prompt.className = 'gen-prompt';
+    prompt.contentEditable = 'true';
+    prompt.spellcheck = false;
+    prompt.setAttribute('role', 'textbox');
+    prompt.setAttribute('aria-label', '视频提示词');
+    prompt.setAttribute('aria-multiline', 'true');
+    prompt.dataset.ph = '描述要生成的视频';
+    prompt.textContent = g.prompt || '';
+    prompt.classList.toggle('is-empty', !g.prompt);
+    prompt.oninput = () => {
+      g.prompt = promptText(prompt);
+      prompt.classList.toggle('is-empty', !g.prompt.trim());
+      queueSave();
+    };
+    prompt.onkeydown = (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); generateVideo(n); }
+      else if (ev.key === 'Enter' && !ev.altKey) { ev.preventDefault(); document.execCommand('insertLineBreak'); }
+    };
+    prompt.addEventListener('paste', (ev) => {
+      const text = (ev.clipboardData || window.clipboardData)?.getData('text/plain');
+      if (text == null) return;
+      ev.preventDefault(); document.execCommand('insertText', false, text);
+    });
+    prompt.onblur = () => commit();
+    panel.appendChild(prompt);
+
+    const statusRow = document.createElement('div');
+    statusRow.className = 'gen-status-row';
+    const status = document.createElement('span');
+    status.className = 'gen-status';
+    status.textContent = g.status || '';
+    status.classList.toggle('is-err', n.status === 'error');
+    statusRow.classList.toggle('hidden', !g.status);
+    statusRow.appendChild(status);
+    panel.appendChild(statusRow);
+
+    const bar = buildGenControlRow('gen-bar');
+    const wfBox = document.createElement('div');
+    wfBox.className = 'gensel wfsel gen-control';
+    const wfButton = document.createElement('button');
+    wfButton.type = 'button';
+    wfButton.className = 'gm-btn gen-control';
+    wfButton.innerHTML = `<span class="gensel-icon">${WF_ICON}</span><span></span><i class="gm-caret"></i>`;
+    const wfIconEl = wfButton.querySelector('.gensel-icon');
+    const wfLabel = wfButton.querySelector('span:nth-child(2)');
+    const syncWorkflow = () => {
+      const selected = wfOptions().find((option) => option.id === g.wf && (option.kinds || []).includes('video'));
+      wfIconEl.innerHTML = wfIconHTML(selected ? selected.icon : '', 16);
+      wfLabel.textContent = selected ? selected.label : '选择视频工作流';
+      wfBox.classList.toggle('is-empty', !selected);
+      wfButton.title = selected ? selected.label : '选择视频工作流';
+    };
+    syncWorkflow();
+    wfButton.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const items = wfOptions().filter((option) => (option.kinds || []).includes('video'))
+        .map((option) => [option.label, () => {
+          g.wf = option.id; syncWorkflow(); queueSave(); commit();
+        }, option.id === g.wf ? 'active' : '', wfIconHTML(option.icon, 16)]);
+      if (!items.length) { flash('没有可用的视频工作流'); return; }
+      openPopMenu(wfButton, items, '视频工作流');
+    };
+    wfBox.appendChild(wfButton);
+    bar.appendChild(wfBox);
+
+    const separator = document.createElement('i');
+    separator.className = 'gen-sep';
+    separator.setAttribute('aria-hidden', 'true');
+    bar.appendChild(separator);
+
+    const makeOption = (label, title, values, selected, display, onPick, openCustomMenu) => {
+      const box = document.createElement('div');
+      box.className = 'gensel gen-control';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gm-btn gen-control';
+      const text = document.createElement('span');
+      const caret = document.createElement('i'); caret.className = 'gm-caret';
+      button.append(text, caret);
+      const sync = () => { text.textContent = display(selected()); button.title = `${title}：${text.textContent}`; };
+      sync();
+      button.onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const pick = (value) => { onPick(value); sync(); queueSave(); commit(); };
+        if (openCustomMenu) { openCustomMenu(button, selected(), pick); return; }
+        openPopMenu(button, values.map((value) => [display(value), () => pick(value), value === selected() ? 'active' : '']), title);
+      };
+      box.appendChild(button); box.dataset.control = label;
+      return box;
+    };
+
+    const aspects = ['16:9', '9:16', '1:1', '4:3', '3:4'];
+    const resolutions = ['720p', '1080p'];
+    bar.appendChild(makeOption('aspect', '画幅', aspects, () => g.aspect, (value) => value, (value) => { g.aspect = value; }));
+    bar.appendChild(makeOption('resolution', '尺寸', resolutions, () => g.resolution,
+      (value) => value,
+      (value) => { g.resolution = value; }));
+    const durations = [3, 5, 8, 10, 15];
+    bar.appendChild(makeOption('duration', '时长（秒）', durations, () => Number(g.duration),
+      (value) => `${value}秒`, (value) => { g.duration = value; },
+      null));
+
+    const run = makeGenControlButton({
+      className: 'gen-run', html: icon('arrowUp'), title: '生成视频（Ctrl+Enter）',
+      onClick: (ev) => { ev.stopPropagation(); if (g.busy) cancelQueuedJob(g.job).catch(() => {}); else generateVideo(n); },
+    });
+    syncGenRunButton(run, !!g.busy);
+    bar.appendChild(run);
+    panel.appendChild(bar);
+    refreshGenPanel(n);
+    return panel;
+  }
+
+  function videoDimensions(aspect, resolution) {
+    const [a, b] = String(aspect || '16:9').split(':').map(Number);
+    const ratioW = a || 16, ratioH = b || 9;
+    const long = resolution === '1080p' ? 1920 : 1280;
+    const short = resolution === '1080p' ? 1080 : 720;
+    const snap = (value) => Math.round(value / 32) * 32;
+    // 720p / 1080p describe the long edge; aspect ratio determines the other edge.
+    return ratioW >= ratioH
+      ? [snap(long), snap(long * ratioH / ratioW)]
+      : [snap(long * ratioW / ratioH), snap(long)];
+  }
+
+  function setVideoGraphOptions(graph, slots, gen, referenceName) {
+    const list = Array.isArray(slots) ? slots : [];
+    const dims = videoDimensions(gen.aspect, gen.resolution);
+    const ratio = String(gen.aspect || '16:9');
+    const setSlot = (slot, value) => {
+      const node = graph && graph[slot.node];
+      if (!node || !node.inputs || !Object.prototype.hasOwnProperty.call(node.inputs, slot.input)) return false;
+      const current = node.inputs[slot.input];
+      if (Array.isArray(current)) return false;
+      node.inputs[slot.input] = value;
+      return true;
+    };
+
+    const textSlots = list.filter((slot) => slot.kind === 'text' && typeof slot.value === 'string');
+    const negative = (slot) => /negative|负面|反向/i.test(`${slot.input || ''} ${slot.node_title || ''}`)
+      || Object.values(graph || {}).some((node) => Object.entries(node.inputs || {}).some(([input, value]) =>
+        /negative|负面|反向/i.test(input) && Array.isArray(value) && String(value[0]) === String(slot.node)));
+    const positive = textSlots.filter((slot) => !negative(slot));
+    const promptTargets = positive.filter((slot) => /prompt|text|提示词/i.test(`${slot.input || ''} ${slot.node_title || ''}`));
+    const chosenPrompts = promptTargets.length ? promptTargets : positive.slice(0, 1);
+    if (!chosenPrompts.length) throw new Error('所选工作流没有可填写的正向提示词');
+    chosenPrompts.forEach((slot) => setSlot(slot, gen.prompt.trim()));
+
+    const imageSlot = list.find((slot) => slot.kind === 'image');
+    const referenceApplied = referenceName && imageSlot ? setSlot(imageSlot, referenceName) : false;
+
+    let aspectApplied = false;
+    const aspectSlots = list.filter((slot) => /aspect.?ratio|画幅/i.test(slot.input || ''));
+    const aspectSlot = aspectSlots.find((slot) => slot.kind === 'select') || aspectSlots[0];
+    const aspectNode = aspectSlot ? graph[aspectSlot.node]
+      : Object.values(graph || {}).find((node) => node.inputs && typeof node.inputs.aspect_ratio === 'string');
+    const aspectInput = aspectSlot ? aspectSlot.input : (aspectNode ? 'aspect_ratio' : '');
+    if (aspectNode && aspectInput && !Array.isArray(aspectNode.inputs[aspectInput])) {
+      const choices = aspectSlot && Array.isArray(aspectSlot.options) ? aspectSlot.options : [];
+      const labels = { '16:9': 'Landscape Widescreen', '9:16': 'Portrait Widescreen', '1:1': 'Square', '4:3': 'Landscape', '3:4': 'Portrait' };
+      const choice = choices.find((value) => String(value).includes(ratio))
+        || (labels[ratio] ? `${ratio} (${labels[ratio]})` : '');
+      if (choice) {
+        aspectNode.inputs[aspectInput] = choice;
+        aspectApplied = true;
+      }
+    }
+    let sizeApplied = false;
+    const dimensionSlots = list.filter((slot) => /^(width|height)$/i.test(slot.input || ''));
+    let widthApplied = false, heightApplied = false;
+    dimensionSlots.forEach((slot) => {
+      if (/^width$/i.test(slot.input)) widthApplied = setSlot(slot, dims[0]) || widthApplied;
+      else heightApplied = setSlot(slot, dims[1]) || heightApplied;
+    });
+    sizeApplied = widthApplied && heightApplied;
+
+    const sizeSlots = list.filter((slot) => /megapixel|resolution|分辨率/i.test(slot.input || ''));
+    sizeSlots.forEach((slot) => {
+      const options = Array.isArray(slot.options) ? slot.options : [];
+      const resolutionOption = options.find((value) => String(value).toLowerCase().includes(String(gen.resolution).toLowerCase()));
+      const megapixels = Number((dims[0] * dims[1] / 1000000).toFixed(2));
+      sizeApplied = setSlot(slot, resolutionOption || megapixels) || sizeApplied;
+    });
+
+    const durationSlot = list.find((slot) => slot.kind === 'number'
+      && /duration|seconds|时长|持续时间/i.test(`${slot.input || ''} ${slot.node_title || ''}`)
+      && Number.isFinite(Number(slot.value)));
+    const durationApplied = durationSlot ? setSlot(durationSlot, Number(gen.duration)) : false;
+    return { dims, aspectApplied, sizeApplied, durationApplied, referenceApplied };
+  }
+
+  async function generateVideo(n) {
+    const g = n && n.type === 'video' ? n.gen : null;
+    if (!g || g.busy) return;
+    const upstreamPrompt = promptSegmentsOf(n).map((segment) => segment.text).filter(Boolean);
+    const prompt = [...upstreamPrompt, String(g.prompt || '').trim()].filter(Boolean).join('\n\n');
+    if (!prompt && !g.style) { flash('先输入视频提示词'); return; }
+    const workflow = wfOptions().find((option) => option.id === g.wf && (option.kinds || []).includes('video'));
+    if (!workflow) {
+      const button = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-generator .wfsel .gm-btn`);
+      if (button) button.click();
+      flash('先选择视频工作流');
+      return;
+    }
+
+    g.busy = true;
+    g.status = '准备视频工作流…';
+    n.status = 'running';
+    n.statusText = g.status;
+    n.artifacts = [];
+    n.job = newJob(n, 'video', { wf: g.wf, title: prompt });
+    g.job = n.job;
+    const job = n.job;
+    const canceled = () => job.phase === 'canceled' || getNode(n.id) !== n;
+    patchJob(n.job, { phase: 'running', note: '准备中' });
+    rerenderNode(n.id);
+
+    try {
+      const graph = await loadGraphById(g.wf);
+      if (canceled()) return;
+      if (!graph) throw new Error('视频工作流为空');
+      const analysis = await postJson('/api/analyze', { graph });
+      if (canceled()) return;
+      if (!analysis.ok) throw new Error(analysis.error || '视频工作流分析失败');
+      const style = await styleOf(g.style).catch(() => null);
+      if (canceled()) return;
+      const graphGen = { ...g, prompt: style ? applyStylePrompt(prompt, style) : prompt };
+      const hasImageSlot = (analysis.slots || []).some((slot) => slot.kind === 'image');
+      const referenceData = videoReferenceOf(n);
+      let referenceName = '';
+      if (referenceData && hasImageSlot) {
+        const ext = (referenceData.match(/^data:image\/(png|jpeg|webp)/i) || [])[1] || 'png';
+        referenceName = await uploadImageData(referenceData, `${n.id}-video-ref.${ext === 'jpeg' ? 'jpg' : ext}`);
+        if (canceled()) return;
+      }
+      const applied = setVideoGraphOptions(graph, analysis.slots, graphGen, referenceName);
+      const result = await postJson('/api/run', { graph });
+      if (canceled()) {
+        if (result.ok && result.prompt_id) await postJson('/api/queue/cancel', { prompt_id: result.prompt_id }).catch(() => {});
+        return;
+      }
+      if (!result.ok || !result.prompt_id) throw new Error(String(result.error || '提交视频任务失败').slice(0, 180));
+
+      n.pid = result.prompt_id;
+      n.status = 'queued';
+      n.statusText = `排队中 · ${result.prompt_id.slice(0, 8)}`
+        + (!applied.durationApplied ? ' · 工作流不支持时长参数' : '')
+        + (!applied.aspectApplied ? ' · 画幅由工作流决定' : '')
+        + (!applied.sizeApplied ? ' · 尺寸由工作流决定' : '')
+        + (referenceData && !applied.referenceApplied ? ' · 工作流未接入首帧' : '');
+      g.status = n.statusText;
+      patchJob(n.job, {
+        phase: 'queued', pid: result.prompt_id,
+        wf: wfLabel(g.wf), dims: `${applied.dims[0]}×${applied.dims[1]}`,
+        note: applied.durationApplied ? `${g.duration}秒` : '工作流未提供时长输入',
+      });
+      resetProgress(n);
+      rerenderNode(n.id);
+      pollJob(n);
+      queueSave();
+    } catch (error) {
+      if (canceled()) return;
+      g.busy = false;
+      g.status = `生成失败：${error.message}`;
+      n.status = 'error'; n.statusText = g.status;
+      finishJob(n.job, 'error', error.message);
+      rerenderNode(n.id);
+      flash(g.status);
+    }
   }
 
   // ---------- 工作流设置抽屉：参数不铺在节点上，集中在这里改 ----------
@@ -7751,10 +8127,10 @@
     return [v.slice(0, i), v.slice(i + 1)];
   }
 
-  // 哪些输入口能接多张：文本 / 图片节点的 `in` 口是「一批参考素材」，可以同时接多张图；
+  // 哪些输入口能接多张：文本 / 图片 / 视频节点的 `in` 口可以同时接提示词和参考素材；
   // 工作流插槽和图片输出口仍然一对一（一个插槽只能有一个来源，多来源在提交图上无法表达）。
   function isMultiIn(n, key) {
-    return !!n && (n.type === 'image' || n.type === 'text') && key === 'in';
+    return !!n && (n.type === 'image' || n.type === 'text' || n.type === 'video') && key === 'in';
   }
 
   // 连线变了要立刻更新参考图缩略图：rerenderNode 在「用户正在这个节点里输入」时会跳过重建，
@@ -7802,6 +8178,7 @@
     }
     state.links.push({ id: uid('l'), from, to, toKey: key });
     const src = getNode(from);
+    if (dst && dst.type === 'video') dst.linked = true;
     if (src && src.type === 'wf' && dst && (dst.type === 'out' || dst.type === 'video')) {
       dst.artifacts = artifactsForNode(dst, src.artifacts || []);
       dst.statusText = src.statusText || '';
@@ -7880,12 +8257,12 @@
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
 
-  // 视频节点：只收视频产物。它不挂生成面板——作用是把视频生成工作流的结果
-  // 单独摆在画布上，能播放、能翻看同一批里的其它视频、能下载。
+  // 视频节点可独立生成视频，也可接收工作流产物；播放器只展示视频。
   function addVideoNode(x, y, extra = {}, raw = false) {
     const n = {
       id: uid('v'), type: 'video', title: '视频', x, y,
-      artifacts: [], statusText: '', linked: false, videoIndex: 0, ...extra,
+      artifacts: [], statusText: '', linked: false, videoIndex: 0,
+      gen: { prompt: '', wf: '', aspect: '16:9', resolution: '720p', duration: 5 }, ...extra,
     };
     state.nodes.push(n); renderAll(); queueSave(); if (!raw) commit(); return n;
   }
@@ -8288,8 +8665,10 @@
       if (n.pollOff) { clearInterval(n.timer); n.timer = null; return; }
       if (!res.ok) {
         n.status = 'error'; n.statusText = res.error || '查询失败';
-        clearInterval(n.timer); n.timer = null; rerenderNode(n.id);
+        clearInterval(n.timer); n.timer = null;
         finishJob(n.job, 'error', n.statusText);
+        if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
+        rerenderNode(n.id);
         return;
       }
       const secs = Math.round((Date.now() - started) / 1000);
@@ -8301,6 +8680,7 @@
         // 和图片节点同一条规矩：这一拍没数字就沿用上一次的，别把队列条目上的 % 抹掉
         patchJob(n.job, { phase: res.status, progress: n.progress ?? null, secs });
         paintWfStatus(n);          // 轻量更新，避免打断用户输入
+        if (n.type === 'video' && n.gen) { n.gen.status = n.statusText; refreshGenPanel(n); }
         return;
       }
       // 刚提交时 /history 与 /queue 都可能还查不到，先宽限几轮；ComfyUI 重启后会永久丢失记录
@@ -8316,6 +8696,7 @@
         n.status = 'error';
         n.statusText = '任务记录已丢失（ComfyUI 可能已重启），请重新运行';
         finishJob(n.job, 'error', '记录丢失');
+        if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
         rerenderNode(n.id);
         return;
       }
@@ -8336,13 +8717,17 @@
         n.status = 'error'; n.statusText = `执行出错：${res.error}`;
         finishJob(n.job, 'error', String(res.error).slice(0, 30));
       } else if ((res.artifacts || []).length) {
-        n.status = 'done'; n.artifacts = res.artifacts;
-        n.statusText = `完成 · ${secs}s · ${res.artifacts.length} 个产物`;
-        finishJob(n.job, 'done', `${res.artifacts.length} 个产物`);
+        n.artifacts = artifactsForNode(n, res.artifacts);
+        n.status = 'done';
+        n.statusText = n.artifacts.length
+          ? `完成 · ${secs}s · ${n.artifacts.length} 个产物`
+          : `完成 · ${secs}s（工作流没有输出视频）`;
+        finishJob(n.job, 'done', n.artifacts.length ? `${n.artifacts.length} 个产物` : '没有视频产物');
       } else {
         n.status = 'done'; n.statusText = `完成 · ${secs}s（无产物，请确认工作流含保存节点）`;
         finishJob(n.job, 'done', '无产物');
       }
+      if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
       syncOutputs(n);
       rerenderNode(n.id);
       queueSave();
@@ -8422,7 +8807,7 @@
       id: `j${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       nodeId: n ? n.id : null,
       title: jobTitleOf(n, extra.title),
-      kind,                                  // image（生成器） / wf（工作流节点运行）
+      kind,                                  // image / video（生成器） / wf（工作流节点运行）
       wf: wfLabel(extra.wf),
       dims: extra.dims || '',
       phase: 'queued', pid: null, progress: null,
@@ -8506,7 +8891,7 @@
     if (!state.jobs.length) {
       const empty = document.createElement('div');
       empty.className = 'q-empty';
-      empty.textContent = '还没有任务。图片节点选中后点「生成」，工作流节点点「运行」，都会出现在这里。';
+      empty.textContent = '还没有任务。图片或视频节点点「生成」、工作流节点点「运行」，都会出现在这里。';
       listEl.appendChild(empty);
       return;
     }
@@ -8620,12 +9005,16 @@
         updateTextTools();
       }
       if (n.timer) { clearInterval(n.timer); n.timer = null; }
-      if (n.gen && job.kind === 'image') {
+      if (n.gen && (job.kind === 'image' || job.kind === 'video')) {
         n.gen.attempt = null;
         n.gen.busy = false;
         n.gen.status = '已取消';
         clearProgress(n);
-        refreshGenPanel(n);
+        if (n.type === 'video') {
+          n.pollOff = true;
+          n.status = 'idle'; n.statusText = '已取消';
+          rerenderNode(n.id);
+        } else refreshGenPanel(n);
       }
       if (n.type === 'wf') {
         n.pollOff = true;                 // 让在飞的那次轮询回来时自己收手
@@ -9293,6 +9682,9 @@
         // 否则刷新后图片节点只剩一张图，参数和多图切换全丢（运行态 busy/status 不存）
         gen: n.gen ? {
           prompt: n.gen.prompt, wf: n.gen.wf,
+          // 视频生成参数与提示词一起随画布保存
+          resolution: n.gen.resolution, duration: n.gen.duration,
+          reference: n.gen.reference || '',
           // 遮罩换走之前是哪一份：不存的话刷新后清掉遮罩就卡在「局部重绘」上，
           // 出图和原图逐位相同（这类坏最难自查），而用户也没法还原刚才的选择
           wfMaskBack: n.gen.wfMaskBack || undefined,
