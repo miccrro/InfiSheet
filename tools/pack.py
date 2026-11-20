@@ -34,6 +34,7 @@ INCLUDE_FILES = [
     "docker-compose.yml",
     ".dockerignore",
     "README.md",
+    "CHANGELOG.md",
     "验收报告.md",
     "package.json",
     "package-lock.json",

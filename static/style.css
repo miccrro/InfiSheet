@@ -1113,8 +1113,8 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 
 /* 图片节点：更大的画布区 */
 .node.image { width: 640px; }
-/* 视频节点：和图片节点同宽，中间是一块播放器 */
-.node.video { width: 640px; }
+/* 视频节点：节点宽度跟随播放器画幅，避免竖屏画面被宽节点框住 */
+.node.video { width: min(640px, calc(760px * var(--video-node-ar, 16 / 9))); }
 /* 框的尺寸完全交给图片：JS 把真实比例写进 --ar，框用 aspect-ratio 自己算高。
    宽取 min(可用宽, 高度上限 760px×比例) —— 横图铺满宽度，竖图被 760 封顶后自动收窄，
    两种情况下框和图片都严丝合缝，object-fit 没有多余空间可补（黑边就是这么来的） */
@@ -1189,29 +1189,85 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .video-body { display: flex; flex-direction: column; gap: 6px; }
 .node.video .video-frame {
   position: relative;
-  width: min(100%, calc(760px * var(--video-ar, 16 / 9)));
+  /* 节点宽度已经由 JS 按画幅计算。这里必须铺满节点，不能用 auto+auto margin
+     让 flex 项按视频的固有宽度收缩，否则竖屏生成结果会比节点外框窄一截。 */
+  width: 100%;
   aspect-ratio: var(--video-ar, 16 / 9);
   margin-inline: auto;
   background: #101010; border-radius: 8px; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
 }
 .node.video .video-frame.is-empty {
-  width: 100%; aspect-ratio: auto; min-height: 360px;
+  width: 100%; aspect-ratio: var(--video-ar, 16 / 9); min-height: 0;
 }
 .node.video .video-frame video {
   width: 100%; height: 100%; object-fit: contain; display: block;
   background: #101010;
 }
-.node.video .video-frame.has-reference { position: relative; }
+.video-controls {
+  position: absolute; z-index: 4; inset: auto 0 0;
+  box-sizing: border-box; min-height: 48px; padding: 8px 10px;
+  display: flex; align-items: center; gap: 5px;
+  isolation: isolate; color: #f5f5f5; background: transparent;
+}
+.video-controls::before {
+  content: ''; position: absolute; z-index: 0; left: 0; right: 0; bottom: 0; height: 88px;
+  pointer-events: none;
+  background: linear-gradient(to bottom,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.08) 28%,
+    rgba(0, 0, 0, 0.28) 62%,
+    rgba(0, 0, 0, 0.58) 100%);
+}
+.video-controls > * { position: relative; z-index: 1; align-self: center; }
+.video-frame:fullscreen .video-controls::before { height: 112px; }
+.video-controls .video-control-btn, .video-controls .video-time, .video-controls .video-seek {
+  color: #f5f5f5;
+}
+.video-control-btn {
+  flex: 0 0 24px; width: 24px; height: 24px; min-height: 24px; aspect-ratio: 1 / 1; padding: 2px;
+  box-sizing: border-box; display: grid; place-items: center; border: 0; border-radius: 5px;
+  color: inherit; background: transparent; cursor: pointer;
+}
+.video-control-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+.video-control-btn svg { display: block; flex: none; width: 16px; height: 16px; aspect-ratio: 1 / 1; object-fit: contain; }
+.video-time {
+  flex: 0 0 auto; min-width: 0; color: rgba(255, 255, 255, 0.96);
+  font-size: 12px; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.node.video .video-controls .video-seek {
+  flex: 1 1 auto; min-width: 24px; width: auto; height: 16px; margin: 0; padding: 0;
+  border: 0; border-radius: 0; appearance: none; -webkit-appearance: none; cursor: pointer;
+  background: transparent; box-shadow: none;
+}
+.node.video .video-controls .video-seek::-webkit-slider-runnable-track {
+  height: 4px; border: 0; border-radius: 99px;
+  background: linear-gradient(to right, #fff 0%, #fff var(--played, 0%), rgba(255, 255, 255, 0.45) var(--played, 0%), rgba(255, 255, 255, 0.45) 100%);
+}
+.node.video .video-controls .video-seek::-webkit-slider-thumb {
+  width: 10px; height: 10px; margin-top: -3px; border: 0; border-radius: 50%;
+  appearance: none; -webkit-appearance: none; background: #fff; box-shadow: 0 0 2px rgba(0, 0, 0, 0.65);
+}
+.node.video .video-controls .video-seek::-moz-range-track {
+  height: 4px; border: 0; border-radius: 99px; background: rgba(255, 255, 255, 0.45);
+}
+.node.video .video-controls .video-seek::-moz-range-progress {
+  height: 4px; border-radius: 99px; background: #fff;
+}
+.node.video .video-controls .video-seek::-moz-range-thumb {
+  width: 10px; height: 10px; border: 0; border-radius: 50%; background: #fff;
+}
+.node.video .video-controls .video-seek:hover,
+.node.video .video-controls .video-seek:focus { border: 0; border-color: transparent; box-shadow: none; }
+.video-control-btn:focus-visible, .node.video .video-controls .video-seek:focus-visible { outline: 2px solid #9abaff; outline-offset: 2px; }
+@media (max-width: 560px) {
+  .video-controls { gap: 4px; padding-inline: 7px; }
+  .video-time { font-size: 11px; }
+}
 .node.video .video-reference-preview {
   position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: contain; opacity: 0.72; pointer-events: none;
+  object-fit: contain; opacity: 1; pointer-events: none;
   user-select: none; -webkit-user-drag: none;
-}
-.node.video .video-frame.has-reference .video-empty {
-  position: absolute; bottom: 12px; z-index: 1;
-  padding: 7px 10px; border-radius: 8px;
-  background: rgba(12, 12, 12, 0.76);
 }
 .video-reference {
   display: flex; align-items: center; gap: 8px; margin: 1px 0 7px;
@@ -1230,18 +1286,7 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
   color: var(--faint); font-size: 12px;
 }
 .video-empty svg { width: 38px; height: 38px; opacity: 0.5; }
-/* 右上角下载 / 左下角「第几段」/ 两侧翻页：和图片节点那套角标同一个语言，
-   悬停才浮出，不压画面 */
-.video-download {
-  position: absolute; right: 8px; bottom: 8px; z-index: 2;
-  padding: 3px 9px; border-radius: 7px; text-decoration: none;
-  border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(20, 20, 20, 0.72);
-  color: #e6e6e6; font-size: 10.5px;
-  opacity: 0.72; transition: opacity 0.15s, background 0.15s, color 0.15s;
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-}
-.node.video:hover .video-download, .node.video.selected .video-download { opacity: 1; }
-.video-download:hover { background: rgba(48, 48, 48, 0.92); color: #fff; }
+/* 左下角「第几段」/ 两侧翻页：和图片节点那套角标同一个语言，悬停才浮出 */
 .video-count {
   position: absolute; left: 8px; bottom: 8px; z-index: 2;
   padding: 2px 8px; border-radius: 999px; pointer-events: none;
@@ -1263,7 +1308,6 @@ body.resizing, body.resizing * { cursor: nwse-resize !important; }
 .video-nav-btn.next { right: 8px; }
 .node.video:hover .video-nav-btn, .node.video.selected .video-nav-btn { opacity: 0.95; }
 .video-nav-btn:hover { background: rgba(48, 48, 48, 0.92); color: #fff; opacity: 1; }
-.node.video .video-status { text-align: left; }
 .thumb-empty {
   display: flex; flex-direction: column; width: 100%;
   padding: 14px 12px 10px; gap: 10px;
@@ -3458,7 +3502,7 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
 
 /* ---------- 图片工具条（选中一张有图的节点时浮在它上方） ---------- */
 /* 和 #alignBar 同一套观感：屏幕坐标、不吃画布缩放、深色玻璃底 */
-#imgTools, #textTools {
+#imgTools, #videoTools, #textTools {
   position: fixed; z-index: 46;
   display: flex; align-items: center; gap: 2px; padding: 4px;
   background: rgba(38, 38, 38, 0.96);
@@ -3469,9 +3513,9 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
      压住标题时至少还能点中标题，不至于「点了没反应」。 */
   pointer-events: none;
 }
-#imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn { pointer-events: auto; }
-#imgTools.hidden, #textTools.hidden { display: none; }
-#imgTools .it-btn, #textTools .it-btn, .tf-bar .it-btn {
+#imgTools .it-btn, #videoTools .it-btn, #textTools .it-btn, .tf-bar .it-btn { pointer-events: auto; }
+#imgTools.hidden, #videoTools.hidden, #textTools.hidden { display: none; }
+#imgTools .it-btn, #videoTools .it-btn, #textTools .it-btn, .tf-bar .it-btn {
   position: relative;
   display: inline-flex; align-items: center; gap: 4px;
   height: 26px; padding: 0 6px; border: none; border-radius: 8px;
@@ -3479,15 +3523,15 @@ body.asset-resizing #assetPane .asset-grip::after { background: var(--accent); }
   font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-#imgTools .it-btn:hover, #textTools .it-btn:hover, .tf-bar .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
-#imgTools .it-btn:active, #textTools .it-btn:active, .tf-bar .it-btn:active { background: rgba(255, 255, 255, 0.2); }
+#imgTools .it-btn:hover, #videoTools .it-btn:hover, #textTools .it-btn:hover, .tf-bar .it-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+#imgTools .it-btn:active, #videoTools .it-btn:active, #textTools .it-btn:active, .tf-bar .it-btn:active { background: rgba(255, 255, 255, 0.2); }
 /* 「扩图」是开关：开着的时候按钮亮着，提示「再点一次收起」 */
-#imgTools .it-btn.on, #textTools .it-btn.on, .tf-bar .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
-#imgTools .it-btn .oi, #textTools .it-btn .oi, .tf-bar .it-btn .oi { width: 16px; height: 16px; }
+#imgTools .it-btn.on, #videoTools .it-btn.on, #textTools .it-btn.on, .tf-bar .it-btn.on { background: rgba(110, 168, 254, 0.22); color: #e8f1ff; }
+#imgTools .it-btn .oi, #videoTools .it-btn .oi, #textTools .it-btn .oi, .tf-bar .it-btn .oi { width: 16px; height: 16px; }
 /* 图标 + 文案都显示：只留图标时用户得逐个悬停才知道是什么，十个图标里有五个是「涂抹 / 编辑」类，
    猜不出来。整条因此宽到 ~560px，会盖住旁边节点的标题——positionImgTools() 里遇到重叠会把
    整条往上抬、再不行改成和节点边缘对齐，不靠缩窄来回避。 */
-#imgTools .it-btn span, #textTools .it-btn span, .tf-bar .it-btn span { display: inline; }
+#imgTools .it-btn span, #videoTools .it-btn span, #textTools .it-btn span, .tf-bar .it-btn span { display: inline; }
 /* 窄屏收纳：「更多编辑」平时不出现；条上一挂 .is-narrow，它顶替掉那四个「模型编辑」。
    被收起的按钮走 display:none（不占位、不被 Tab 扫到），但它们的功能在菜单里还在，
    菜单是键盘可达的（见 openPopMenu 的键盘分支）。 */

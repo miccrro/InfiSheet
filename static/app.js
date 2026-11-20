@@ -230,7 +230,7 @@
         bar.style.width = `${Math.max(2, pct)}%`;
       }
     }
-    // 图片中央的「生成中 42%」跟着进度走
+    // 图片/视频中央的生成遮罩共用同一套进度显示
     const ov = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .gen-overlay`);
     if (ov) {
       ov.classList.toggle('hidden', !shown);
@@ -321,6 +321,7 @@
     positionAlignBar();                    // 工具条是屏幕坐标，视图一动就得重新贴回选区
     positionLinkDel();                     // 连线的删除键同理：世界一动，屏幕坐标就得跟着重算
     positionImgTools();                    // 图片工具条挂在节点上方，平移/缩放同样要跟着走
+    positionVideoTools();                  // 视频工具条同样是屏幕坐标，抓手平移/缩放时跟随节点
     positionTextTools();                   // 提示词格式条同理
     if (imgPanel) placeImgPanel();         // 调色面板贴着图片，视图一动也要贴回去
     // 扩图时面板贴在画布外框上：外框是世界坐标，但「别顶出屏幕」是屏幕坐标，视图一动就得重算
@@ -369,11 +370,33 @@
     scheduleMinimap();
   }
 
+  function videoDisplayAspect(n) {
+    return n && n.gen && n.gen.aspectSet && n.gen.aspect
+      ? n.gen.aspect : (n && n.videoAspect) || (n && n.gen && n.gen.aspect) || '16:9';
+  }
+
+  function syncVideoFrameAspect(n, frame) {
+    const [w, h] = String(videoDisplayAspect(n)).split(/[:/]/).map(Number);
+    if (!w || !h) return;
+    frame.style.setProperty('--video-ar', `${w} / ${h}`);
+    const nodeEl = frame.closest('.node.video');
+    if (nodeEl) {
+      nodeEl.style.setProperty('--video-node-ar', String(w / h));
+      nodeEl.style.width = `${nodeWidth(n)}px`;
+      reindexNodePorts(n.id);
+      renderLinks();
+    }
+    scheduleLayout();
+  }
+
   function nodeWidth(n) {
+    if (n && n.type === 'video') {
+      const [w, h] = String(videoDisplayAspect(n)).split(/[:/]/).map(Number);
+      return Math.min(640, Math.round(760 * Math.min(1, (w || 16) / (h || 9))));
+    }
     if (n && n.w) return n.w;
     if (n && n.type === 'wf') return 360;
     if (n && n.type === 'image') return 640;
-    if (n && n.type === 'video') return 640;
     if (n && n.type === 'text') return 640;
     if (n && n.type === 'out') return 300;
     return 280;
@@ -393,6 +416,11 @@
     el.className = `node ${n.type}`;
     el.dataset.id = n.id;
     el.style.transform = `translate(${n.x}px, ${n.y}px)`;
+    if (n.type === 'video') {
+      const [w, h] = String(videoDisplayAspect(n)).split(/[:/]/).map(Number);
+      el.style.setProperty('--video-node-ar', String((w || 16) / (h || 9)));
+      el.style.width = `${nodeWidth(n)}px`;
+    }
     // 扩图边框的拖动监听挂在 window 上：节点一重建就得把旧的摘掉，
     // 否则旧监听还在改同一个节点的 pad，拖一下动两倍
     closeOpSession(n.id);
@@ -474,10 +502,11 @@
     const body = document.createElement('div');
     body.className = 'node-body';
     card.appendChild(body);
-    if (n.w) el.style.width = `${n.w}px`;
+    if (n.type === 'video') el.style.width = `${nodeWidth(n)}px`;
+    else if (n.w) el.style.width = `${n.w}px`;
 
     // 图片节点不再支持拖拽缩放：尺寸固定，避免缩放手柄和连线/面板抢事件
-    if (n.type !== 'image') {
+    if (n.type !== 'image' && n.type !== 'video') {
       const handle = document.createElement('div');
       handle.className = 'node-resize';
       // 不写 title：那是原生 tooltip，鼠标一靠近右下角就弹一条黑框盖在画布上。
@@ -853,7 +882,8 @@
   function applyNodeSize(n, el0) {
     const el = el0 || nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
     if (!el) return;
-    if (n.w) el.style.width = `${n.w}px`;
+    if (n.type === 'video') el.style.width = `${nodeWidth(n)}px`;
+    else if (n.w) el.style.width = `${n.w}px`;
     const thumb = el.querySelector('.thumb');
     if (thumb && n.h) thumb.style.height = `${n.h}px`;
     // 文本节点的高度落在提示词框上：设了固定高就自己滚，没设就按内容长
@@ -1807,6 +1837,16 @@
     return out;
   }
 
+  function videoRefsInPrompt(n) {
+    const refs = refsOf(n);
+    const prompt = String(n && n.gen && n.gen.prompt || '');
+    const label = refLabelFn(n);
+    const mentioned = refs.filter((ref) => prompt.includes(`@[${label(ref.node)}]`));
+    if (!mentioned.length) return refs;
+    const chosen = new Set(mentioned.map((ref) => ref.node.id));
+    return [...mentioned, ...refs.filter((ref) => !chosen.has(ref.node.id))];
+  }
+
   /* ---------------- 提示词：多个文本节点串起来 ---------------- */
   // 提示词可以从**多个**文本节点来，两种连法都算：
   //   * 链式：A → B → 图片（B 是 A 的下游，A 先拼）
@@ -1853,7 +1893,7 @@
   function renderRefs(n) {
     const wrap = nodesEl.querySelector(`[data-refs-for="${CSS.escape(n.id)}"]`);
     if (!wrap) return;
-    const refs = refsOf(n);
+    const refs = n.type === 'video' ? videoRefsInPrompt(n) : refsOf(n);
     // 套了风格也在这排里占一格：风格和参考图都是「这次真正会送进去的东西」，
     // 图能看见、风格只是一颗写着名字的按钮，心里没底。缩略图 + ✕ 跟参考图一个手感。
     const styleRef = (n.gen && n.gen.style && n.gen.style.cn) ? n.gen.style : null;
@@ -1960,7 +2000,8 @@
   function refIndexOf(owner, name) {
     if (!owner) return 0;
     const labelOf = refLabelFn(owner);
-    return refsOf(owner).findIndex((r) => labelOf(r.node) === name) + 1;
+    const refs = owner.type === 'video' ? videoRefsInPrompt(owner) : refsOf(owner);
+    return refs.findIndex((r) => labelOf(r.node) === name) + 1;
   }
 
   function makeChip(name, owner) {
@@ -2282,8 +2323,15 @@
     el.focus();
     caretAfterToken(el, token);
     n.gen.extras = [...new Set([...(n.gen.extras || []), src.id])];
+    if (n.type === 'video' && n.gen.reference) {
+      // @ 是用户明确选中的新参考图，移除旧的手动首帧，避免预览与实际输入不一致。
+      n.gen.reference = '';
+      const row = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-reference`);
+      if (row) { row.innerHTML = ''; row.classList.add('hidden'); }
+    }
     el.dispatchEvent(new Event('input', { bubbles: true }));   // 复用 oninput：同步存档 + 高度 + 缩略图
     renderRefs(n);
+    if (n.type === 'video') refreshVideoPreview(n);
   }
 
   function openCanvasMaterialMenu(anchor, n) {
@@ -2766,6 +2814,51 @@
     btn.classList.toggle('has-thumb', !!thumb);
     btn.title = on ? `已套用风格：${ref.cn}（点一下换掉）`
       : '给这次生成套一个风格：397 个预设（动漫 / 摄影 / 绘画 …）';
+  }
+
+  // 视频节点使用独立的镜头/动态风格，不引用图片节点的静态画风库。
+  const VIDEO_STYLE_MODES = [
+    { id: 'cinematic', label: '电影叙事', prompt: '电影叙事影像，使用有层次的景别与平滑镜头运动，真实自然的动作节奏，电影级光影；主体外观、服饰与场景在镜头中保持连续一致。' },
+    { id: 'commercial', label: '商业广告', prompt: '精致的商业广告短片，主体突出，构图干净，镜头运动利落流畅，光线与材质表现精美，节奏明快；不添加文字或字幕。' },
+    { id: 'documentary', label: '纪实手持', prompt: '自然纪实摄影，轻微真实的手持镜头感与环境光，人物动作克制可信，保留现场氛围，镜头连续稳定，不做夸张特效。' },
+    { id: 'anime', label: '二维动画', prompt: '二维动画影像，线条与色彩风格统一，角色造型前后一致，动作连贯清晰，镜头运动平滑，避免闪烁与画面变形。' },
+    { id: '3d-animation', label: '三维动画', prompt: '高质量三维动画影像，角色与场景造型统一，动作具有自然节奏和重量感，镜头运动平滑，光影与材质稳定连续。' },
+    { id: 'ink', label: '东方水墨', prompt: '东方水墨动态影像，墨色浓淡和留白层次自然变化，运镜舒缓含蓄，人物与景物的运动连贯，整体意境统一。' },
+    { id: 'vintage', label: '复古胶片', prompt: '复古胶片影像质感，柔和颗粒与温暖色调，轻微自然的胶片闪烁，镜头节奏舒缓，主体与场景保持稳定连续。' },
+    { id: 'music-video', label: '音乐影像', prompt: '富有节奏感的音乐影像，镜头运动与光影变化有韵律，构图鲜明，动作连贯，转场自然；不生成文字或字幕。' },
+  ];
+
+  function paintVideoStyleChip(btn, styleId) {
+    if (!btn) return;
+    const mode = VIDEO_STYLE_MODES.find((item) => item.id === styleId);
+    const ico = btn.querySelector('.gs-ico');
+    const name = btn.querySelector('.gs-name');
+    if (ico) ico.innerHTML = icon('palette');
+    if (name) name.textContent = mode ? mode.label : '风格';
+    btn.classList.toggle('on', !!mode);
+    btn.classList.remove('has-thumb');
+    btn.title = mode ? `视频风格：${mode.label}` : '选择视频风格模式';
+  }
+
+  function openVideoStyleMenu(anchor, n) {
+    const g = n.gen || (n.gen = {});
+    const selectMode = (mode) => {
+      g.videoStyle = mode ? mode.id : null;
+      paintVideoStyleChip(anchor, g.videoStyle);
+      queueSave();
+      commit();
+      flash(mode ? `视频风格：${mode.label}` : '已取消视频风格');
+    };
+    const items = [
+      ['不使用风格', () => selectMode(null), '', undefined, !g.videoStyle],
+      ...VIDEO_STYLE_MODES.map((mode) => [mode.label, () => selectMode(mode), '', undefined, g.videoStyle === mode.id]),
+    ];
+    openPopMenu(anchor, items, '视频风格模式');
+  }
+
+  function applyVideoStylePrompt(prompt, styleId) {
+    const mode = VIDEO_STYLE_MODES.find((item) => item.id === styleId);
+    return mode ? `${prompt}\n\n视频风格与镜头语言：${mode.prompt}` : prompt;
   }
 
   function styleThumbURL(rel) {
@@ -3950,11 +4043,187 @@
     return wrap;
   }
 
-  function videoReferenceOf(n) {
+  function videoReferenceOf(n, prompt) {
     if (n && n.gen && n.gen.reference) return n.gen.reference;
+    const refs = refsOf(n).filter((item) => item.node && item.node.dataURL);
+    const label = refLabelFn(n);
+    const ref = prompt
+      ? refs.find((item) => String(prompt).includes(`@[${label(item.node)}]`))
+      : null;
+    if (ref) return ref.node.dataURL;
+    const first = refs[0];
+    if (first) return first.node.dataURL;
     const source = state.links.filter((link) => link.to === n.id && link.toKey === 'in')
       .map((link) => getNode(link.from)).find((node) => node && node.type === 'image' && node.dataURL);
     return source ? source.dataURL : '';
+  }
+
+  let videoToolsEl = null;
+
+  function videoToolNode() {
+    if (state.selected.size !== 1) return null;
+    const n = getNode([...state.selected][0]);
+    return n && n.type === 'video' ? n : null;
+  }
+
+  function ensureVideoTools() {
+    if (videoToolsEl && videoToolsEl.isConnected) return videoToolsEl;
+    const bar = document.createElement('div');
+    bar.id = 'videoTools';
+    bar.className = 'hidden';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', '视频工具');
+    bar.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const addButton = (action, label, glyph, title, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'it-btn';
+      button.dataset.action = action;
+      button.title = title;
+      button.setAttribute('aria-label', title);
+      button.innerHTML = `${icon(glyph)}<span>${label}</span>`;
+      button.onclick = (ev) => { ev.stopPropagation(); onClick(button); };
+      bar.appendChild(button);
+      return button;
+    };
+    addButton('fullscreen', '全屏', 'expand', '全屏播放视频', () => {
+      const n = videoToolNode();
+      const frame = n && nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-frame`);
+      if (!frame) return;
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else if (frame.requestFullscreen) frame.requestFullscreen().catch((error) => flash(`无法全屏：${error.message}`));
+    });
+    addButton('download', '下载', 'download', '下载当前视频', () => {
+      const n = videoToolNode();
+      const videos = n ? (n.artifacts || []).filter((item) => item.kind === 'video') : [];
+      if (!videos.length) return;
+      const index = ((Number(n.videoIndex) || 0) % videos.length + videos.length) % videos.length;
+      const artifact = videos[index];
+      const link = document.createElement('a');
+      link.href = artifactURL(artifact);
+      link.download = artifact.filename || 'video';
+      link.click();
+    });
+    document.body.appendChild(bar);
+    window.addEventListener('resize', positionVideoTools);
+    videoToolsEl = bar;
+    return bar;
+  }
+
+  function positionVideoTools() {
+    const bar = videoToolsEl;
+    const n = videoToolNode();
+    if (!bar || !n || bar.classList.contains('hidden')) return;
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = bar.offsetWidth || 120;
+    const height = bar.offsetHeight || 34;
+    const left = clamp(rect.left + rect.width / 2 - width / 2, 10, Math.max(10, window.innerWidth - width - 10));
+    const topBar = document.getElementById('topBar');
+    const floor = (topBar ? topBar.offsetHeight : 44) + 6;
+    const maxTop = Math.max(floor, window.innerHeight - height - 8);
+    const top = clamp(rect.top - height - 8, floor, maxTop);
+    bar.style.left = `${Math.round(left)}px`;
+    bar.style.top = `${Math.round(top)}px`;
+  }
+
+  function updateVideoTools() {
+    const n = videoToolNode();
+    const bar = ensureVideoTools();
+    bar.classList.toggle('hidden', !n);
+    if (!n) return;
+    const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    const player = el && el.querySelector('.video-frame video');
+    const videos = (n.artifacts || []).filter((item) => item.kind === 'video');
+    const fullscreen = bar.querySelector('[data-action="fullscreen"]');
+    const download = bar.querySelector('[data-action="download"]');
+    if (fullscreen) fullscreen.disabled = !player;
+    if (download) download.disabled = !videos.length;
+    positionVideoTools();
+  }
+
+  function buildVideoControls(player, frame) {
+    const controls = document.createElement('div');
+    controls.className = 'video-controls';
+    controls.setAttribute('role', 'group');
+    controls.setAttribute('aria-label', '视频播放控制');
+    controls.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const makeButton = (kind, label) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `video-control-btn ${kind}`;
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      button.addEventListener('click', (ev) => ev.stopPropagation());
+      return button;
+    };
+    const play = makeButton('video-play', '播放');
+    const current = document.createElement('span');
+    current.className = 'video-time video-current';
+    const seek = document.createElement('input');
+    seek.type = 'range'; seek.min = '0'; seek.max = '1000'; seek.value = '0';
+    seek.className = 'video-seek';
+    seek.title = '播放进度'; seek.setAttribute('aria-label', '播放进度');
+    seek.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    const duration = document.createElement('span');
+    duration.className = 'video-time video-duration';
+    const volume = makeButton('video-volume', '静音');
+    const fullscreen = makeButton('video-fullscreen', '全屏');
+    const playIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>';
+    const pauseIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM14 5h4v14h-4z" fill="currentColor"/></svg>';
+    const volumeIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 9a4 4 0 0 1 0 6m2-9a8 8 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+    const muteIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="m16 9 5 6m0-6-5 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+    const timeText = (value) => {
+      const seconds = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+      return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+    };
+    const paintPlay = () => {
+      const isPlaying = !player.paused && !player.ended;
+      play.innerHTML = isPlaying ? pauseIcon : playIcon;
+      const label = isPlaying ? '暂停' : '播放';
+      play.title = label; play.setAttribute('aria-label', label);
+    };
+    const paintTimeline = () => {
+      const total = Number.isFinite(player.duration) ? player.duration : 0;
+      const ratio = total > 0 ? Math.max(0, Math.min(1, player.currentTime / total)) : 0;
+      current.textContent = timeText(player.currentTime);
+      duration.textContent = timeText(total);
+      seek.value = String(Math.round(ratio * 1000));
+      seek.style.setProperty('--played', `${ratio * 100}%`);
+    };
+    const paintVolume = () => {
+      const muted = player.muted || player.volume === 0;
+      volume.innerHTML = muted ? muteIcon : volumeIcon;
+      const label = muted ? '取消静音' : '静音';
+      volume.title = label; volume.setAttribute('aria-label', label);
+    };
+    play.innerHTML = playIcon;
+    play.onclick = () => {
+      if (player.paused || player.ended) player.play().catch(() => {});
+      else player.pause();
+    };
+    player.addEventListener('play', paintPlay);
+    player.addEventListener('pause', paintPlay);
+    player.addEventListener('ended', paintPlay);
+    player.addEventListener('timeupdate', paintTimeline);
+    player.addEventListener('loadedmetadata', paintTimeline);
+    seek.addEventListener('input', () => {
+      if (Number.isFinite(player.duration) && player.duration > 0) {
+        player.currentTime = player.duration * Number(seek.value) / 1000;
+      }
+      paintTimeline();
+    });
+    volume.onclick = () => { player.muted = !player.muted; paintVolume(); };
+    fullscreen.innerHTML = icon('expand');
+    fullscreen.onclick = () => {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else if (frame.requestFullscreen) frame.requestFullscreen().catch(() => {});
+    };
+    paintPlay(); paintTimeline(); paintVolume();
+    controls.append(play, current, seek, duration, volume, fullscreen);
+    return controls;
   }
 
   function buildVideoBody(n) {
@@ -3962,10 +4231,13 @@
     wrap.className = 'video-body';
     const frame = document.createElement('div');
     frame.className = 'video-frame';
+    frame.style.setProperty('--video-ar', String(videoDisplayAspect(n)).replace(':', ' / '));
     const videos = (n.artifacts || []).filter((item) => item.kind === 'video');
     if (!videos.length) {
       frame.classList.add('is-empty');
-      const reference = videoReferenceOf(n);
+      // 连入图片只作为工作流参考输入，不把源图直接铺在视频节点上；
+      // 节点预览只展示用户在视频面板单独上传的首帧参考图。
+      const reference = n.gen && n.gen.reference || '';
       if (reference) {
         frame.classList.add('has-reference');
         const image = document.createElement('img');
@@ -3973,14 +4245,25 @@
         image.draggable = false;
         image.src = reference; image.alt = '视频首帧参考图';
         image.addEventListener('dragstart', (ev) => ev.preventDefault());
+        const fitReference = () => {
+          if (!image.naturalWidth || !image.naturalHeight) return;
+          // 和图片节点一样，默认按加载完成后的真实像素比例排布；用户手动选过画幅时，
+          // videoDisplayAspect 会保留手选值，由预览图在画幅内适配显示。
+          if (!(n.gen && n.gen.aspectSet)) {
+            n.videoAspect = `${image.naturalWidth}:${image.naturalHeight}`;
+          }
+          syncVideoFrameAspect(n, frame);
+        };
+        image.addEventListener('load', fitReference);
+        if (image.complete && image.naturalWidth) requestAnimationFrame(fitReference);
         frame.appendChild(image);
       }
-      const empty = document.createElement('div');
-      empty.className = 'video-empty';
-      empty.innerHTML = reference
-        ? `${NODE_ICON.video}<span>首帧参考 · 输入提示词后生成</span>`
-        : `${NODE_ICON.video}<span>${n.linked ? '等待视频生成…' : '输入提示词后生成视频'}</span>`;
-      frame.appendChild(empty);
+      if (!reference) {
+        const empty = document.createElement('div');
+        empty.className = 'video-empty';
+        empty.innerHTML = `${NODE_ICON.video}<span>${n.linked ? '等待视频生成…' : '输入提示词后生成视频'}</span>`;
+        frame.appendChild(empty);
+      }
     } else {
       const index = ((Number(n.videoIndex) || 0) % videos.length + videos.length) % videos.length;
       n.videoIndex = index;
@@ -3988,24 +4271,18 @@
       const url = artifactURL(artifact);
       const player = document.createElement('video');
       player.src = url;
-      player.controls = true;
+      player.controls = false;
       player.preload = 'metadata';
       player.playsInline = true;
+      // 视频画面不响应播放点击，指针事件交给节点本身，因此仍可从画面区域拖动节点。
       player.addEventListener('loadedmetadata', () => {
         if (player.videoWidth && player.videoHeight) {
-          frame.style.setProperty('--video-ar', `${player.videoWidth} / ${player.videoHeight}`);
-          scheduleLayout();
+          n.videoAspect = `${player.videoWidth}:${player.videoHeight}`;
+          syncVideoFrameAspect(n, frame);
         }
       });
       frame.appendChild(player);
-      const download = document.createElement('a');
-      download.className = 'video-download';
-      download.href = url;
-      download.download = artifact.filename || 'video';
-      download.textContent = '下载视频';
-      download.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-      download.addEventListener('click', (ev) => ev.stopPropagation());
-      frame.appendChild(download);
+      frame.appendChild(buildVideoControls(player, frame));
       if (videos.length > 1) {
         const count = document.createElement('span');
         count.className = 'video-count';
@@ -4030,14 +4307,28 @@
         frame.appendChild(nav);
       }
     }
-    wrap.appendChild(frame);
-    if (n.statusText) {
-      const status = document.createElement('div');
-      status.className = `wf-status video-status${n.status === 'error' ? ' error' : n.status === 'done' ? ' done' : n.status === 'running' || n.status === 'queued' ? ' running' : ''}`;
-      status.textContent = n.statusText;
-      wrap.appendChild(status);
+    // 视频节点沿用图片节点的生成遮罩与百分比展示；遮罩不拦截节点拖动/播放控制。
+    const overlay = document.createElement('div');
+    overlay.className = 'gen-overlay hidden';
+    overlay.innerHTML = '<span class="gen-overlay-text">生成中…</span>';
+    if (overlayVisible(n)) {
+      overlay.classList.remove('hidden');
+      overlay.querySelector('.gen-overlay-text').textContent = genOverlayText(n);
     }
+    frame.appendChild(overlay);
+    wrap.appendChild(frame);
     return wrap;
+  }
+
+  function refreshVideoPreview(n) {
+    const nodeEl = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    const body = nodeEl && nodeEl.querySelector('.video-body');
+    if (!body || (n.artifacts || []).some((item) => item.kind === 'video')) return;
+    body.replaceWith(buildVideoBody(n));
+    reindexNodePorts(n.id);
+    renderLinks();
+    updateVideoTools();
+    scheduleLayout();
   }
 
   function buildVideoGenPanel(n) {
@@ -4079,7 +4370,7 @@
       const remove = document.createElement('button');
       remove.type = 'button'; remove.textContent = '移除';
       remove.onclick = (ev) => {
-        ev.stopPropagation(); g.reference = ''; syncReference(); queueSave(); commit();
+        ev.stopPropagation(); g.reference = ''; syncReference(); refreshVideoPreview(n); queueSave(); commit();
       };
       referenceRow.append(image, remove);
     };
@@ -4091,7 +4382,7 @@
         const file = input.files && input.files[0];
         if (!file) return;
         const reader = new FileReader();
-        reader.onload = () => { g.reference = String(reader.result || ''); syncReference(); queueSave(); commit(); };
+        reader.onload = () => { g.reference = String(reader.result || ''); syncReference(); refreshVideoPreview(n); queueSave(); commit(); };
         reader.readAsDataURL(file);
       };
       input.click();
@@ -4101,21 +4392,24 @@
       if (popAnchor === button) { closePopMenu(); return; }
       const candidates = state.nodes.filter((node) => node.type === 'image' && node.dataURL);
       const items = candidates.map((node) => [node.title || '图片', () => {
-        g.reference = node.dataURL; syncReference(); queueSave(); commit();
+        g.reference = node.dataURL; syncReference(); refreshVideoPreview(n); queueSave(); commit();
       }, '', `<span class="pm-thumb"><img src="${esc(node.dataURL)}" alt=""></span>`]);
       if (!items.length) items.push(['画布上还没有图片', () => {}, 'disabled']);
       openPopMenu(button, items, '选择视频首帧');
     }, '从画布选择视频首帧');
     addChip('清空', icon('clear'), () => {
       g.prompt = '';
+      g.extras = [];
       prompt.textContent = '';
       prompt.classList.add('is-empty');
+      renderRefs(n);
+      refreshVideoPreview(n);
       queueSave(); commit();
     }, '清空提示词');
-    const styleButton = addChip('风格', icon('palette'), (button) => openStyleMenu(button, n), '给视频提示词套用风格');
+    const styleButton = addChip('风格', icon('palette'), (button) => openVideoStyleMenu(button, n), '选择视频风格模式');
     styleButton.classList.add('gen-style');
     styleButton.innerHTML = `<span class="gs-ico">${icon('palette')}</span><span class="gs-name">风格</span>`;
-    paintStyleChip(styleButton, g.style);
+    paintVideoStyleChip(styleButton, g.videoStyle);
     const expand = document.createElement('button');
     expand.type = 'button'; expand.className = 'chip icon-only gen-expand';
     expand.innerHTML = icon('expand'); expand.title = '把整个面板放到大窗口里编辑';
@@ -4123,6 +4417,10 @@
     chips.appendChild(expand);
     panel.appendChild(chips);
     panel.appendChild(referenceRow);
+    buildRefsStrip(n, panel);
+    // buildVideoGenPanel 执行时面板尚未挂进 #nodes，首次同步找不到缩略图容器；
+    // 等节点插入 DOM 后再渲染一次，确保重开画布时已有连线也能显示参考图。
+    requestAnimationFrame(() => renderRefs(n));
 
     const prompt = document.createElement('div');
     prompt.className = 'gen-prompt';
@@ -4132,22 +4430,42 @@
     prompt.setAttribute('aria-label', '视频提示词');
     prompt.setAttribute('aria-multiline', 'true');
     prompt.dataset.ph = '描述要生成的视频';
-    prompt.textContent = g.prompt || '';
+    fillPrompt(prompt, g.prompt || '', n);
     prompt.classList.toggle('is-empty', !g.prompt);
-    prompt.oninput = () => {
+    const syncPrompt = () => {
       g.prompt = promptText(prompt);
       prompt.classList.toggle('is-empty', !g.prompt.trim());
+      let refsChanged = false;
+      if (g.extras && g.extras.length) {
+        const label = refLabelFn(n);
+        const keep = g.extras.filter((id) => {
+          const src = getNode(id);
+          return !src || g.prompt.includes(`@[${label(src)}]`);
+        });
+        if (keep.length !== g.extras.length) { g.extras = keep; refsChanged = true; }
+      }
+      detectAtMention(prompt, n);
+      renderRefs(n);
+      if (refsChanged) refreshVideoPreview(n);
       queueSave();
+    };
+    prompt.oninput = () => {
+      syncPrompt();
     };
     prompt.onkeydown = (ev) => {
       if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); generateVideo(n); }
-      else if (ev.key === 'Enter' && !ev.altKey) { ev.preventDefault(); document.execCommand('insertLineBreak'); }
+      else if (ev.key === 'Enter' && !ev.altKey) {
+        ev.preventDefault(); closeRefMenu(); document.execCommand('insertLineBreak'); syncPrompt();
+      } else if (ev.key === 'Escape' && refMenu) {
+        ev.preventDefault(); ev.stopPropagation(); closeRefMenu();
+      } else if (ev.key === 'Backspace' || ev.key === 'Delete') closeRefMenu();
     };
     prompt.addEventListener('paste', (ev) => {
       const text = (ev.clipboardData || window.clipboardData)?.getData('text/plain');
       if (text == null) return;
-      ev.preventDefault(); document.execCommand('insertText', false, text);
+      ev.preventDefault(); document.execCommand('insertText', false, text); syncPrompt();
     });
+    prompt.addEventListener('focus', () => { if (refMenu && refMenu.el !== prompt) closeRefMenu(); });
     prompt.onblur = () => commit();
     panel.appendChild(prompt);
 
@@ -4195,37 +4513,30 @@
     separator.setAttribute('aria-hidden', 'true');
     bar.appendChild(separator);
 
-    const makeOption = (label, title, values, selected, display, onPick, openCustomMenu) => {
-      const box = document.createElement('div');
-      box.className = 'gensel gen-control';
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'gm-btn gen-control';
-      const text = document.createElement('span');
-      const caret = document.createElement('i'); caret.className = 'gm-caret';
-      button.append(text, caret);
-      const sync = () => { text.textContent = display(selected()); button.title = `${title}：${text.textContent}`; };
-      sync();
-      button.onclick = (ev) => {
-        ev.preventDefault(); ev.stopPropagation();
-        const pick = (value) => { onPick(value); sync(); queueSave(); commit(); };
-        if (openCustomMenu) { openCustomMenu(button, selected(), pick); return; }
-        openPopMenu(button, values.map((value) => [display(value), () => pick(value), value === selected() ? 'active' : '']), title);
-      };
-      box.appendChild(button); box.dataset.control = label;
-      return box;
+    const optsBox = document.createElement('div');
+    optsBox.className = 'gensel gen-control optsel video-options-control';
+    const optsButton = document.createElement('button');
+    optsButton.type = 'button'; optsButton.className = 'gm-btn gen-control video-options-btn';
+    optsButton.innerHTML = '<i class="go-glyph"></i><span class="go-sum"></span><i class="gm-caret"></i>';
+    const optsGlyph = optsButton.querySelector('.go-glyph');
+    const optsSummary = optsButton.querySelector('.go-sum');
+    const syncVideoOpts = () => {
+      const [w, h] = ratioGlyph(g.aspect, 12, 12);
+      optsGlyph.style.width = `${w}px`; optsGlyph.style.height = `${h}px`;
+      const aspectLabel = g.aspectAuto ? `智能 ${g.aspect}` : g.aspect;
+      optsSummary.textContent = `${aspectLabel} · ${g.resolution} · ${g.duration}秒`;
+      optsButton.title = `画幅 / 分辨率 / 时长（当前 ${aspectLabel} · ${g.resolution} · ${g.duration}秒）`;
     };
-
-    const aspects = ['16:9', '9:16', '1:1', '4:3', '3:4'];
-    const resolutions = ['720p', '1080p'];
-    bar.appendChild(makeOption('aspect', '画幅', aspects, () => g.aspect, (value) => value, (value) => { g.aspect = value; }));
-    bar.appendChild(makeOption('resolution', '尺寸', resolutions, () => g.resolution,
-      (value) => value,
-      (value) => { g.resolution = value; }));
-    const durations = [3, 5, 8, 10, 15];
-    bar.appendChild(makeOption('duration', '时长（秒）', durations, () => Number(g.duration),
-      (value) => `${value}秒`, (value) => { g.duration = value; },
-      null));
+    syncVideoOpts();
+    optsButton.addEventListener('pointerdown', (ev) => ev.preventDefault());
+    optsButton.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (popAnchor === optsButton) { closePopMenu(); return; }
+      openVideoOpts(optsButton, g, n, syncVideoOpts);
+    };
+    optsBox.appendChild(optsButton);
+    optsBox.dataset.control = 'video-options';
+    bar.appendChild(optsBox);
 
     const run = makeGenControlButton({
       className: 'gen-run', html: icon('arrowUp'), title: '生成视频（Ctrl+Enter）',
@@ -4248,6 +4559,181 @@
     return ratioW >= ratioH
       ? [snap(long), snap(long * ratioH / ratioW)]
       : [snap(long * ratioW / ratioH), snap(long)];
+  }
+
+  const VIDEO_ASPECTS = ['1:1', '9:16', '16:9', '4:3', '3:4'];
+  function nearestVideoAspect(w, h) {
+    const ratio = Number(w) / Number(h);
+    if (!ratio || !Number.isFinite(ratio)) return '';
+    return VIDEO_ASPECTS.reduce((best, aspect) => {
+      const [a, b] = aspect.split(':').map(Number);
+      const distance = Math.abs(Math.log((a / b) / ratio));
+      return distance < best.distance ? { aspect, distance } : best;
+    }, { aspect: '', distance: Infinity }).aspect;
+  }
+
+  async function videoReferenceSizeOf(n) {
+    const linked = state.links
+      .filter((link) => link.to === n.id && link.toKey === 'in')
+      .map((link) => getNode(link.from))
+      .find((node) => node && node.type === 'image' && node.dataURL);
+    if (!(n.gen && n.gen.reference) && linked) {
+      const size = imageSizeOf(linked);
+      if (size) return size;
+    }
+    const data = videoReferenceOf(n);
+    if (!data) return null;
+    const preview = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-reference-preview`)
+      || nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-reference img`);
+    if (preview && preview.naturalWidth && preview.naturalHeight) {
+      return { w: preview.naturalWidth, h: preview.naturalHeight };
+    }
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image.naturalWidth && image.naturalHeight
+        ? { w: image.naturalWidth, h: image.naturalHeight } : null);
+      image.onerror = () => resolve(null);
+      image.src = data;
+      if (image.complete) resolve(image.naturalWidth && image.naturalHeight
+        ? { w: image.naturalWidth, h: image.naturalHeight } : null);
+    });
+  }
+
+  function openVideoOpts(anchor, g, n, sync) {
+    closePopMenu();
+    const menu = document.createElement('div');
+    menu.className = 'popmenu gen-opts video-opts';
+    menu.onpointerdown = (ev) => ev.stopPropagation();
+    const sec = (label) => {
+      const box = document.createElement('div');
+      box.className = 'go-sec';
+      const title = document.createElement('div');
+      title.className = 'go-title'; title.textContent = label;
+      box.appendChild(title); menu.appendChild(box);
+      return box;
+    };
+    const syncPreviewAspect = () => {
+      const nodeEl = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+      if (!nodeEl) return;
+      const [w, h] = String(g.aspect).split(':').map(Number);
+      nodeEl.style.setProperty('--video-node-ar', String((w || 16) / (h || 9)));
+      nodeEl.style.width = `${nodeWidth(n)}px`;
+      const frame = nodeEl.querySelector('.video-frame');
+      if (frame) frame.style.setProperty('--video-ar', String(g.aspect).replace(':', ' / '));
+      reindexNodePorts(n.id); renderLinks(); scheduleLayout();
+    };
+    const pick = (patch) => {
+      Object.assign(g, patch);
+      if (patch.aspect) {
+        g.aspectSet = true;
+        if (patch.aspectAuto === undefined) g.aspectAuto = false;
+        if (!g.aspectAuto) { delete g.autoW; delete g.autoH; }
+      }
+      sync(); paint(); queueSave(); commit();
+      if (patch.aspect) syncPreviewAspect();
+    };
+
+    const ratioBox = sec('画幅');
+    const ratios = document.createElement('div');
+    ratios.className = 'go-ratios';
+    const smart = document.createElement('button');
+    smart.type = 'button'; smart.className = 'go-ratio go-auto'; smart.dataset.smart = 'true';
+    smart.title = '根据首帧参考图自动选择最接近的画幅';
+    const smartValue = document.createElement('b'); smartValue.className = 'go-auto-val';
+    const smartLabel = document.createElement('span'); smartLabel.textContent = '智能尺寸';
+    smart.append(smartValue, smartLabel);
+    smart.onclick = async () => {
+      const size = await videoReferenceSizeOf(n);
+      if (!size) { flash('请先添加视频首帧参考图，再使用智能尺寸'); return; }
+      const aspect = nearestVideoAspect(size.w, size.h);
+      if (!aspect) { flash('无法读取首帧尺寸'); return; }
+      Object.assign(g, { aspect, aspectAuto: true, aspectSet: true, autoW: size.w, autoH: size.h });
+      sync(); paint(); syncPreviewAspect(); queueSave(); commit();
+    };
+    ratios.appendChild(smart);
+    VIDEO_ASPECTS.forEach((aspect) => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'go-ratio'; option.dataset.aspect = aspect;
+      const [w, h] = ratioGlyph(aspect, 22, 15);
+      const glyph = document.createElement('i'); glyph.style.width = `${w}px`; glyph.style.height = `${h}px`;
+      const label = document.createElement('span'); label.textContent = aspect;
+      option.append(glyph, label);
+      option.onclick = () => pick({ aspect, aspectAuto: false });
+      ratios.appendChild(option);
+    });
+    ratioBox.appendChild(ratios);
+
+    const resolutionBox = sec('分辨率');
+    const resolutionOptions = document.createElement('div');
+    resolutionOptions.className = 'go-seg two';
+    ['720p', '1080p'].forEach((resolution) => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'go-opt'; option.dataset.resolution = resolution;
+      const [w, h] = videoDimensions(g.aspect, resolution);
+      option.innerHTML = `<span>${resolution}</span><em>${w} × ${h}</em>`;
+      option.onclick = () => pick({ resolution });
+      resolutionOptions.appendChild(option);
+    });
+    resolutionBox.appendChild(resolutionOptions);
+
+    const durationBox = sec('时长');
+    const durationOptions = document.createElement('div');
+    durationOptions.className = 'go-seg video-duration-options';
+    [3, 5, 8, 10, 15].forEach((duration) => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'go-opt'; option.dataset.duration = String(duration);
+      option.textContent = `${duration}秒`;
+      option.onclick = () => pick({ duration });
+      durationOptions.appendChild(option);
+    });
+    durationBox.appendChild(durationOptions);
+
+    const custom = document.createElement('div');
+    custom.className = 'go-custom video-duration-custom';
+    const customLabel = document.createElement('span');
+    customLabel.className = 'go-custom-tag'; customLabel.textContent = '自定义';
+    const durationInput = document.createElement('input');
+    durationInput.className = 'go-num'; durationInput.type = 'number';
+    durationInput.min = '1'; durationInput.max = '60'; durationInput.step = '1';
+    durationInput.setAttribute('aria-label', '自定义时长（秒）');
+    durationInput.title = '自定义时长：1 至 60 秒';
+    durationInput.value = String(g.duration);
+    durationInput.oninput = () => {
+      const value = Number(durationInput.value);
+      if (!Number.isInteger(value) || value < 1 || value > 60) return;
+      g.duration = value; sync(); paint(); queueSave();
+    };
+    durationInput.onchange = () => {
+      const value = clamp(Math.round(Number(durationInput.value) || 5), 1, 60);
+      g.duration = value; durationInput.value = String(value);
+      sync(); paint(); queueSave(); commit();
+    };
+    durationInput.addEventListener('wheel', (ev) => ev.stopPropagation(), { passive: true });
+    const seconds = document.createElement('i');
+    seconds.className = 'go-times'; seconds.textContent = '秒';
+    custom.append(customLabel, durationInput, seconds);
+    durationBox.appendChild(custom);
+
+    const foot = document.createElement('div');
+    foot.className = 'go-foot'; menu.appendChild(foot);
+    const paint = () => {
+      smart.classList.toggle('on', !!g.aspectAuto);
+      smartValue.textContent = g.aspectAuto ? g.aspect : '—';
+      menu.querySelectorAll('[data-aspect]').forEach((el) => el.classList.toggle('on', !g.aspectAuto && el.dataset.aspect === g.aspect));
+      menu.querySelectorAll('[data-resolution]').forEach((el) => {
+        el.classList.toggle('on', el.dataset.resolution === g.resolution);
+        const [w, h] = videoDimensions(g.aspect, el.dataset.resolution);
+        el.querySelector('em').textContent = `${w} × ${h}`;
+      });
+      menu.querySelectorAll('[data-duration]').forEach((el) => el.classList.toggle('on', Number(el.dataset.duration) === Number(g.duration)));
+      custom.classList.toggle('on', ![3, 5, 8, 10, 15].includes(Number(g.duration)));
+      if (document.activeElement !== durationInput) durationInput.value = String(g.duration);
+      const [w, h] = videoDimensions(g.aspect, g.resolution);
+      foot.textContent = `${g.aspectAuto ? `智能 ${g.aspect}` : g.aspect} · ${g.resolution} · ${w} × ${h} · ${g.duration}秒`;
+    };
+    document.body.appendChild(menu);
+    paint(); placePopMenu(menu, anchor);
+    popAnchor = anchor; armPopClose(anchor);
   }
 
   function setVideoGraphOptions(graph, slots, gen, referenceName) {
@@ -4284,7 +4770,16 @@
     const aspectInput = aspectSlot ? aspectSlot.input : (aspectNode ? 'aspect_ratio' : '');
     if (aspectNode && aspectInput && !Array.isArray(aspectNode.inputs[aspectInput])) {
       const choices = aspectSlot && Array.isArray(aspectSlot.options) ? aspectSlot.options : [];
-      const labels = { '16:9': 'Landscape Widescreen', '9:16': 'Portrait Widescreen', '1:1': 'Square', '4:3': 'Landscape', '3:4': 'Portrait' };
+      // ResolutionSelector uses exact enum labels. Inventing a label from the
+      // ratio (for example "4:3 (Landscape)") makes ComfyUI reject the prompt;
+      // its actual option is "4:3 (Standard)".
+      const labels = {
+        '16:9': 'Widescreen',
+        '9:16': 'Portrait Widescreen',
+        '1:1': 'Square',
+        '4:3': 'Standard',
+        '3:4': 'Portrait Standard',
+      };
       const choice = choices.find((value) => String(value).includes(ratio))
         || (labels[ratio] ? `${ratio} (${labels[ratio]})` : '');
       if (choice) {
@@ -4321,7 +4816,7 @@
     if (!g || g.busy) return;
     const upstreamPrompt = promptSegmentsOf(n).map((segment) => segment.text).filter(Boolean);
     const prompt = [...upstreamPrompt, String(g.prompt || '').trim()].filter(Boolean).join('\n\n');
-    if (!prompt && !g.style) { flash('先输入视频提示词'); return; }
+    if (!prompt) { flash('先输入视频提示词'); return; }
     const workflow = wfOptions().find((option) => option.id === g.wf && (option.kinds || []).includes('video'));
     if (!workflow) {
       const button = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-generator .wfsel .gm-btn`);
@@ -4335,6 +4830,7 @@
     n.status = 'running';
     n.statusText = g.status;
     n.artifacts = [];
+    resetProgress(n);
     n.job = newJob(n, 'video', { wf: g.wf, title: prompt });
     g.job = n.job;
     const job = n.job;
@@ -4349,11 +4845,18 @@
       const analysis = await postJson('/api/analyze', { graph });
       if (canceled()) return;
       if (!analysis.ok) throw new Error(analysis.error || '视频工作流分析失败');
-      const style = await styleOf(g.style).catch(() => null);
-      if (canceled()) return;
-      const graphGen = { ...g, prompt: style ? applyStylePrompt(prompt, style) : prompt };
       const hasImageSlot = (analysis.slots || []).some((slot) => slot.kind === 'image');
-      const referenceData = videoReferenceOf(n);
+      const refs = videoRefsInPrompt(n).filter((item) => item.node && item.node.dataURL);
+      const chosenRef = !g.reference && prompt
+        ? refs.find((item) => prompt.includes(`@[${refLabelFn(n)(item.node)}]`)) || refs[0]
+        : refs[0];
+      const promptRefs = hasImageSlot && !g.reference && chosenRef
+        ? [{ label: refLabelFn(n)(chosenRef.node) }]
+        : [];
+      const markedPrompt = refMarks(prompt, promptRefs);
+      if (!markedPrompt) throw new Error('提示词里只有 @ 引用，没有文字');
+      const graphGen = { ...g, prompt: applyVideoStylePrompt(markedPrompt, g.videoStyle) };
+      const referenceData = hasImageSlot ? videoReferenceOf(n, prompt) : '';
       let referenceName = '';
       if (referenceData && hasImageSlot) {
         const ext = (referenceData.match(/^data:image\/(png|jpeg|webp)/i) || [])[1] || 'png';
@@ -4388,6 +4891,7 @@
     } catch (error) {
       if (canceled()) return;
       g.busy = false;
+      clearProgress(n);
       g.status = `生成失败：${error.message}`;
       n.status = 'error'; n.statusText = g.status;
       finishJob(n.job, 'error', error.message);
@@ -7538,6 +8042,7 @@
     }
     // 图片工具条：单选一张有图的节点时浮在它上方（裁剪 / 高清）
     updateImgTools();
+    updateVideoTools();
     // 提示词格式条：单选一个文本节点时浮在它上方（标题 / 列表 / 加粗 / 底色）
     updateTextTools();
     // 小地图里选中的那个节点会被提亮，选中变了就得重画
@@ -8139,6 +8644,10 @@
     const n = getNode(id);
     if (!n) return;
     if (n.type === 'image' && n.gen) renderRefs(n);
+    if (n.type === 'video' && n.gen) {
+      renderRefs(n);
+      refreshVideoPreview(n);
+    }
     const port = portCache.get(`${id}:in`);
     if (port) {
       // 数「这个节点收到几条线」，不是「有几条线的 toKey 正好叫 in」：
@@ -8217,6 +8726,7 @@
     // 节点被重建后尺寸/图可能变了（生成结果回来、换图），工具条要重新贴一次
     updateImgTools();
     updateTextTools();
+    updateVideoTools();
   }
 
   function removeNode(id) {
@@ -8667,7 +9177,10 @@
         n.status = 'error'; n.statusText = res.error || '查询失败';
         clearInterval(n.timer); n.timer = null;
         finishJob(n.job, 'error', n.statusText);
-        if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
+        if (n.type === 'video' && n.gen) {
+          n.gen.busy = false; n.gen.status = n.statusText;
+          clearProgress(n);
+        }
         rerenderNode(n.id);
         return;
       }
@@ -8680,7 +9193,7 @@
         // 和图片节点同一条规矩：这一拍没数字就沿用上一次的，别把队列条目上的 % 抹掉
         patchJob(n.job, { phase: res.status, progress: n.progress ?? null, secs });
         paintWfStatus(n);          // 轻量更新，避免打断用户输入
-        if (n.type === 'video' && n.gen) { n.gen.status = n.statusText; refreshGenPanel(n); }
+        if (n.type === 'video' && n.gen) { n.gen.status = n.statusText; refreshGenPanel(n); updateVideoTools(); }
         return;
       }
       // 刚提交时 /history 与 /queue 都可能还查不到，先宽限几轮；ComfyUI 重启后会永久丢失记录
@@ -8696,7 +9209,10 @@
         n.status = 'error';
         n.statusText = '任务记录已丢失（ComfyUI 可能已重启），请重新运行';
         finishJob(n.job, 'error', '记录丢失');
-        if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
+        if (n.type === 'video' && n.gen) {
+          n.gen.busy = false; n.gen.status = n.statusText;
+          clearProgress(n);
+        }
         rerenderNode(n.id);
         return;
       }
@@ -8712,10 +9228,10 @@
       }
       n.emptyPolls = 0;
       clearInterval(n.timer); n.timer = null;
-      finishProgress(n);
       if (res.error) {
         n.status = 'error'; n.statusText = `执行出错：${res.error}`;
         finishJob(n.job, 'error', String(res.error).slice(0, 30));
+        if (n.type === 'video' && n.gen) clearProgress(n);
       } else if ((res.artifacts || []).length) {
         n.artifacts = artifactsForNode(n, res.artifacts);
         n.status = 'done';
@@ -8727,7 +9243,12 @@
         n.status = 'done'; n.statusText = `完成 · ${secs}s（无产物，请确认工作流含保存节点）`;
         finishJob(n.job, 'done', '无产物');
       }
-      if (n.type === 'video' && n.gen) { n.gen.busy = false; n.gen.status = n.statusText; }
+      if (n.type === 'video' && n.gen) {
+        n.gen.busy = false; n.gen.status = n.statusText;
+        if (!res.error) finishProgress(n);
+      } else {
+        finishProgress(n);
+      }
       syncOutputs(n);
       rerenderNode(n.id);
       queueSave();
@@ -9685,10 +10206,12 @@
           // 视频生成参数与提示词一起随画布保存
           resolution: n.gen.resolution, duration: n.gen.duration,
           reference: n.gen.reference || '',
+          videoStyle: n.type === 'video' ? (n.gen.videoStyle || null) : undefined,
           // 遮罩换走之前是哪一份：不存的话刷新后清掉遮罩就卡在「局部重绘」上，
           // 出图和原图逐位相同（这类坏最难自查），而用户也没法还原刚才的选择
           wfMaskBack: n.gen.wfMaskBack || undefined,
           aspect: ob ? ob.aspect : n.gen.aspect, size: ob ? ob.size : n.gen.size,
+          aspectSet: n.type === 'video' ? !!n.gen.aspectSet : undefined,
           // 智能画幅：不存的话刷新后变 undefined，手选过的比例会被当成「智能」重算一遍
           aspectAuto: !!(ob ? ob.aspectAuto : n.gen.aspectAuto),
           // 智能档出图用的是原图像素，不存就只能退回比例 + 清晰度那套口径
@@ -9705,7 +10228,7 @@
           extras: n.gen.extras || [],   // @ 引用来的图（只存节点 id，图本身还是走 /api/view）
           // 风格只存指针 {cat,i,cn}，不存那句四百字的英文模板：模板在 static/styles/ 里，
           // 存副本的话改了风格库，老画布还按旧句子出图，对不上号
-          style: n.gen.style || null,
+          style: n.type === 'video' ? undefined : (n.gen.style || null),
           // 智能编辑的标记：矢量的几笔，和遮罩一样小。存下来刷新后标记还在图上，
           // 能接着改；不存的话一刷新就只剩一张光图，用户以为刚才白标了
           smart: n.gen.smart && n.gen.smart.strokes ? n.gen.smart : undefined,
@@ -11373,6 +11896,7 @@
   // 所以以前拖着节点走，工具条会钉在原地，松手才「瞬移」过去。这里跟布局同一个节拍补上。
   function followScreenBars() {
     positionImgTools();
+    positionVideoTools();
     positionTextTools();
     positionLinkDel();
   }
@@ -12639,57 +13163,17 @@
     const ref = stageBox && stageBox.width > 1 ? stageBox : nb;
     const w = bar.offsetWidth || 300;
     const h = bar.offsetHeight || 34;
-    const minL = 10, maxL = Math.max(10, window.innerWidth - w - 10);
-    // 整条带文字之后有 ~645px 宽，横向难免盖到旁边节点的标题上——那不只是难看：
-    // 盖住的那块点下去命中的是工具条（实测点标题点出了「旋转」菜单），用户会以为
-    // 「这个节点点不中」。所以下面按「先挑横向位置、再挑纵向位置」的顺序找空位。
-    //
-    // 横向：先居中，再试两侧对齐；居中即使没被视口夹住，也可能压住邻居标题。
-    const want = ref.left + ref.width / 2 - w / 2;
-    const lefts = [clamp(want, minL, maxL),
-      clamp(ref.left, minL, maxL), clamp(ref.right - w, minL, maxL)];
+    const maxL = Math.max(10, window.innerWidth - w - 10);
+    // 和节点底部的生成面板一样，功能条固定贴在节点上方居中；不因旁边节点标题
+    // 改变锚点位置，避免图片功能条碰到视频节点时突然横移或上跳。
+    const left = clamp(ref.left + ref.width / 2 - w / 2, 10, maxL);
     const topBar = document.getElementById('topBar');
     const floor = (topBar ? topBar.offsetHeight : 44) + 6;
-    const title = el.querySelector('.node-title');
-    // 给定横向位置，纵向怎么摆：贴在标题上方；压到别人就把整条往上抬，
-    // 抬一次可能又撞上更高处的一条，所以循环到不再重叠（最多 3 次，正常一次就结束）。
-    const solve = (left) => {
-      let y = Math.max(8, ref.top - h - 8);
-      let place = 'above';
-      for (let i = 0; i < 3; i++) {
-        const hit = otherTitleBounds(n.id, left, left + w, y, y + h);
-        if (hit == null) break;
-        const next = Math.max(floor, Math.min(y, hit.top - h - 6));
-        if (next === y) break;      // 已经顶到上限，再抬不动了
-        y = next;
-      }
-      if (otherTitleBounds(n.id, left, left + w, y, y + h) == null) return { left, y, place, clear: true };
-      // 抬到顶栏底下还是压着人（节点本来就贴着屏幕上方）→ 改为压在自己这张图的上沿。
-      // 翻到节点下方试过：图片节点下面紧跟着生成面板，那条会盖住「上传 / 素材库 / 清空 / 风格」，
-      // 还是「点了没反应」。压在自己图上则谁也挡不着——这张图本来就是选中的那张，
-      // 点它只会重新选中它，不丢任何操作。
-      y = Math.min((title ? title.getBoundingClientRect().bottom : nb.top + 28) + 6, window.innerHeight - h - 8);
-      place = 'over';
-      const maxY = Math.min(ref.bottom - h - 8, window.innerHeight - h - 8);
-      for (let i = 0; i < 6; i++) {
-        const hit = otherTitleBounds(n.id, left, left + w, y, y + h);
-        if (hit == null) break;
-        const next = Math.min(maxY, hit.bottom + 6);
-        if (next <= y) break;
-        y = next;
-      }
-      return { left, y, place, clear: otherTitleBounds(n.id, left, left + w, y, y + h) == null };
-    };
-    // 按候选顺序试，取第一个真的不压别人标题的；都不行就用第一个（宁可压在自己图上）
-    let best = null;
-    for (const left of lefts) {
-      const s = solve(left);
-      if (!best) best = s;
-      if (s.clear) { best = s; break; }
-    }
-    bar.dataset.place = best.place;       // 测试和排查用：这次是贴在上面还是压在自己图上
-    bar.style.left = `${Math.round(best.left)}px`;
-    bar.style.top = `${Math.round(best.y)}px`;
+    const maxTop = Math.max(floor, window.innerHeight - h - 8);
+    const top = clamp(ref.top - h - 8, floor, maxTop);
+    bar.dataset.place = 'above';
+    bar.style.left = `${Math.round(left)}px`;
+    bar.style.top = `${Math.round(top)}px`;
   }
 
   // 工具条横向范围内，其它节点标题的纵向边界；没有重叠返回 null。
