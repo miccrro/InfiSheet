@@ -3661,12 +3661,14 @@ class Handler(BaseHTTPRequestHandler):
                 patch["group"] = payload.get("group")
             if "icon" in payload:
                 patch["icon"] = payload.get("icon")
+            if "video_type" in payload:
+                patch["video_type"] = payload.get("video_type")
             if not patch:
                 return self.fail("没有要改的字段", 400)
             meta, err = update_wf_meta(payload.get("id"), patch)
             if err:
                 # 图标那几条错误（格式 / 太大 / 解码失败）都是输入问题，不是「找不到」
-                return self.fail(err, 400 if ("非法" in err or "图标" in err) else 404)
+                return self.fail(err, 400 if ("非法" in err or "图标" in err or "只有" in err) else 404)
             return self.json_out({"ok": True, **meta})
 
         # 分类表整体替换：改名 / 新增 / 删除 / 排序都在前端做，服务端只负责清洗和落盘
@@ -4511,6 +4513,31 @@ CATEGORY_LABELS = {
 }
 CATEGORY_ORDER = ["txt2img", "img2img", "upscale", "video", "audio", "other"]
 
+VIDEO_TYPE_LABELS = {"omni": "全能参考", "first_last": "首尾帧", "text": "文生视频"}
+
+
+def normalize_video_type(value: str) -> str:
+    value = str(value or "").strip()
+    return value if value in VIDEO_TYPE_LABELS else ""
+
+
+def infer_video_type(graph: dict, name: str = "", title: str = "") -> str:
+    """从名称和输入图推断视频类型；不确定时可在设置中手动指定。"""
+    if "video" not in graph_kinds(graph):
+        return ""
+    hint = f"{name} {title}".lower().replace("_", " ").replace("-", " ")
+    if re.search(r"首尾帧|首帧.*尾帧|first.?last|start.?end|last.?frame", hint):
+        return "first_last"
+    if re.search(r"文生视频|text.?to.?video|txt.?2.?video|t2v", hint):
+        return "text"
+    if re.search(r"全能参考|全能|omni|multi.?reference|reference.?to.?video", hint):
+        return "omni"
+    image_loaders = sum(1 for node in (graph or {}).values()
+                        if isinstance(node, dict) and node.get("class_type") == "LoadImage")
+    if image_loaders >= 2:
+        return "first_last"
+    return "omni" if graph_takes(graph).get("takes_image") else "text"
+
 # 出现这些节点基本就是「把图放大」：高清按钮要挑到这类，挑成普通图生图只会重画一张
 UPSCALE_HINTS = ("upscale", "vosr", "imagescale", "esrgan", "ultimatesd", "swinir")
 
@@ -4633,6 +4660,7 @@ def load_wf_defaults() -> dict[str, str]:
     if not isinstance(items, dict):
         return {}
     groups = {c["id"] for c in load_categories()}
+    groups.update({"video:omni", "video:first_last", "video:text"})
     out = {}
     for k, v in items.items():
         k, v = str(k or "").strip(), str(v or "").strip()
@@ -4645,6 +4673,7 @@ def save_wf_defaults(items) -> dict[str, str]:
     """清洗后落盘：键必须在分类表里，值只留工作流 id（`lib:`；老的 `preset:` 也照收，
     由 resolve_workflow_id 按名字映射到库，别因为一次升级就把默认清空）。"""
     groups = {c["id"] for c in load_categories()}
+    groups.update({"video:omni", "video:first_last", "video:text"})
     out = {}
     for k, v in (items or {}).items():
         k, v = str(k or "").strip(), str(v or "").strip()
@@ -4659,7 +4688,7 @@ def save_wf_defaults(items) -> dict[str, str]:
     return out
 
 
-def wf_meta_of(g: dict, cat: str) -> dict:
+def wf_meta_of(g: dict, cat: str, name: str = "") -> dict:
     """从工作流 JSON 顶层读「用户自定义的那部分」（标题 / 分类 / 备注 / 图标）。"""
     return {
         "title": str(g.get("title") or "").strip(),
@@ -4668,6 +4697,8 @@ def wf_meta_of(g: dict, cat: str) -> dict:
         # 图标两种形态：`preset:qwen`（内置模型标，画在前端）和 `file:xxx.png`
         # （用户自己传的，存在 data/icons/ 下）。空串 = 用默认的工作流图标。
         "icon": str(g.get("icon") or ""),
+        "video_type": normalize_video_type(g.get("video_type"))
+            or infer_video_type(g.get("graph") or {}, name, g.get("title") or ""),
     }
 
 
@@ -4684,7 +4715,7 @@ def list_library() -> list[dict]:
         except Exception:  # noqa: BLE001 —— 单个工作流文件坏了跳过，其余照常列出
             continue
         cat = graph_category(g.get("graph") or {}, g)
-        meta = wf_meta_of(g, cat)
+        meta = wf_meta_of(g, cat, f.stem)
         out.append({"name": f.stem, "title": meta["title"] or f.stem,
                     "file": f.name, "nodes": len(g.get("graph") or {}),
                     "saved_at": g.get("saved_at"),
@@ -4693,6 +4724,7 @@ def list_library() -> list[dict]:
                     "kinds": graph_kinds(g.get("graph") or {}),
                     "category": cat, "category_label": CATEGORY_LABELS.get(cat, "其他"),
                     "group": meta["group"],
+                    "video_type": meta["video_type"],
                     **graph_takes(g.get("graph") or {})})
     return out
 
@@ -4921,6 +4953,14 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
             data["icon"] = icon
         else:
             data.pop("icon", None)       # 清空 = 回到默认的工作流图标
+    if "video_type" in patch:
+        if "video" not in graph_kinds(data.get("graph") or {}):
+            return None, "只有视频工作流可以设置视频类型"
+        video_type = normalize_video_type(patch.get("video_type"))
+        if video_type:
+            data["video_type"] = video_type
+        else:
+            data.pop("video_type", None)
     f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     new_group = normalize_group(data.get("group")) or graph_category(data.get("graph") or {}, data)
     if old_group != new_group:
@@ -4930,6 +4970,8 @@ def update_wf_meta(wf_id: str, patch: dict) -> tuple[dict | None, str]:
             save_wf_defaults(defaults)
     return {"id": wf_id, "title": data.get("title") or f.stem,
             "group": data.get("group") or "",
+            "video_type": normalize_video_type(data.get("video_type"))
+                or infer_video_type(data.get("graph") or {}, f.stem, data.get("title") or ""),
             "icon": data.get("icon") or ""}, ""
 
 

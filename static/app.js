@@ -970,6 +970,32 @@
     other: '手动选择',
   };
 
+  const VIDEO_TYPE_OPTIONS = [
+    { id: 'omni', label: '全能参考' },
+    { id: 'first_last', label: '首尾帧' },
+    { id: 'text', label: '文生视频' },
+  ];
+
+  function inferVideoType(option) {
+    const name = `${option && option.label || ''} ${option && option.file || ''}`.toLowerCase();
+    if (/首尾帧|首帧.*尾帧|first.?last|start.?end|last.?frame/.test(name)) return 'first_last';
+    if (/文生视频|text.?to.?video|txt.?2.?video|t2v/.test(name)) return 'text';
+    if (/全能参考|全能|omni|multi.?reference|reference.?to.?video/.test(name)) return 'omni';
+    return option && option.image ? 'omni' : 'text';
+  }
+
+  function videoWorkflowType(option) {
+    return option && VIDEO_TYPE_OPTIONS.some((item) => item.id === option.videoType)
+      ? option.videoType : inferVideoType(option);
+  }
+
+  function videoTypeLabel(id) {
+    const hit = VIDEO_TYPE_OPTIONS.find((item) => item.id === id);
+    return hit ? hit.label : '视频类型';
+  }
+
+  function videoDefaultKey(type) { return `video:${type}`; }
+
   // ---- 分类：用户自己的那一套 ----
   // CAT_ORDER / CAT_LABEL 是**能力**分类（服务端扫图推断，决定高清 / 扩图该挑谁），
   // 不能随手改；用户能在设置里改名 / 新增 / 删除的是上面那层**组织**分类，
@@ -983,6 +1009,17 @@
   function catName(id) {
     const hit = wfCategories().find((c) => c.id === id);
     return hit ? hit.name : (CAT_LABEL[id] || id || '其他');
+  }
+
+  // 组织分类由用户自由维护；这里的大类按工作流能力划分，避免改了分类名后
+  // 图像和视频工作流又混在一起。视频优先，视频图生视频流可能同时带图像输入。
+  function wfMediaGroup(option) {
+    const kinds = option && option.kinds || [];
+    const category = option && option.category;
+    if (kinds.includes('video') || category === 'video') return 'video';
+    if (kinds.includes('audio') || category === 'audio' || category === 'other') return 'other';
+    if (option && option.image || ['txt2img', 'img2img', 'upscale'].includes(category)) return 'image';
+    return 'other';
   }
 
   // ---------------- 工作流图标 ----------------
@@ -1052,7 +1089,7 @@
     return (w.items || []).map((it) => {
       const id = `lib:${it.name}`;
       const cat = it.category || 'other';
-      return {
+      const option = {
         id,
         label: it.title || it.name,
         icon: it.icon || '',
@@ -1063,6 +1100,7 @@
         alphaMask: !!it.takes_alpha_mask,
         category: cat,
         group: it.group || cat,
+        videoType: it.video_type || '',
         catLabel: catName(it.group || cat),
         nodes: it.nodes || 0,
         kinds: it.kinds || [],
@@ -1072,6 +1110,10 @@
         // 星号跟这一行可见的分组走，避免分组标签与默认状态指向两套分类。
         isDefault: wfDefaultId(it.group || cat) === id,
       };
+      option.defaultKey = (option.kinds || []).includes('video')
+        ? videoDefaultKey(videoWorkflowType(option)) : option.group;
+      option.isDefault = wfDefaultId(option.defaultKey) === id;
+      return option;
     });
   }
 
@@ -4058,6 +4100,45 @@
     return source ? source.dataURL : '';
   }
 
+  function videoReferenceListOf(n, prompt, videoType) {
+    if (videoType === 'text') return [];
+    const list = [];
+    const byData = new Map();
+    const push = (dataURL, label = '') => {
+      if (!dataURL) return;
+      const existing = byData.get(dataURL);
+      if (existing) { if (!existing.label && label) existing.label = label; return; }
+      const item = { dataURL, label };
+      byData.set(dataURL, item);
+      list.push(item);
+    };
+    push(n && n.gen && n.gen.reference || '');
+    const labelOf = refLabelFn(n);
+    videoRefsInPrompt(n).forEach((ref) => push(ref.node.dataURL, labelOf(ref.node)));
+    return videoType === 'first_last' ? list.slice(0, 2) : list;
+  }
+
+  function videoTypeValidationMessage(n) {
+    const g = n && n.gen || {};
+    const count = videoReferenceListOf(n, g.prompt || '', g.videoType).length;
+    if (g.videoType === 'first_last' && count < 2) {
+      return `首尾帧模式需要两张不同的参考图片（当前 ${count} 张）。请连接或 @ 引用首帧和尾帧图片。`;
+    }
+    if (g.videoType === 'omni' && count < 1) {
+      return '图生视频需要至少一张参考图片。请连接图片节点、上传图片或在提示词中 @ 引用图片。';
+    }
+    return '';
+  }
+
+  function syncVideoTypeValidation(n) {
+    const nodeEl = n && nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    const hint = nodeEl && nodeEl.querySelector('.video-type-validation');
+    if (!hint) return;
+    const message = videoTypeValidationMessage(n);
+    hint.textContent = message;
+    hint.classList.toggle('hidden', !message);
+  }
+
   let videoToolsEl = null;
 
   function videoToolNode() {
@@ -4321,6 +4402,7 @@
   }
 
   function refreshVideoPreview(n) {
+    syncVideoTypeValidation(n);
     const nodeEl = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
     const body = nodeEl && nodeEl.querySelector('.video-body');
     if (!body || (n.artifacts || []).some((item) => item.kind === 'video')) return;
@@ -4335,6 +4417,10 @@
     const g = n.gen || (n.gen = {});
     const defaults = { prompt: '', wf: '', aspect: '16:9', resolution: '720p', duration: 5, busy: false, status: n.statusText || '' };
     Object.keys(defaults).forEach((key) => { if (g[key] === undefined) g[key] = defaults[key]; });
+    if (g.videoType === undefined) {
+      const selected = wfOptions().find((option) => option.id === g.wf && (option.kinds || []).includes('video'));
+      g.videoType = selected ? videoWorkflowType(selected) : 'omni';
+    }
 
     const panel = document.createElement('div');
     panel.className = 'gen-panel video-generator';
@@ -4447,6 +4533,7 @@
       detectAtMention(prompt, n);
       renderRefs(n);
       if (refsChanged) refreshVideoPreview(n);
+      syncVideoTypeValidation(n);
       queueSave();
     };
     prompt.oninput = () => {
@@ -4479,7 +4566,50 @@
     statusRow.appendChild(status);
     panel.appendChild(statusRow);
 
+    const validation = document.createElement('div');
+    validation.className = 'video-type-validation hidden';
+    validation.textContent = videoTypeValidationMessage(n);
+    validation.classList.toggle('hidden', !validation.textContent);
+    panel.appendChild(validation);
+
     const bar = buildGenControlRow('gen-bar');
+    const typeBox = document.createElement('div');
+    typeBox.className = 'gensel gen-control video-type-control';
+    const typeButton = document.createElement('button');
+    typeButton.type = 'button';
+    typeButton.className = 'gm-btn gen-control';
+    typeButton.innerHTML = '<span></span><i class="gm-caret"></i>';
+    const typeLabel = typeButton.querySelector('span');
+    const syncVideoType = () => {
+      typeLabel.textContent = videoTypeLabel(g.videoType);
+      typeButton.title = `视频类型：${typeLabel.textContent}`;
+    };
+    syncVideoType();
+    typeButton.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const items = VIDEO_TYPE_OPTIONS.map((type) => [
+        type.label,
+        () => {
+          g.videoType = type.id;
+          const matching = wfOptions().filter((option) => (option.kinds || []).includes('video')
+            && videoWorkflowType(option) === type.id);
+          const defaultId = wfDefaultId(videoDefaultKey(type.id));
+          const selected = wfOptions().find((option) => option.id === g.wf);
+          if (!selected || videoWorkflowType(selected) !== type.id) {
+            const next = matching.find((option) => option.id === defaultId) || matching[0];
+            g.wf = next ? next.id : '';
+          }
+          syncVideoType();
+          syncWorkflow();
+          syncVideoTypeValidation(n);
+          queueSave(); commit();
+        },
+        g.videoType === type.id ? 'active' : '',
+      ]);
+      openPopMenu(typeButton, items, '选择视频类型');
+    };
+    typeBox.appendChild(typeButton);
+
     const wfBox = document.createElement('div');
     wfBox.className = 'gensel wfsel gen-control';
     const wfButton = document.createElement('button');
@@ -4498,15 +4628,21 @@
     syncWorkflow();
     wfButton.onclick = (ev) => {
       ev.preventDefault(); ev.stopPropagation();
-      const items = wfOptions().filter((option) => (option.kinds || []).includes('video'))
-        .map((option) => [option.label, () => {
-          g.wf = option.id; syncWorkflow(); queueSave(); commit();
+      const matching = wfOptions().filter((option) => (option.kinds || []).includes('video')
+        && videoWorkflowType(option) === g.videoType);
+      const defaultId = wfDefaultId(videoDefaultKey(g.videoType));
+      const defaultOption = matching.find((option) => option.id === defaultId);
+      const items = matching.map((option) => [
+        `${option.id === defaultId ? '★ ' : ''}${option.label}`, () => {
+          g.wf = option.id; g.videoType = videoWorkflowType(option);
+          syncVideoType(); syncWorkflow(); queueSave(); commit();
         }, option.id === g.wf ? 'active' : '', wfIconHTML(option.icon, 16)]);
-      if (!items.length) { flash('没有可用的视频工作流'); return; }
-      openPopMenu(wfButton, items, '视频工作流');
+      if (!items.length) { flash(`没有标记为「${videoTypeLabel(g.videoType)}」的视频工作流，请在设置 → 工作流中调整类型`); return; }
+      openPopMenu(wfButton, items, `${videoTypeLabel(g.videoType)} · 视频工作流${defaultOption ? '（★为默认）' : ''}`);
     };
     wfBox.appendChild(wfButton);
     bar.appendChild(wfBox);
+    bar.appendChild(typeBox);
 
     const separator = document.createElement('i');
     separator.className = 'gen-sep';
@@ -4736,7 +4872,7 @@
     popAnchor = anchor; armPopClose(anchor);
   }
 
-  function setVideoGraphOptions(graph, slots, gen, referenceName) {
+  function setVideoGraphOptions(graph, slots, gen, referenceNames) {
     const list = Array.isArray(slots) ? slots : [];
     const dims = videoDimensions(gen.aspect, gen.resolution);
     const ratio = String(gen.aspect || '16:9');
@@ -4759,8 +4895,28 @@
     if (!chosenPrompts.length) throw new Error('所选工作流没有可填写的正向提示词');
     chosenPrompts.forEach((slot) => setSlot(slot, gen.prompt.trim()));
 
-    const imageSlot = list.find((slot) => slot.kind === 'image');
-    const referenceApplied = referenceName && imageSlot ? setSlot(imageSlot, referenceName) : false;
+    const imageSlots = list.filter((slot) => slot.kind === 'image');
+    const references = Array.isArray(referenceNames) ? referenceNames.filter(Boolean) : [referenceNames].filter(Boolean);
+    const assignments = new Map();
+    const usedRefs = new Set();
+    const usedSlots = new Set();
+    if (gen.videoType === 'first_last' && references.length >= 2) {
+      const firstSlot = imageSlots.find((slot) => /first|start|首帧|起始/i.test(`${slot.input || ''} ${slot.node_title || ''}`));
+      const lastSlot = imageSlots.find((slot) => /last|end|尾帧|结束/i.test(`${slot.input || ''} ${slot.node_title || ''}`));
+      if (firstSlot) { assignments.set(firstSlot, references[0]); usedRefs.add(0); usedSlots.add(firstSlot); }
+      if (lastSlot && lastSlot !== firstSlot) { assignments.set(lastSlot, references[1]); usedRefs.add(1); usedSlots.add(lastSlot); }
+    }
+    imageSlots.forEach((slot) => {
+      if (usedSlots.has(slot)) return;
+      const index = references.findIndex((_name, i) => !usedRefs.has(i));
+      if (index < 0) return;
+      assignments.set(slot, references[index]);
+      usedRefs.add(index); usedSlots.add(slot);
+    });
+    let referenceCountApplied = 0;
+    assignments.forEach((name, slot) => {
+      if (setSlot(slot, name)) referenceCountApplied += 1;
+    });
 
     let aspectApplied = false;
     const aspectSlots = list.filter((slot) => /aspect.?ratio|画幅/i.test(slot.input || ''));
@@ -4808,7 +4964,8 @@
       && /duration|seconds|时长|持续时间/i.test(`${slot.input || ''} ${slot.node_title || ''}`)
       && Number.isFinite(Number(slot.value)));
     const durationApplied = durationSlot ? setSlot(durationSlot, Number(gen.duration)) : false;
-    return { dims, aspectApplied, sizeApplied, durationApplied, referenceApplied };
+    return { dims, aspectApplied, sizeApplied, durationApplied,
+      referenceApplied: referenceCountApplied > 0, referenceCountApplied };
   }
 
   async function generateVideo(n) {
@@ -4817,11 +4974,28 @@
     const upstreamPrompt = promptSegmentsOf(n).map((segment) => segment.text).filter(Boolean);
     const prompt = [...upstreamPrompt, String(g.prompt || '').trim()].filter(Boolean).join('\n\n');
     if (!prompt) { flash('先输入视频提示词'); return; }
-    const workflow = wfOptions().find((option) => option.id === g.wf && (option.kinds || []).includes('video'));
+    const options = wfOptions();
+    const selected = options.find((option) => option.id === g.wf);
+    const workflow = selected && (selected.kinds || []).includes('video')
+      && videoWorkflowType(selected) === g.videoType ? selected : null;
     if (!workflow) {
+      const matching = options.filter((option) => (option.kinds || []).includes('video')
+        && videoWorkflowType(option) === g.videoType);
+      let message = `请选择「${videoTypeLabel(g.videoType)}」视频工作流后再生成。`;
+      if (selected && !(selected.kinds || []).includes('video')) {
+        message = `当前工作流「${selected.label}」不是视频工作流，请选择「${videoTypeLabel(g.videoType)}」对应的视频工作流。`;
+      } else if (selected) {
+        message = `视频类型是「${videoTypeLabel(g.videoType)}」，当前工作流「${selected.label}」属于「${videoTypeLabel(videoWorkflowType(selected))}」。请切换匹配工作流，或调整视频类型。`;
+      } else if (!matching.length) {
+        message = `没有「${videoTypeLabel(g.videoType)}」类型的视频工作流，请先在设置 → 工作流中分类或导入。`;
+      }
+      flash(message);
       const button = nodesEl.querySelector(`.node[data-id="${CSS.escape(n.id)}"] .video-generator .wfsel .gm-btn`);
-      if (button) button.click();
-      flash('先选择视频工作流');
+      if (button && matching.length) button.click();
+      return;
+    }
+    if (videoTypeValidationMessage(n)) {
+      syncVideoTypeValidation(n);
       return;
     }
 
@@ -4845,25 +5019,24 @@
       const analysis = await postJson('/api/analyze', { graph });
       if (canceled()) return;
       if (!analysis.ok) throw new Error(analysis.error || '视频工作流分析失败');
-      const hasImageSlot = (analysis.slots || []).some((slot) => slot.kind === 'image');
-      const refs = videoRefsInPrompt(n).filter((item) => item.node && item.node.dataURL);
-      const chosenRef = !g.reference && prompt
-        ? refs.find((item) => prompt.includes(`@[${refLabelFn(n)(item.node)}]`)) || refs[0]
-        : refs[0];
-      const promptRefs = hasImageSlot && !g.reference && chosenRef
-        ? [{ label: refLabelFn(n)(chosenRef.node) }]
-        : [];
-      const markedPrompt = refMarks(prompt, promptRefs);
+      const imageSlots = (analysis.slots || []).filter((slot) => slot.kind === 'image');
+      const referenceSources = imageSlots.length ? videoReferenceListOf(n, prompt, g.videoType) : [];
+      const mappedReferenceSources = referenceSources.slice(0, imageSlots.length);
+      const promptRefs = mappedReferenceSources.map((source) => ({ label: source.label }));
+      const markedPrompt = g.videoType === 'text'
+        ? prompt.replace(/@\[([^\]\n]{0,40})\]/g, '$1').trim()
+        : refMarks(prompt, promptRefs);
       if (!markedPrompt) throw new Error('提示词里只有 @ 引用，没有文字');
       const graphGen = { ...g, prompt: applyVideoStylePrompt(markedPrompt, g.videoStyle) };
-      const referenceData = hasImageSlot ? videoReferenceOf(n, prompt) : '';
-      let referenceName = '';
-      if (referenceData && hasImageSlot) {
-        const ext = (referenceData.match(/^data:image\/(png|jpeg|webp)/i) || [])[1] || 'png';
-        referenceName = await uploadImageData(referenceData, `${n.id}-video-ref.${ext === 'jpeg' ? 'jpg' : ext}`);
+      const referenceNames = [];
+      for (let i = 0; i < mappedReferenceSources.length; i++) {
+        const source = mappedReferenceSources[i];
+        const ext = (source.dataURL.match(/^data:image\/(png|jpeg|webp)/i) || [])[1] || 'png';
+        referenceNames.push(await uploadImageData(source.dataURL,
+          `${n.id}-video-ref-${i + 1}.${ext === 'jpeg' ? 'jpg' : ext}`));
         if (canceled()) return;
       }
-      const applied = setVideoGraphOptions(graph, analysis.slots, graphGen, referenceName);
+      const applied = setVideoGraphOptions(graph, analysis.slots, graphGen, referenceNames);
       const result = await postJson('/api/run', { graph });
       if (canceled()) {
         if (result.ok && result.prompt_id) await postJson('/api/queue/cancel', { prompt_id: result.prompt_id }).catch(() => {});
@@ -4877,12 +5050,17 @@
         + (!applied.durationApplied ? ' · 工作流不支持时长参数' : '')
         + (!applied.aspectApplied ? ' · 画幅由工作流决定' : '')
         + (!applied.sizeApplied ? ' · 尺寸由工作流决定' : '')
-        + (referenceData && !applied.referenceApplied ? ' · 工作流未接入首帧' : '');
+        + (referenceNames.length && !applied.referenceApplied ? ' · 工作流未接入参考图' : '')
+        + (g.videoType === 'first_last' && applied.referenceCountApplied < 2
+          ? (referenceSources.length < 2 ? ' · 首尾帧模式需要两张参考图'
+            : ` · 当前工作流仅接入 ${applied.referenceCountApplied} 张参考图`) : '')
+        + (g.videoType === 'omni' && referenceSources.length > applied.referenceCountApplied
+          ? ` · 当前工作流仅接入 ${applied.referenceCountApplied} 张参考图` : '');
       g.status = n.statusText;
       patchJob(n.job, {
         phase: 'queued', pid: result.prompt_id,
         wf: wfLabel(g.wf), dims: `${applied.dims[0]}×${applied.dims[1]}`,
-        note: applied.durationApplied ? `${g.duration}秒` : '工作流未提供时长输入',
+        note: `${videoTypeLabel(g.videoType)} · ${applied.durationApplied ? `${g.duration}秒` : '工作流未提供时长输入'}`,
       });
       resetProgress(n);
       rerenderNode(n.id);
@@ -6058,6 +6236,9 @@
   let setWfQuery = '';
   // 顶部芯片点了某个能力分类 → 列表只列这一类（挑默认时不用自己认哪份是文生图）
   let setWfOnly = '';
+  // 工作流库的一级媒体分组：图像 / 视频 / 音频及其他。
+  let setWfMediaOnly = '';
+  let setWfVideoTypeOnly = '';
   // 批量下载的勾选：存库文件名（不含 .json），面板关掉就清空。
   // 不放进 state：这只是面板里的临时选择，不该跟着画布存档跑。
   let wfPicked = new Set();
@@ -6068,6 +6249,30 @@
     if (!listEl || !catsEl) return;
     const opts = wfOptions();
     const cats = wfCategories();
+    const mediaEl = box.querySelector('#setWfMediaGroups');
+    if (mediaEl) {
+      const mediaGroups = [
+        { id: '', label: '全部', count: opts.length },
+        { id: 'image', label: '图像工作流', count: opts.filter((o) => wfMediaGroup(o) === 'image').length },
+        { id: 'video', label: '视频工作流', count: opts.filter((o) => wfMediaGroup(o) === 'video').length },
+        { id: 'other', label: '音频与其他', count: opts.filter((o) => wfMediaGroup(o) === 'other').length },
+      ];
+      mediaEl.replaceChildren();
+      mediaGroups.forEach((group) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `wf-media-tab${setWfMediaOnly === group.id ? ' active' : ''}`;
+        button.setAttribute('aria-pressed', setWfMediaOnly === group.id ? 'true' : 'false');
+        button.textContent = `${group.label} ${group.count}`;
+        button.onclick = () => {
+          setWfMediaOnly = group.id;
+          setWfOnly = '';
+          setWfVideoTypeOnly = '';
+          renderSetWorkflows(box);
+        };
+        mediaEl.appendChild(button);
+      });
+    }
     // 库里删掉 / 改名后，残留的勾选要一起清掉：下载时再按旧名字找只会得到 404
     const libFiles = new Set(opts.map((o) => o.file));
     wfPicked.forEach((f) => { if (!libFiles.has(f)) wfPicked.delete(f); });
@@ -6139,22 +6344,31 @@
     // 结果新建节点还是空的（真机反馈）。所以这里一行一个分类，写清「它管的是哪件事」，
     // 值那颗芯片可点——点一下就只看该分类的候选，挑 ☆ 时不用自己认哪份是文生图。
     if (defEl) {
-      const groups = cats.filter((c) => opts.some((o) => o.group === c.id));
+      const groups = cats.filter((c) => c.id !== 'video' && opts.some((o) => o.group === c.id))
+        .map((c) => ({ ...c, key: c.id, use: CAT_USES[c.id] || '手动选择', options: opts.filter((o) => o.group === c.id) }));
+      VIDEO_TYPE_OPTIONS.forEach((type) => {
+        const candidates = opts.filter((o) => (o.kinds || []).includes('video') && videoWorkflowType(o) === type.id);
+        if (candidates.length) groups.push({
+          id: videoDefaultKey(type.id), key: videoDefaultKey(type.id), name: type.label,
+          use: '视频节点默认', videoType: type.id, options: candidates,
+        });
+      });
       defEl.innerHTML = '';
       if (!opts.length) {
         defEl.textContent = '还没有可用的工作流，点上面的「导入工作流…」加一个。';
       } else {
         const head = document.createElement('span');
         head.className = 'wf-def-head';
-        head.textContent = '按分组默认（点行里的 ☆ 换；常用能力分组供新建节点预选）';
+        head.textContent = '按用途设置默认（视频按类型分别设置；点 ☆ 可更换）';
         defEl.appendChild(head);
         const grid = document.createElement('div');
         grid.className = 'wf-def-grid';
         groups.forEach((c) => {
-          const hit = opts.find((o) => o.group === c.id && o.id === wfDefaultId(c.id));
-          const use = CAT_USES[c.id] || '手动选择';
+          const hit = c.options.find((o) => o.id === wfDefaultId(c.key));
+          const use = c.use;
           const row = document.createElement('div');
-          row.className = 'wf-def-row' + (setWfOnly === c.id ? ' only' : '');
+          row.className = 'wf-def-row' + ((c.videoType
+            ? setWfVideoTypeOnly === c.videoType : setWfOnly === c.id) ? ' only' : '');
 
           const nm = document.createElement('span');
           nm.className = 'wf-def-cat';
@@ -6169,12 +6383,20 @@
           btn.className = 'wf-def' + (hit ? ' on' : ' miss');
           btn.textContent = hit ? hit.label : '未设 · 点这里选';
           btn.title = hit
-            ? `「${c.name}」的默认是「${hit.label}」。${use}。点一下只看这一组`
+            ? `「${c.name}」的默认是「${hit.label}」。${use}。点一下筛选候选工作流`
             : `「${c.name}」还没设默认。点一下看这一组有哪些候选`;
           btn.onclick = () => {
-            setWfOnly = setWfOnly === c.id ? '' : c.id;
+            if (c.videoType) {
+              setWfVideoTypeOnly = setWfVideoTypeOnly === c.videoType ? '' : c.videoType;
+              setWfOnly = '';
+              setWfMediaOnly = setWfVideoTypeOnly ? 'video' : '';
+            } else {
+              setWfOnly = setWfOnly === c.id ? '' : c.id;
+              setWfVideoTypeOnly = '';
+              setWfMediaOnly = '';
+            }
             renderSetWorkflows(box);
-            flash(setWfOnly
+            flash(setWfOnly || setWfVideoTypeOnly
               ? `只看「${c.name}」：点行里的 ☆ 设为这一组的默认`
               : '已显示全部工作流');
           };
@@ -6189,6 +6411,8 @@
     // ---- 列表：名字（点一下改名）/ 分类 / 默认 / 加到画布 / 删除 ----
     const q = setWfQuery.trim().toLowerCase();
     let hits = q ? opts.filter((o) => `${o.label} ${o.catLabel}`.toLowerCase().includes(q)) : opts;
+    if (setWfMediaOnly) hits = hits.filter((o) => wfMediaGroup(o) === setWfMediaOnly);
+    if (setWfVideoTypeOnly) hits = hits.filter((o) => videoWorkflowType(o) === setWfVideoTypeOnly);
     // 顶部点了某个分类的「未设」→ 只列这一类。挑默认时眼前只有候选，不用在
     // 十几份工作流里自己认哪份是文生图。
     if (setWfOnly) hits = hits.filter((o) => o.group === setWfOnly);
@@ -6200,6 +6424,15 @@
       bar.className = 'tip wf-only';
       bar.innerHTML = `只看「${esc(catName(setWfOnly))}」· <button type="button" class="wf-only-x">显示全部</button>`;
       bar.querySelector('.wf-only-x').onclick = () => { setWfOnly = ''; renderSetWorkflows(box); };
+      listEl.appendChild(bar);
+    }
+    if (setWfVideoTypeOnly) {
+      const bar = document.createElement('p');
+      bar.className = 'tip wf-only';
+      bar.innerHTML = `只看「${esc(videoTypeLabel(setWfVideoTypeOnly))}」视频工作流 · <button type="button" class="wf-only-x">显示全部</button>`;
+      bar.querySelector('.wf-only-x').onclick = () => {
+        setWfVideoTypeOnly = ''; setWfMediaOnly = ''; renderSetWorkflows(box);
+      };
       listEl.appendChild(bar);
     }
     if (!opts.length) {
@@ -6259,6 +6492,18 @@
           () => moveWfItem(o, c.id),
         ]);
         items.push(['＋ 新分类…', async () => { const id = await addCategory(); if (id) moveWfItem(o, id); }]);
+        if ((o.kinds || []).includes('video')) {
+          items.push([`视频类型 · ${videoTypeLabel(videoWorkflowType(o))}…`, () => {
+            const types = [
+              ['自动识别', () => setWfVideoType(o, '')],
+              ...VIDEO_TYPE_OPTIONS.map((type) => [
+                `${videoWorkflowType(o) === type.id ? '✓ ' : ''}${type.label}`,
+                () => setWfVideoType(o, type.id),
+              ]),
+            ];
+            openPopMenu(cat, types, '视频类型');
+          }]);
+        }
         openPopMenu(cat, items, '换分类');
       };
 
@@ -6288,9 +6533,11 @@
           flash('这份工作流吃遮罩：只能在遮罩编辑器里用，设成默认也不会被自动挑中');
         };
       } else {
+        const defaultLabel = (o.kinds || []).includes('video')
+          ? videoTypeLabel(videoWorkflowType(o)) : catName(o.group);
         star.title = o.isDefault
-          ? `取消「${catName(o.group)}」的默认`
-          : `设为「${catName(o.group)}」的默认工作流`;
+          ? `取消「${defaultLabel}」的默认`
+          : `设为「${defaultLabel}」的默认工作流`;
         star.onclick = (ev) => { ev.stopPropagation(); setWfDefault(o, !o.isDefault); };
       }
 
@@ -6477,6 +6724,13 @@
     }
   }
 
+  async function setWfVideoType(o, videoType) {
+    if (await saveWfMeta(o.id, { video_type: videoType })) {
+      refreshSetWf();
+      flash(videoType ? `「${o.label}」已设为${videoTypeLabel(videoType)}` : `「${o.label}」将自动识别视频类型`);
+    }
+  }
+
   // ---- 工作流图标 ----
   // 弹层不用 openPopMenu：那个只会排一列文字按钮，而这里要的是一格一格的标。
   // 但定位和「点外面就关」复用同一套（placePopMenu / armPopClose），不然会出现
@@ -6591,7 +6845,8 @@
   // 设 / 取消这个工作流在可见分组里的默认。
   async function setWfDefault(o, on) {
     const next = { ...(state.wfDefaults || {}) };
-    if (on) next[o.group] = o.id; else delete next[o.group];
+    const key = o.defaultKey || o.group;
+    if (on) next[key] = o.id; else delete next[key];
     const r = await api('/api/wf/defaults', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ defaults: next }),
@@ -6600,7 +6855,7 @@
     state.wfDefaults = r.defaults || next;
     refreshSetWf();
     flash(on
-      ? `「${catName(o.group)}」默认 → ${o.label}`
+      ? `「${(o.kinds || []).includes('video') ? videoTypeLabel(videoWorkflowType(o)) : catName(o.group)}」默认 → ${o.label}`
       : `已取消默认：${o.label}`);
   }
 
@@ -7019,9 +7274,10 @@
                 </label>
               </div>
               <details class="wf-defaults">
-                <summary>按分组默认 <span>查看各类新建节点预选的工作流</span></summary>
+                <summary>默认工作流 <span>视频按类型分别设置，切换类型后可手动应用</span></summary>
                 <div class="set-tip" id="setWfDefault"></div>
               </details>
+              <div class="wf-media-groups" id="setWfMediaGroups" aria-label="按图像或视频筛选工作流"></div>
               <div class="wf-pickbar" id="setWfPickbar"></div>
               <div class="wf-list" id="setWfList"></div>
               <div class="wf-categories">
