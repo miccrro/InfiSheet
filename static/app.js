@@ -4689,7 +4689,6 @@
     const [a, b] = String(aspect || '16:9').split(':').map(Number);
     const ratioW = a || 16, ratioH = b || 9;
     const long = resolution === '1080p' ? 1920 : 1280;
-    const short = resolution === '1080p' ? 1080 : 720;
     const snap = (value) => Math.round(value / 32) * 32;
     // 720p / 1080p describe the long edge; aspect ratio determines the other edge.
     return ratioW >= ratioH
@@ -13430,22 +13429,6 @@
     bar.dataset.place = 'above';
     bar.style.left = `${Math.round(left)}px`;
     bar.style.top = `${Math.round(top)}px`;
-  }
-
-  // 工具条横向范围内，其它节点标题的纵向边界；没有重叠返回 null。
-  // 只量标题，不量整个节点：盖住图片本身无所谓（工具条本来就浮在画布上），盖住标题才会挡点击。
-  function otherTitleBounds(selfId, l, r, t, b) {
-    let bounds = null;
-    nodesEl.querySelectorAll('.node').forEach((el) => {
-      if (el.dataset.id === selfId) return;
-      const title = el.querySelector('.node-title');
-      if (!title) return;
-      const q = title.getBoundingClientRect();
-      if (q.right < l || q.left > r || q.bottom < t || q.top > b) return;
-      if (bounds == null) bounds = { top: q.top, bottom: q.bottom };
-      else { bounds.top = Math.min(bounds.top, q.top); bounds.bottom = Math.max(bounds.bottom, q.bottom); }
-    });
-    return bounds;
   }
 
   function updateImgTools() {
