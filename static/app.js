@@ -5175,8 +5175,13 @@
   let assetPicking = false;       // 是否在多选态
   let assetPicked = new Set();    // 多选态里勾上的 key
   let assetLastIdx = -1;          // Shift 连选的锚点（当前筛选结果里的下标）
+  let assetPickCanvasDismiss = null;
 
   function closeAssetSheet() {
+    if (assetPickCanvasDismiss) {
+      document.removeEventListener('pointerdown', assetPickCanvasDismiss, true);
+      assetPickCanvasDismiss = null;
+    }
     const el = document.getElementById('assetPane');
     if (el) el.remove();
     document.querySelector('#bar [data-act="assets"]')?.classList.remove('active');
@@ -5204,12 +5209,24 @@
     return btoa(bin);
   }
 
-  // 当前画布上的图：节点的图 + 生成器节点的整组结果（其余几张也要能找回来）
+  // 当前画布上的图片与视频产物：节点的预览 + 生成器节点的整组结果。
   function canvasAssets() {
     const out = [];
     const seen = new Set();
     const pid = state.projectId || 'local';
     state.nodes.forEach((n) => {
+      if (n.type === 'video' || n.type === 'out') {
+        (n.artifacts || []).filter((a) => a.kind === 'video').forEach((a, idx) => {
+          const url = a.url || artifactURL(a);
+          if (!url || seen.has(url)) return;
+          seen.add(url);
+          out.push({
+            ...a, url, filename: a.filename || n.title || '画布视频', kind: 'video',
+            source: 'canvas', node: n.id, key: `canvas:${pid}:${n.id}:video:${idx}`,
+          });
+        });
+        return;
+      }
       if (n.type !== 'image') return;
       let i = 0;
       const put = (url, filename) => {
@@ -5254,7 +5271,8 @@
     return (assetItems || []).filter((it) => {
       const meta = assetMeta[assetKeyOf(it)] || {};
       if (meta.hidden) return false;              // 外部来源的「移除」：只是不再列出来
-      if (assetTab !== 'all' && it.source !== assetTab) return false;
+      if (assetTab === 'video' ? it.kind !== 'video'
+        : assetTab !== 'all' && (it.kind === 'video' || it.source !== assetTab)) return false;
       const g = it.group || meta.group || '';
       if (assetGroup === 'none' && g) return false;
       if (assetGroup !== 'all' && assetGroup !== 'none' && g !== assetGroup) return false;
@@ -5310,6 +5328,15 @@
   function putAssetOnCanvas(item) {
     const c = centerOfView();
     const title = String(item.filename || '图片').replace(/\.[a-z0-9]{1,5}$/i, '') || '图片';
+    if (item.kind === 'video') {
+      addVideoNode(
+        Math.round(c.x - 190 + (Math.random() - 0.5) * 60),
+        Math.round(c.y - 130 + (Math.random() - 0.5) * 60),
+        { title, artifacts: [{ ...item, kind: 'video' }] },
+      );
+      flash(`已放入画布：${title}`);
+      return;
+    }
     const node = addImageNode(
       Math.round(c.x - 170 + (Math.random() - 0.5) * 60),
       Math.round(c.y - 130 + (Math.random() - 0.5) * 60),
@@ -5324,6 +5351,12 @@
   function putAssetOnCanvasAt(item, clientX, clientY) {
     const p = screenToWorld(clientX, clientY);
     const title = String(item.filename || '图片').replace(/\.[a-z0-9]{1,5}$/i, '') || '图片';
+    if (item.kind === 'video') {
+      addVideoNode(Math.round(p.x - 190), Math.round(p.y - 130),
+        { title, artifacts: [{ ...item, kind: 'video' }] });
+      flash(`已放入画布：${title}`);
+      return;
+    }
     const node = addImageNode(
       Math.round(p.x - 170), Math.round(p.y - 130),
       { dataURL: item.url, title, uploaded: item.source === 'input' ? item.filename : null },
@@ -5559,7 +5592,7 @@
 
     grid.addEventListener('pointerdown', (ev) => {
       if (!assetPicking || ev.button !== 0) return;
-      if (ev.target.closest('.asset-tip')) return;
+      if (ev.target.closest('.asset-tip, video')) return;
       const gr = grid.getBoundingClientRect();
       const rects = [];
       cellByKey.forEach((rec, k) => {
@@ -5712,6 +5745,7 @@
       paintPath, paintActions, renameAsset, setActiveAsset, getActiveAsset } = ctx;
     const thumbURL = (item) => {
         const u = String(item.url || '');
+        if (item.kind === 'video') return u;
         // 画布上的图是 dataURL，服务端缩不了，直接用；其余走缩略图接口
         if (!u.startsWith('/api/')) return u;
         return `/api/thumb?w=320&src=${encodeURIComponent(u)}`;
@@ -5719,15 +5753,23 @@
 
     const buildCell = (item) => {
         const cell = document.createElement('div');
-        cell.className = 'asset-cell';
+        cell.className = `asset-cell${item.kind === 'video' ? ' video' : ''}`;
         cell.setAttribute('role', 'button');
         cell.tabIndex = 0;
         cell.draggable = true;
-        const img = document.createElement('img');
-        img.alt = '';
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        img.draggable = false;          // 拖拽留给框选，别让浏览器拖起图片影子
+        const img = item.kind === 'video' ? document.createElement('video') : document.createElement('img');
+        if (item.kind === 'video') {
+          img.controls = true;
+          img.muted = true;
+          img.playsInline = true;
+          img.preload = 'metadata';
+          img.setAttribute('aria-label', item.filename || '视频资产');
+        } else {
+          img.alt = '';
+          img.loading = 'lazy';
+          img.decoding = 'async';
+        }
+        img.draggable = false;          // 拖拽留给框选，别让浏览器拖起媒体影子
         const name = document.createElement('span');
         name.className = 'asset-name';
         const badge = document.createElement('span');
@@ -5740,9 +5782,19 @@
         add.title = '放入画布';
         add.setAttribute('aria-label', '放入画布');
         add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
+        const detail = document.createElement('button');
+        detail.type = 'button';
+        detail.className = 'asset-detail';
+        detail.textContent = '详情';
+        detail.title = '查看详情';
+        detail.setAttribute('aria-label', '查看详情');
+        detail.onclick = (ev) => {
+          ev.stopPropagation();
+          if (!assetPicking) openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item));
+        };
         const tick = document.createElement('span');
         tick.className = 'asset-tick';
-        cell.append(img, badge, name, add, tick);
+        cell.append(img, badge, name, detail, add, tick);
         const rec = { cell, img, idx: -1 };
         cell.onclick = (ev) => {
           if (clickState.suppressClick) { clickState.suppressClick = false; return; }
@@ -5762,10 +5814,6 @@
           assetLastIdx = rec.idx;
           paintSelection();
         };
-        cell.ondblclick = (ev) => {
-          ev.stopPropagation();
-          if (!assetPicking) openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item));
-        };
         cell.ondragstart = (ev) => {
           if (assetPicking || !ev.dataTransfer) { ev.preventDefault(); return; }
           ev.dataTransfer.effectAllowed = 'copy';
@@ -5780,7 +5828,7 @@
           if (ev.key !== 'Enter' && ev.key !== ' ') return;
           ev.preventDefault();
           if (assetPicking) cell.onclick({ shiftKey: false });
-          else putAssetOnCanvas(item);
+          else setActiveAsset(assetKeyOf(item));
         };
         return rec;
       };
@@ -5804,7 +5852,8 @@
           cellByKey.clear();
           const why = assetQuery ? '没有匹配的文件'
             : curGid() ? '这个分组还是空的：回「全部」选几张，用「移动到」放进来'
-              : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
+              : assetTab === 'video' ? '还没有视频资产'
+                : assetTab === 'lib' ? '库里还没有图：在「全部」里选几张，用「收进库」复制进来'
                 : hiddenN ? '这个筛选下没有图了（被移除的那些在底部能找回）'
                   : '还没有资产：生成一张图、或上传一张图就会出现在这里';
           grid.innerHTML = `<p class="asset-tip">${why}</p>`;
@@ -5895,6 +5944,7 @@
             <button type="button" data-k="output">生成</button>
             <button type="button" data-k="canvas">画布</button>
             <button type="button" data-k="input">上传</button>
+            <button type="button" data-k="video">视频</button>
           </div>
           <div class="asset-controls">
             <div class="asset-groups"></div>
@@ -6042,6 +6092,14 @@
       paintActiveAsset();
       paintActions();
     };
+
+    // 多选模式里还没勾选图片时，点画布就退出选择模式。
+    // 用捕获阶段是为了节点自己的 pointerdown 即使 stopPropagation 也不会漏掉。
+    assetPickCanvasDismiss = (ev) => {
+      if (ev.button !== 0 || !assetPicking || assetPicked.size || !ev.target.closest?.('#stage')) return;
+      setPicking(false);
+    };
+    document.addEventListener('pointerdown', assetPickCanvasDismiss, true);
 
     /* ---------- 选中态：只切 class，不重建宫格 ----------
        以前每次勾选都走 paint()，581 个格子连同 <img> 全部重建一遍——浏览器要把
@@ -9984,6 +10042,7 @@
 
   /* ---------------- 产物 ---------------- */
   function artifactURL(a) {
+    if (a && a.url) return a.url;
     return `/api/view?filename=${encodeURIComponent(a.filename)}&subfolder=${encodeURIComponent(a.subfolder || '')}&type=${encodeURIComponent(a.type || 'output')}`;
   }
 
@@ -10378,9 +10437,30 @@
   function paintLightbox() {
     const gal = lbList;
     const img = $('#lightboxImg');
+    const video = $('#lightboxVideo');
+    const videoWrap = $('#lightboxVideoWrap');
+    const it = gal && gal.length ? gal[lbIdx] : null;
+    const isVideo = !!(it && typeof it === 'object' && it.kind === 'video');
+    if (it && typeof it === 'object' && it.detailInfo) lbInfo = it.detailInfo;
+    img.classList.toggle('hidden', isVideo);
+    videoWrap.classList.toggle('hidden', !isVideo);
+    if (isVideo) {
+      const src = it.url || '';
+      if (video.src !== new URL(src, location.href).href) {
+        video.pause();
+        video.src = src;
+        video.load();
+      }
+    } else {
+      video.pause();
+      if (video.hasAttribute('src')) {
+        video.removeAttribute('src');
+        video.load();
+      }
+    }
     if (gal && gal.length) {
-      const it = gal[lbIdx];
-      img.src = it.url || it;
+      if (!isVideo) img.src = (it && it.url) || it;
+      else img.src = '';
       $('#lightbox').querySelector('.lb-count').textContent = `${lbIdx + 1} / ${gal.length}`;
     } else {
       $('#lightbox').querySelector('.lb-count').textContent = '';
@@ -10404,7 +10484,11 @@
     $('#lightbox').classList.add('has-info');          // 让大图给抽屉让出右边
     if (!box.classList.contains('open')) requestAnimationFrame(() => box.classList.add('open'));
     const img = $('#lightboxImg');
-    const real = img.naturalWidth && img.naturalHeight ? `${img.naturalWidth} × ${img.naturalHeight}` : '';
+    const video = $('#lightboxVideo');
+    const media = lbList && lbList.length && lbList[lbIdx] && lbList[lbIdx].kind === 'video' ? video : img;
+    const width = media.videoWidth || media.naturalWidth;
+    const height = media.videoHeight || media.naturalHeight;
+    const real = width && height ? `${width} × ${height}` : '';
     const rows = (lbInfo.rows || []).filter(([, v]) => v != null && v !== '');
     if (lbList && lbList.length > 1) rows.push(['这一组', `${lbIdx + 1} / ${lbList.length}`]);
     box.innerHTML = `
@@ -10486,6 +10570,7 @@
       if (n.gen.seed != null) rows.push(['种子', String(n.gen.seed)]);
       if (p.from) rows.push(['提示词来自', p.from]);
     }
+    if (item.kind === 'video') rows.push(['类型', '视频']);
     return { prompt, rows };
   }
 
@@ -10504,6 +10589,7 @@
     $('#lightbox').classList.add('hidden');
     $('#lightbox').classList.remove('has-info');
     $('#lightboxInfo').classList.remove('open');
+    $('#lightboxVideo').pause();
     lbInfo = null;
   }
   function openLightbox(url, list, idx, info) {
@@ -10511,6 +10597,12 @@
     lbIdx = lbList ? Math.min(Math.max(0, idx | 0), lbList.length - 1) : 0;
     lbInfo = info || null;
     if (!lbList) $('#lightboxImg').src = url;
+    if (lbList) {
+      lbList = lbList.map((item) => ({
+        ...item,
+        detailInfo: item.detailInfo || assetImageInfo(item),
+      }));
+    }
     paintLightbox();
     $('#lightbox').classList.remove('hidden');
   }
@@ -10523,6 +10615,29 @@
   // 信息卡里要能选文字、点按钮，不能顺手把大图关掉
   $('#lightboxInfo').onclick = (ev) => ev.stopPropagation();
   $('#lightboxImg').addEventListener('load', () => paintLightboxInfo());
+  $('#lightboxVideo').addEventListener('loadedmetadata', () => paintLightboxInfo());
+  $('#lightboxVideoWrap').onclick = (ev) => ev.stopPropagation();
+  $('#lightboxVideoToggle').onclick = (ev) => {
+    ev.stopPropagation();
+    const video = $('#lightboxVideo');
+    if (video.paused) video.play().catch(() => {}); else video.pause();
+  };
+  const syncLightboxVideoControls = () => {
+    const video = $('#lightboxVideo');
+    $('#lightboxVideoToggle').textContent = video.paused ? '▶' : '❚❚';
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const time = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+    $('#lightboxVideoTime').textContent = `${time(video.currentTime || 0)} / ${time(duration)}`;
+    $('#lightboxVideoSeek').value = duration ? String(Math.round(video.currentTime / duration * 1000)) : '0';
+  };
+  $('#lightboxVideo').addEventListener('timeupdate', syncLightboxVideoControls);
+  $('#lightboxVideo').addEventListener('play', syncLightboxVideoControls);
+  $('#lightboxVideo').addEventListener('pause', syncLightboxVideoControls);
+  $('#lightboxVideoSeek').oninput = (ev) => {
+    ev.stopPropagation();
+    const video = $('#lightboxVideo');
+    if (Number.isFinite(video.duration)) video.currentTime = Number(ev.target.value) / 1000 * video.duration;
+  };
   $('#lightbox').querySelector('.lb-prev').onclick = (ev) => { ev.stopPropagation(); stepLightbox(-1); };
   $('#lightbox').querySelector('.lb-next').onclick = (ev) => { ev.stopPropagation(); stepLightbox(1); };
 
@@ -12281,10 +12396,11 @@
 
   // 拖动 / 改大小期间，连线、分组、小地图都按帧合并，避免每个 pointermove 都做一遍全量测量
   let layoutPending = false;
-  // 屏幕坐标的浮条（图片工具条 / 连线删除键）贴的是节点在**屏幕**上的位置。
+  // 屏幕坐标的浮条贴的是节点在**屏幕**上的位置。
   // 平移缩放走 applyView()，那里已经重贴过；但拖节点只改 transform、不经过 applyView ——
-  // 所以以前拖着节点走，工具条会钉在原地，松手才「瞬移」过去。这里跟布局同一个节拍补上。
+  // 所以拖动过程中也要跟着更新，不能等松手后才「瞬移」过去。这里跟布局同一个节拍补上。
   function followScreenBars() {
+    positionAlignBar();
     positionImgTools();
     positionVideoTools();
     positionTextTools();
@@ -15874,6 +15990,7 @@
   }
 
   let maskSession = null;
+  let maskOpenToken = 0;
 
   // 擦除 / 去字 = 「涂完直接生成一个新节点」，跟单纯涂遮罩的差别只在提示词和落地方式。
   // 共用同一个编辑器：笔画数据、撤销、橡皮这些没必要写两遍。
@@ -15894,12 +16011,18 @@
       return;
     }
     if (maskSession) closeMaskEditor();
+    const token = ++maskOpenToken;
     loadImageEl(n.dataURL)
-      .then((img) => buildMaskEditor(n, img, { intent }))
+      .then((img) => {
+        // Escape / cancel may happen while the source image is still decoding.
+        // Ignore that stale completion so it cannot reopen a dismissed editor.
+        if (token === maskOpenToken) buildMaskEditor(n, img, { intent });
+      })
       .catch(() => flash('图片加载失败，没法涂遮罩'));
   }
 
   function closeMaskEditor() {
+    maskOpenToken++;
     if (!maskSession) return;
     try { maskSession.ac.abort(); } catch { /* 已经 abort 过 */ }
     maskSession.root.remove();

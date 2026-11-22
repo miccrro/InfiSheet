@@ -185,6 +185,10 @@ export async function newPage(port) {
       if (!c) throw new Error('点不到元素: ' + selector);
       await api.clickAt(c.x, c.y, { button, clickCount, settle });
     },
+    async moveTo(x, y, { settle = 120 } = {}) {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y) });
+      await new Promise((r) => setTimeout(r, settle));
+    },
     async clickAt(x, y, { button = 'left', clickCount = 1, settle = 120 } = {}) {
       const base = { x: Math.round(x), y: Math.round(y), button, clickCount };
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: base.x, y: base.y });

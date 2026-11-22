@@ -1426,6 +1426,12 @@ def history_summary(limit: int = 20) -> list[dict]:
 ASSET_CACHE: dict = {"at": 0.0, "limit": 0, "items": [], "comfy": True, "error": None}
 ASSET_TTL = 5.0          # 秒：连点刷新不该把 /history 打爆，5 秒内复用
 ASSET_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".svg")
+ASSET_VIDEO_EXT = (".mp4", ".webm", ".mkv", ".mov")
+ASSET_MEDIA_EXT = ASSET_IMAGE_EXT + ASSET_VIDEO_EXT
+
+
+def asset_kind(filename: str) -> str:
+    return "video" if str(filename).lower().endswith(ASSET_VIDEO_EXT) else "image"
 
 
 def list_assets(limit: int = 400, force: bool = False) -> dict:
@@ -1451,9 +1457,9 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
     items: list[dict] = []
     seen: set = set()
 
-    def push(entry: dict, *, source: str, filename: str, subfolder: str, atype: str) -> None:
+    def push(*, source: str, filename: str, subfolder: str, atype: str, kind: str) -> None:
         name = str(filename or "")
-        if not name or not name.lower().endswith(ASSET_IMAGE_EXT):
+        if not name or not name.lower().endswith(ASSET_MEDIA_EXT):
             return
         key = (subfolder, name)
         if key in seen:
@@ -1463,6 +1469,7 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
             "filename": name,
             "subfolder": subfolder,
             "type": atype,
+            "kind": kind,
             "source": source,                       # output=生成结果 / input=上传素材
             "url": "/api/view?" + urllib.parse.urlencode(
                 {"filename": name, "subfolder": subfolder, "type": atype}),
@@ -1475,10 +1482,11 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
         if not isinstance(entry, dict):
             continue
         for art in collect_artifacts(entry):
-            if art.get("kind") != "image":
+            if art.get("kind") not in ("image", "video"):
                 continue
-            push(entry, source="output", filename=art.get("filename"),
-                 subfolder=art.get("subfolder") or "", atype=art.get("type") or "output")
+            push(source="output", filename=art.get("filename"),
+                 subfolder=art.get("subfolder") or "", atype=art.get("type") or "output",
+                 kind=art["kind"])
         prompt = entry.get("prompt")
         graph = prompt[2] if isinstance(prompt, list) and len(prompt) > 2 and isinstance(prompt[2], dict) else None
         for node in (graph or {}).values():
@@ -1486,7 +1494,7 @@ def list_assets(limit: int = 400, force: bool = False) -> dict:
                 continue
             name = (node.get("inputs") or {}).get("image")
             if isinstance(name, str):
-                push(entry, source="input", filename=name, subfolder="", atype="input")
+                push(source="input", filename=name, subfolder="", atype="input", kind="image")
 
     ASSET_CACHE = {"at": now, "limit": limit, "items": items, "comfy": True, "error": None}
     return _assets_with_lib(items, limit, cached=False, comfy=True, error=None)
@@ -1942,7 +1950,7 @@ def _safe_asset_name(raw, fallback: str = "image") -> str:
     name = ASSET_BAD_CHARS.sub("_", name).strip().strip(".")
     if not name:
         name = fallback
-    if not name.lower().endswith(ASSET_IMAGE_EXT):
+    if not name.lower().endswith(ASSET_MEDIA_EXT):
         name += ".png"
     return name[:80]
 
@@ -1989,7 +1997,7 @@ def scan_assets(root: Path, groups: list[dict]) -> tuple[list[dict], list[dict]]
     by_dir = {g["dir"].lower(): g["id"] for g in groups}
 
     def push(p: Path, sub: str, gid: str) -> None:
-        if p.suffix.lower() not in ASSET_IMAGE_EXT:
+        if p.suffix.lower() not in ASSET_MEDIA_EXT:
             return
         try:
             st = p.stat()
@@ -1998,6 +2006,7 @@ def scan_assets(root: Path, groups: list[dict]) -> tuple[list[dict], list[dict]]
         rel = p.relative_to(root).as_posix()
         out.append({
             "filename": p.name, "subfolder": sub, "type": "lib", "source": "lib",
+            "kind": asset_kind(p.name),
             "url": "/api/assets/file?path=" + urllib.parse.quote(rel),
             "key": "lib:" + rel, "group": gid, "hidden": False,
             "size": st.st_size, "mtime": int(st.st_mtime * 1000),

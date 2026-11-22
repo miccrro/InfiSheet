@@ -232,6 +232,12 @@
 
 <div id="lightbox" class="hidden">
   <img id="lightboxImg" alt="" />
+  <div id="lightboxVideoWrap" class="hidden">
+    <video id="lightboxVideo" playsinline preload="metadata"></video>
+    <button id="lightboxVideoToggle" type="button" aria-label="播放视频" title="播放 / 暂停">▶</button>
+    <input id="lightboxVideoSeek" type="range" min="0" max="1000" value="0" aria-label="视频进度" />
+    <span id="lightboxVideoTime">0:00 / 0:00</span>
+  </div>
   <div id="lightboxInfo" class="hidden"></div>
   <button class="lb-btn lb-prev" type="button" title="上一张（←）">‹</button>
   <button class="lb-btn lb-next" type="button" title="下一张（→）">›</button>

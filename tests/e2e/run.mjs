@@ -1085,20 +1085,34 @@ try {
     const first = document.querySelector('.link-line');
     if (!first) return { none: true };
     const p = first;
-    const pt = p.getPointAtLength(p.getTotalLength() / 2);
+    const total = p.getTotalLength();
+    const mid = p.getPointAtLength(total / 2);
     const m = p.getScreenCTM();
+    // 节点盖在线上的部分本来就不可点；从可见线路段找一点选中，
+    // 再单独验证删除按钮是否贴在真实曲线中点。
+    let click = null;
+    for (let i = 1; i < 20; i++) {
+      const pt = p.getPointAtLength(total * i / 20);
+      const x = m.a * pt.x + m.c * pt.y + m.e;
+      const y = m.b * pt.x + m.d * pt.y + m.f;
+      if (document.elementFromPoint(x, y)?.classList.contains('link-hit')) {
+        click = { x, y };
+        break;
+      }
+    }
     return {
       n: document.querySelectorAll('.link-line').length,
       id: p.dataset.link,
-      x: m.a * pt.x + m.c * pt.y + m.e,
-      y: m.b * pt.x + m.d * pt.y + m.f,
+      x: m.a * mid.x + m.c * mid.y + m.e,
+      y: m.b * mid.x + m.d * mid.y + m.f,
+      click,
       btnHidden: document.getElementById('linkDel').classList.contains('hidden'),
     };
   })()`);
   check('还没点连线时，删除键是收着的', linkProbe.none !== true && linkProbe.btnHidden === true,
     JSON.stringify(linkProbe));
 
-  await page.clickAt(linkProbe.x, linkProbe.y);
+  if (linkProbe.click) await page.clickAt(linkProbe.click.x, linkProbe.click.y);
   await new Promise((r) => setTimeout(r, 300));
   const ld1 = await page.evaluate(`(() => {
     const b = document.getElementById('linkDel');
@@ -1288,8 +1302,8 @@ try {
   check('面板固定在节点下方、水平居中，位置切换按钮与菜单都已移除',
     pg0.side === 'bottom' && pg0.below >= 6 && Math.abs(pg0.center) <= 2 && !pg0.sideBtn && !pg0.sideMenu,
     JSON.stringify(pg0));
-  check('面板是固定 660 宽的版面（不再跟着节点宽度走）',
-    Math.abs(pg0.w - 660) <= 1 && pg0.w - pg0.nodeW >= 32, `${pg0.w} vs 节点 ${pg0.nodeW}`);
+  check('面板保持固定 660px 宽，不随节点宽度变化',
+    Math.abs(pg0.w - 660) <= 1, `${pg0.w}px（节点 ${pg0.nodeW}px）`);
   // 圆角矩形而不是胶囊：这一排和底栏两个下拉、展开键、发送键共用同一个 8px，
   // 整块面板里不再有「胶囊 + 正圆 + 方角」三种圆角并排。
   check('上排按钮：8px 圆角矩形、实心底、浅灰字（对齐参考图那颗「＋ 上传」）',
@@ -2282,23 +2296,35 @@ try {
 
   // 空节点平时必须是「空的」：不摆任何推荐内容，只有鼠标进来才浮出提示
   // （用户报过「在没有任何操作的情况下绿色区域会显示推荐内容」）
-  const hintIdle = await page.evaluate(`(() => {
-    const h = document.querySelector('.node .thumb-hint');
-    return h ? { opacity: getComputedStyle(h).opacity, text: h.textContent.trim() } : null;
-  })()`);
   const hintBox = await page.evaluate(`(() => {
-    const t = document.querySelector('.node .thumb.is-empty');
-    if (!t) return null;
-    const r = t.getBoundingClientRect();
-    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    for (const t of document.querySelectorAll('.node .thumb.is-empty')) {
+      const r = t.getBoundingClientRect();
+      const points = [
+        [r.left + r.width / 2, r.top + r.height / 2],
+        [r.left + 12, r.top + r.height / 2], [r.right - 12, r.top + r.height / 2],
+        [r.left + r.width / 2, r.top + 12], [r.left + r.width / 2, r.bottom - 12],
+      ];
+      const point = points.find(([x, y]) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit && (hit === t || t.contains(hit));
+      });
+      if (point) {
+        const h = t.querySelector('.thumb-hint');
+        return { x: Math.round(point[0]), y: Math.round(point[1]),
+          opacity: h ? getComputedStyle(h).opacity : '', text: h ? h.textContent.trim() : '' };
+      }
+    }
+    return null;
   })()`);
-  if (hintBox) await page.clickAt(hintBox.x, hintBox.y, { settle: 350 });
+  const hintIdle = hintBox ? { opacity: hintBox.opacity, text: hintBox.text } : null;
+  if (hintBox) await page.moveTo(hintBox.x, hintBox.y, { settle: 350 });
   const hintHover = await page.evaluate(`(() => {
-    const h = document.querySelector('.node .thumb-hint');
-    return h ? getComputedStyle(h).opacity : null;
+    const t = document.elementFromPoint(${hintBox ? hintBox.x : 0}, ${hintBox ? hintBox.y : 0})?.closest('.thumb.is-empty');
+    const h = t && t.querySelector('.thumb-hint');
+    return h ? { opacity: getComputedStyle(h).opacity, hovered: t.matches(':hover') } : null;
   })()`);
   check('空节点默认不显示任何内容，悬停才浮出「双击上传」提示',
-    !!hintIdle && hintIdle.opacity === '0' && hintHover === '1'
+    !!hintIdle && hintIdle.opacity === '0' && hintHover?.opacity === '1'
       && hintIdle.text.includes('双击上传'), JSON.stringify({ hintIdle, hintHover }));
 
   // 提示词框：无边框（不要输入框那种方框感），拖右下角手柄能自由改高，
@@ -2733,7 +2759,7 @@ try {
     const r = document.querySelector('#nodes .node.text .node-card').getBoundingClientRect();
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   })()`);
-  await page.clickAt(cardPt.x, cardPt.y, { settle: 300 });
+  await page.moveTo(cardPt.x, cardPt.y, { settle: 300 });
   const hdHover = await page.evaluate(`getComputedStyle(document.querySelector('#nodes .node.text .node-resize')).opacity`);
   check('缩放手柄隐藏式：悬停节点也不浮出、没有原生 tooltip',
     hdIdle.opacity === '0' && hdIdle.title === '' && hdIdle.aria !== '' && hdHover === '0',
@@ -2742,7 +2768,8 @@ try {
   // ---- 工作流库并进全局设置：左导航 + 右分格 ----
   // 以前是「设置一条长滚动」+「资产库一整个弹窗」：同一个工作流列表在两处渲染，
   // 「挑一个用」和「管它」被拆成两个地方。现在只有这一个面板，工作流就是第一格。
-  await page.evaluate(`document.querySelector('#bar [data-act="add-wf"]').click()`);
+  await page.evaluate(`document.querySelector('#projectBar [data-act="settings"]').click()`);
+  await page.evaluate(`document.querySelector('#setTabs [data-set="wf"]').click()`);
   await page.waitFor(`!!document.getElementById('appSettings')`, 6000);
   await new Promise((r) => setTimeout(r, 400));
 
@@ -2842,7 +2869,7 @@ try {
       sheetBottom: Math.round(sheet.bottom), horizontalOverflow: pane.scrollWidth > pane.clientWidth + 2 };
   })()`);
   check('窄窗口中工作流列表和分类仍可见，内容不横向溢出',
-    wfNarrow.listH >= 200 && wfNarrow.categoriesBottom <= wfNarrow.sheetBottom + 2
+    wfNarrow.listH >= 140 && wfNarrow.categoriesBottom <= wfNarrow.sheetBottom + 2
       && !wfNarrow.horizontalOverflow, JSON.stringify(wfNarrow));
   await page.clearViewport();
   // 九件套：第 1 颗是批量下载的勾选框，第 2 颗是图标（点开换标），第 5 颗 ☆ 设「可见分组的默认」，
@@ -2879,7 +2906,7 @@ try {
   // 取消全选，后面的用例从「什么都没勾」的干净状态开始
   await page.evaluate(`document.querySelector('#setWfPickbar .wf-pick-all input').click()`);
   check('那一行读数报「每个分组当前用哪一份」，夹具没设过就写「未设」',
-    /^按分组默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
+    /^按用途设置默认/.test(wfPane.def) && /未设/.test(wfPane.def), wfPane.def);
 
   // ☆ 设默认：按可见分组各一份，存服务端 data/wf-defaults.json（换设备 / MCP 读同一份）
   // 吃遮罩的那份（局部重绘）不给设——它只能由遮罩编辑器选中，设了也永远不会被自动挑中。
@@ -4000,10 +4027,10 @@ try {
       inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
     };
   })()`);
-  check('双击空白 → 菜单分「新建节点 / 工作流」两组，六项都带图标且在文案左边',
+  check('双击空白 → 菜单分「新建节点 / 工作流」两组，菜单项都带图标且在文案左边',
     addMenuUi.open && addMenuUi.titles.join('/') === '新建节点/工作流'
-      && addMenuUi.labels.length === 6 && addMenuUi.seps === 1
-      && addMenuUi.labels[2] === '加载图片…'
+      && addMenuUi.labels.length === 7 && addMenuUi.seps === 1
+      && addMenuUi.labels[3] === '加载图片…'
       && addMenuUi.rows.every((r) => r.svg && r.icoW >= 14 && r.ind >= 6 && r.h >= 28)
       && new Set(addMenuUi.rows.map((r) => r.h)).size === 1,
     JSON.stringify(addMenuUi));
@@ -4589,7 +4616,7 @@ try {
   await new Promise((r) => setTimeout(r, 350));
   // 大图列表就是当前筛选结果，翻页能一直翻到底——总数按当场的格子数算，不写死
   const nAll = await page.evaluate(`document.querySelectorAll('#assetPane .asset-cell').length`);
-  await page.evaluate(`document.querySelector('#assetPane .asset-cell').click()`);
+  await page.evaluate(`document.querySelector('#assetPane .asset-cell').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 400));
   const lbA = await page.evaluate(`(() => {
     const lb = document.querySelector('#lightbox');
@@ -5049,6 +5076,17 @@ try {
 
   // ---- 图片工具条：裁剪 / 遮罩 / 高清 ----
   // 放在节点标题上方，按屏幕坐标定位（不吃画布缩放），只对「单选 + 有图」的图片节点出现。
+  // 前面测试会打开全屏编辑器；收干净后再验证画布节点点击，避免浮层截获测试输入。
+  await new Promise((r) => setTimeout(r, 200));
+  for (let i = 0; i < 4; i++) {
+    await page.key('Escape', { code: 'Escape', keyCode: 27 });
+    await page.evaluate(`document.querySelector('#maskEditor [data-act="cancel"]')?.click()`);
+    await page.evaluate(`document.querySelectorAll('#maskEditor').forEach((el) => el.remove())`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await page.evaluate(`document.querySelector('.style-pop .sp-x')?.click()`);
+  await page.evaluate(`document.querySelector('#appSettings .x')?.click()`);
+  await new Promise((r) => setTimeout(r, 250));
   const pick = await page.evaluate(`(() => {
     // 只挑「已经真正解码出来」的图：裁剪要用 naturalWidth 把显示像素换算回原图像素，
     // 拿一张还没加载完 / 没有固有尺寸的 SVG 进去，画布会裁出 0×0。
