@@ -326,10 +326,21 @@
     if (imgPanel) placeImgPanel();         // 调色面板贴着图片，视图一动也要贴回去
     // 扩图时面板贴在画布外框上：外框是世界坐标，但「别顶出屏幕」是屏幕坐标，视图一动就得重算
     if (opSession && opSession.place) opSession.place();
-    // 点阵跟着缩放，但两头都要收：15% 时 4px 一格会糊成一片、800% 时 224px 一格又稀得像噪点
-    const cell = clamp(28 * k, 16, 112);
+    // 点阵间距持续跟随缩放；高倍率时放大间距与线宽，让底纹仍然清晰可见。
+    const cell = clamp(28 * k, 16, 224);
     stage.style.backgroundSize = `${cell}px ${cell}px`;
     stage.style.backgroundPosition = `${x}px ${y}px`;
+    const textureScale = k < 1
+      ? clamp(1 - Math.abs(Math.log2(Math.max(k, 0.01))) * 0.22, 0.3, 1)
+      : clamp(1 + Math.log2(k) * 0.12, 1, 1.35);
+    const markSize = clamp(1 + Math.max(0, k - 1) * 0.36, 1, 3.5);
+    stage.style.setProperty('--canvas-texture-mark', `${markSize.toFixed(2)}px`);
+    const dot = stage.style.getPropertyValue('--canvas-dot').trim() || '#474747';
+    const rgb = /^#([\da-f]{6})$/i.exec(dot);
+    const textureColor = rgb
+      ? `rgba(${parseInt(rgb[1].slice(0, 2), 16)}, ${parseInt(rgb[1].slice(2, 4), 16)}, ${parseInt(rgb[1].slice(4, 6), 16)}, ${(0.72 * textureScale).toFixed(3)})`
+      : dot;
+    stage.style.setProperty('--canvas-texture-color', textureColor);
   }
 
   function screenToWorld(sx, sy, rect) {
@@ -5168,7 +5179,11 @@
   function closeAssetSheet() {
     const el = document.getElementById('assetPane');
     if (el) el.remove();
+    document.querySelector('#bar [data-act="assets"]')?.classList.remove('active');
+    assetPaneItems = [];
   }
+
+  let assetPaneItems = [];
 
   // 一张图在资产库里的唯一键。远端图服务端已经给好了 key，画布图得自己拼。
   function assetKeyOf(item) {
@@ -5306,6 +5321,17 @@
     flash(`已放入画布：${title}`);
   }
 
+  function putAssetOnCanvasAt(item, clientX, clientY) {
+    const p = screenToWorld(clientX, clientY);
+    const title = String(item.filename || '图片').replace(/\.[a-z0-9]{1,5}$/i, '') || '图片';
+    const node = addImageNode(
+      Math.round(p.x - 170), Math.round(p.y - 130),
+      { dataURL: item.url, title, uploaded: item.source === 'input' ? item.filename : null },
+    );
+    if (item.source === 'input') node.subfolder = item.subfolder || '';
+    flash(`已放入画布：${title}`);
+  }
+
   function bindAssetPathControls(box, paintPath, reload) {
     const pathRow = box.querySelector('.asset-path');
     const pathT = box.querySelector('.asset-path-t');
@@ -5408,7 +5434,9 @@
   function bindAssetPaneResize(box) {
     const paneEl = box.querySelector('.asset-pane');
     const grip = box.querySelector('.asset-grip');
-    const W_MIN = 320, W_MAX = () => Math.min(1100, Math.max(W_MIN, window.innerWidth - 120));
+    const dragBar = box.querySelector('.asset-dragbar');
+    const resetBtn = box.querySelector('.asset-reset');
+    const W_MIN = 320, W_MAX = () => Math.min(1100, Math.max(W_MIN, window.innerWidth - 32));
     const applyPaneW = (w) => {
       const v = Math.round(Math.max(W_MIN, Math.min(W_MAX(), w)));
       paneEl.style.width = `${v}px`;
@@ -5418,21 +5446,72 @@
       const saved = Number(localStorage.getItem('infisheet-asset-w') || 0);
       if (saved) applyPaneW(saved);
     } catch { /* 隐私模式读不了，用默认宽度 */ }
+    try {
+      const savedPos = JSON.parse(localStorage.getItem('infisheet-asset-pos') || 'null');
+      if (savedPos && Number.isFinite(savedPos.x) && Number.isFinite(savedPos.y)) {
+        box.style.left = `${Math.max(0, Math.min(window.innerWidth - paneEl.offsetWidth, savedPos.x))}px`;
+        box.style.top = `${Math.max(0, Math.min(window.innerHeight - 120, savedPos.y))}px`;
+      }
+    } catch { /* 首次打开默认停靠在右上角 */ }
+    resetBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      paneEl.style.width = '';
+      box.style.left = '';
+      box.style.top = '';
+      try {
+        localStorage.removeItem('infisheet-asset-w');
+        localStorage.removeItem('infisheet-asset-pos');
+      } catch { /* 本次仍可复位 */ }
+    };
+    dragBar.onpointerdown = (ev) => {
+      if (ev.button !== 0 || ev.target.closest('button')) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const start = { x: ev.clientX, y: ev.clientY, left: box.getBoundingClientRect().left, top: box.getBoundingClientRect().top };
+      const onMove = (e) => {
+        const maxX = Math.max(0, window.innerWidth - paneEl.offsetWidth);
+        const maxY = Math.max(0, window.innerHeight - 120);
+        box.style.left = `${Math.max(0, Math.min(maxX, start.left + e.clientX - start.x))}px`;
+        box.style.top = `${Math.max(0, Math.min(maxY, start.top + e.clientY - start.y))}px`;
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        const r = box.getBoundingClientRect();
+        try { localStorage.setItem('infisheet-asset-pos', JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) })); } catch { /* 忽略 */ }
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp, { once: true });
+    };
     grip.onpointerdown = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       const startW = paneEl.getBoundingClientRect().width;
       const x0 = ev.clientX;
+      let pendingW = startW;
+      let frame = 0;
       document.body.classList.add('asset-resizing');
-      const onMove = (e) => applyPaneW(startW - (e.clientX - x0));
-      const onUp = () => {
+      const onMove = (e) => {
+        pendingW = startW - (e.clientX - x0);
+        if (frame) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          applyPaneW(pendingW);
+        });
+      };
+      const onUp = (e) => {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        pendingW = startW - (e.clientX - x0);
+        if (frame) cancelAnimationFrame(frame);
+        applyPaneW(pendingW);
         document.body.classList.remove('asset-resizing');
         try { localStorage.setItem('infisheet-asset-w', String(Math.round(paneEl.getBoundingClientRect().width))); } catch { /* 忽略 */ }
       };
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
     };
     grip.ondblclick = (ev) => {
       ev.stopPropagation();
@@ -5630,7 +5709,7 @@
 
   function createAssetGridRenderer(ctx) {
     const { grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid, paintSelection,
-      paintPath, paintActions, renameAsset } = ctx;
+      paintPath, paintActions, renameAsset, setActiveAsset, getActiveAsset } = ctx;
     const thumbURL = (item) => {
         const u = String(item.url || '');
         // 画布上的图是 dataURL，服务端缩不了，直接用；其余走缩略图接口
@@ -5643,6 +5722,7 @@
         cell.className = 'asset-cell';
         cell.setAttribute('role', 'button');
         cell.tabIndex = 0;
+        cell.draggable = true;
         const img = document.createElement('img');
         img.alt = '';
         img.loading = 'lazy';
@@ -5654,10 +5734,11 @@
         badge.className = `asset-badge ${item.source}`;
         badge.textContent = item.source === 'lib' ? '库'
           : item.source === 'canvas' ? '画布' : item.source === 'input' ? '上传' : '生成';
-        const add = document.createElement('span');
+        const add = document.createElement('button');
+        add.type = 'button';
         add.className = 'asset-add';
         add.title = '放入画布';
-        add.textContent = '＋';
+        add.setAttribute('aria-label', '放入画布');
         add.onclick = (ev) => { ev.stopPropagation(); putAssetOnCanvas(item); };
         const tick = document.createElement('span');
         tick.className = 'asset-tick';
@@ -5665,8 +5746,8 @@
         const rec = { cell, img, idx: -1 };
         cell.onclick = (ev) => {
           if (clickState.suppressClick) { clickState.suppressClick = false; return; }
-          if (!assetPicking) { openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item)); return; }
           const key = assetKeyOf(item);
+          if (!assetPicking) { setActiveAsset(key); return; }
           if (ev.shiftKey && assetLastIdx >= 0) {
             // Shift 连选：从锚点一路选到这一格，和文件管理器的手感一致
             const list = assetFiltered();
@@ -5683,7 +5764,17 @@
         };
         cell.ondblclick = (ev) => {
           ev.stopPropagation();
-          if (!assetPicking) putAssetOnCanvas(item);
+          if (!assetPicking) openLightbox(item.url, assetFiltered(), rec.idx, assetImageInfo(item));
+        };
+        cell.ondragstart = (ev) => {
+          if (assetPicking || !ev.dataTransfer) { ev.preventDefault(); return; }
+          ev.dataTransfer.effectAllowed = 'copy';
+          ev.dataTransfer.setData('application/x-infisheet-asset', assetKeyOf(item));
+          ev.dataTransfer.setData('text/plain', item.filename || 'asset');
+          clickState.suppressClick = true;
+        };
+        cell.ondragend = () => {
+          window.setTimeout(() => { clickState.suppressClick = false; }, 0);
         };
         cell.onkeydown = (ev) => {
           if (ev.key !== 'Enter' && ev.key !== ' ') return;
@@ -5745,12 +5836,14 @@
           rec.cell.querySelector('.asset-name').textContent = item.filename || '（未命名）';
           rec.cell.classList.toggle('pick', assetPicking);
           rec.cell.classList.toggle('on', assetPicked.has(key));
+          rec.cell.classList.toggle('active', !assetPicking && getActiveAsset() === key);
           // 库内文件才能改名：库外的是 ComfyUI 的产物，改名字等于把它从历史里改名，
           // 下次 /history 一读又变回去了。
           const wantRn = item.source === 'lib';
           const rn = rec.cell.querySelector('.asset-rn');
           if (wantRn && !rn) {
-            const b = document.createElement('span');
+            const b = document.createElement('button');
+            b.type = 'button';
             b.className = 'asset-add asset-rn';
             b.title = '改名';
             b.textContent = '✎';
@@ -5783,9 +5876,10 @@
     box.innerHTML = `
       <aside class="asset-pane" role="dialog" aria-label="资产库">
         <div class="asset-grip" title="拖动调整宽度（双击复位）"></div>
-        <header>
+        <header class="asset-dragbar" title="拖动移动资产库">
           <strong>资产库</strong>
           <span class="asset-n"></span>
+          <button type="button" class="asset-reset" title="恢复默认位置和大小" aria-label="恢复默认位置和大小">复位</button>
           <button type="button" class="asset-reload" title="重新读取资产目录与 ComfyUI 历史"
                   aria-label="重新读取资产目录与 ComfyUI 历史">${icon('rotate')}</button>
           <button type="button" class="x" title="关闭（Esc）">×</button>
@@ -5802,7 +5896,9 @@
             <button type="button" data-k="canvas">画布</button>
             <button type="button" data-k="input">上传</button>
           </div>
-          <div class="asset-groups"></div>
+          <div class="asset-controls">
+            <div class="asset-groups"></div>
+          </div>
         </div>
         <div class="asset-grid"><p class="asset-tip">读取中…</p></div>
         <div class="asset-actions"></div>
@@ -5816,11 +5912,12 @@
             <button type="button" class="asset-comfy-btn">修改…</button>
           </div>
           <p class="asset-hint">
-            <span class="asset-hint-t">单击看大图 · 双击放入画布 · 「选择」里能收进库、移动、删除</span>
+            <span class="asset-hint-t">单击选中 · 拖到画布放入 · 双击看大图 · 「选择」里能收进库、移动、删除</span>
             <button type="button" class="asset-restore"></button>
           </p>        </div>
       </aside>`;
     document.body.appendChild(box);
+    document.querySelector('#bar [data-act="assets"]')?.classList.add('active');
     box.querySelector('.x').onclick = closeAssetSheet;
 
     const grid = box.querySelector('.asset-grid');
@@ -5942,6 +6039,7 @@
         rec.cell.classList.toggle('pick', on);
         if (!on) rec.cell.classList.remove('on');
       });
+      paintActiveAsset();
       paintActions();
     };
 
@@ -5953,6 +6051,15 @@
       // 而短路反而会让外部（脚本 / 框选）改过 class 之后对不上。
       cellByKey.forEach((rec, k) => rec.cell.classList.toggle('on', assetPicked.has(k)));
       paintActions();
+    };
+
+    let activeAssetKey = '';
+    const paintActiveAsset = () => {
+      cellByKey.forEach((rec, key) => rec.cell.classList.toggle('active', !assetPicking && key === activeAssetKey));
+    };
+    const setActiveAsset = (key) => {
+      activeAssetKey = key;
+      paintActiveAsset();
     };
 
     const setPickedAll = (on) => {
@@ -6037,7 +6144,8 @@
     const clickState = { suppressClick: false };
     const paint = createAssetGridRenderer({
       grid, nEl, restoreBtn, cellByKey, clickState, groupName, curGid, paintSelection,
-      paintPath, paintActions, renameAsset,
+      paintPath, paintActions, renameAsset, setActiveAsset,
+      getActiveAsset: () => activeAssetKey,
     });
 
     const { paintGroups, newAssetGroup, assignTo } =
@@ -6051,6 +6159,7 @@
       grid.innerHTML = '<p class="asset-tip">读取中…</p>';
       cellByKey.clear();          // 重新扫盘之后 key 可能整批换掉，别留着旧格子
       await loadAssets(force);
+      assetPaneItems = assetItems || [];
       paintGroups();
       paint();
     };
@@ -7286,29 +7395,45 @@
             </div>
             <div class="sheet-pane hidden" id="set-pane-history"></div>
             <div class="sheet-pane hidden" id="set-pane-look">
-              <div class="set-group">背景</div>
-              <div class="set-bg">
-                <div class="bg-swatches" id="setBgSwatches"></div>
-                <div class="set-actions">
-                  <label class="bg-custom">自定义 <input type="color" id="setBgColor" /></label>
-                  <button type="button" data-pattern="dots">点阵</button>
-                  <button type="button" data-pattern="lines">网格</button>
-                  <button type="button" data-pattern="none">纯色</button>
+              <section class="look-section" aria-labelledby="setLookBackground">
+                <div class="look-heading">
+                  <div class="set-group" id="setLookBackground">画布背景</div>
+                  <p class="set-tip">选择画布底色与纹理，修改后立即应用。</p>
                 </div>
-              </div>
-              <div class="set-sep"></div>
-              <div class="set-group">界面</div>
-              <div class="set-density" id="setDensity" role="radiogroup" aria-label="界面密度">
-                <button type="button" data-density="comfortable" role="radio" aria-checked="true">舒适（默认）</button>
-                <button type="button" data-density="compact" role="radio" aria-checked="false">紧凑</button>
-              </div>
-              <p class="set-tip">舒适：图标大一档、主按钮热区 40px、核心入口带文字。紧凑：尺寸小一档、以图标为主——原来的高信息密度用法。只影响界面，不动画布内容。</p>
-              <div class="set-sep"></div>
-              <div class="set-group">画布</div>
-              <label class="set-row"><input type="checkbox" id="setSnap" /> 网格吸附</label>
-              <label class="set-row"><input type="checkbox" id="setLinks" /> 显示连线</label>
-              <label class="set-row"><input type="checkbox" id="setMinimap" /> 显示小地图</label>
-              <label class="set-row"><input type="checkbox" id="setAutosave" /> 自动保存（关闭后只存本机）</label>
+                <div class="set-bg">
+                  <div class="bg-swatches" id="setBgSwatches" aria-label="背景颜色预设"></div>
+                  <div class="set-actions">
+                    <label class="bg-custom">自定义颜色 <input type="color" id="setBgColor" /></label>
+                    <div class="set-choice" role="radiogroup" aria-label="背景纹理">
+                      <button type="button" data-pattern="dots" role="radio" aria-checked="false">点阵</button>
+                      <button type="button" data-pattern="lines" role="radio" aria-checked="false">网格</button>
+                      <button type="button" data-pattern="none" role="radio" aria-checked="false">纯色</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <section class="look-section" aria-labelledby="setLookDensity">
+                <div class="look-heading">
+                  <div class="set-group" id="setLookDensity">界面密度</div>
+                  <p class="set-tip">只调整控件尺寸与入口标签，不会改变画布内容。</p>
+                </div>
+                <div class="set-choice" id="setDensity" role="radiogroup" aria-label="界面密度">
+                  <button type="button" data-density="comfortable" role="radio" aria-checked="true">舒适</button>
+                  <button type="button" data-density="compact" role="radio" aria-checked="false">紧凑</button>
+                </div>
+              </section>
+              <section class="look-section" aria-labelledby="setLookCanvas">
+                <div class="look-heading">
+                  <div class="set-group" id="setLookCanvas">画布选项</div>
+                  <p class="set-tip">控制画布辅助显示与保存方式。</p>
+                </div>
+                <div class="look-options">
+                  <label class="set-row"><input type="checkbox" id="setSnap" /> 网格吸附</label>
+                  <label class="set-row"><input type="checkbox" id="setLinks" /> 显示连线</label>
+                  <label class="set-row"><input type="checkbox" id="setMinimap" /> 显示小地图</label>
+                  <label class="set-row"><input type="checkbox" id="setAutosave" /> 自动保存 <span>关闭后只存本机</span></label>
+                </div>
+              </section>
             </div>
             <div class="sheet-pane hidden" id="set-pane-conn">
               <div class="set-group">ComfyUI 服务地址</div>
@@ -7462,10 +7587,14 @@
       const cur = loadCanvasBg();
       [...swWrap.children].forEach((b) => {
         const preset = CANVAS_BGS.find((p) => p.id === b.dataset.bg);
-        b.classList.toggle('active', !!preset && preset.bg.toLowerCase() === String(cur.bg).toLowerCase());
+        const on = !!preset && preset.bg.toLowerCase() === String(cur.bg).toLowerCase();
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
       [...box.querySelectorAll('[data-pattern]')].forEach((b) => {
-        b.classList.toggle('active', (cur.pattern || 'dots') === b.dataset.pattern);
+        const on = (cur.pattern || 'dots') === b.dataset.pattern;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
       });
       const ci = box.querySelector('#setBgColor');
       if (/^#[0-9a-f]{6}$/i.test(String(cur.bg))) ci.value = cur.bg;
@@ -7473,6 +7602,8 @@
     CANVAS_BGS.forEach((p) => {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'bg-swatch'; b.title = p.name;
+      b.setAttribute('aria-label', p.name);
+      b.setAttribute('aria-pressed', 'false');
       b.dataset.bg = p.id;
       b.style.setProperty('--sw', p.bg);
       b.onclick = () => { saveCanvasBg({ ...p, pattern: loadCanvasBg().pattern }); markBg(); };
@@ -10618,6 +10749,7 @@
     (root || document).querySelectorAll('#setDensity [data-density]').forEach((b) => {
       const on = b.dataset.density === val;
       b.classList.toggle('on', on);
+      b.classList.toggle('active', on);
       b.setAttribute('aria-checked', on ? 'true' : 'false');
     });
     return val;
@@ -10936,9 +11068,6 @@
       return;
     }
     if (act === 'home') { showHome(); return; }
-    // 工作流库现在就是设置面板的第一格：齿轮落进去就是它，所以顶栏那颗单独的工作流库按钮删了，
-    // 只留底 dock 的 add-wf（那个是「挑一个加到画布」，在画布上顺手）
-    if (act === 'add-wf') { showCanvas(); openSettingsSheet('wf'); return; }
     if (act === 'storyboard') { showCanvas(); addScriptNode(); return; }
     if (act === 'settings') { openSettingsSheet(); return; }
     if (act === 'assets') { showCanvas(); openAssetSheet(); return; }
@@ -11538,6 +11667,12 @@
   stage.addEventListener('dragover', (ev) => { ev.preventDefault(); });
   stage.addEventListener('drop', async (ev) => {
     ev.preventDefault();
+    const assetKey = ev.dataTransfer?.getData('application/x-infisheet-asset');
+    if (assetKey) {
+      const item = assetPaneItems.find((it) => assetKeyOf(it) === assetKey);
+      if (item) putAssetOnCanvasAt(item, ev.clientX, ev.clientY);
+      return;
+    }
     const files = [...(ev.dataTransfer?.files || [])];
     const images = files.filter((f) => f.type.startsWith('image/'));
     const jsons = files.filter((f) => /\.json$/i.test(f.name) || f.type === 'application/json');

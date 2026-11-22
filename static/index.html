@@ -21,12 +21,8 @@
       <input id="projectName" aria-label="项目名称" value="未命名画布" spellcheck="false" />
       <button id="canvasMenuBtn" class="ghost" title="画布菜单">画布 1<span class="caret">▾</span></button>
       <span class="vsep"></span>
-      <!-- 素材 / 故事板 / 设置：常态保持纯图标（左右停靠和窄屏都靠它省地方），
+      <!-- 故事板 / 设置：常态保持纯图标（左右停靠和窄屏都靠它省地方），
            首次进入画布时给一次 2 秒的文字提示，之后靠 tooltip + aria-label。 -->
-      <button class="icon tiny" data-act="assets" title="素材库：所有生成结果与上传素材，可分组 / 多选 / 移除" aria-label="素材库">
-        <span class="ico" data-icon="material" aria-hidden="true"></span>
-        <span class="lbl">素材</span>
-      </button>
       <button class="icon tiny" data-act="storyboard" title="故事板：放入剧本 / 分镜节点" aria-label="故事板">
         <span class="ico" data-icon="film" aria-hidden="true"></span>
         <span class="lbl">故事板</span>
@@ -133,8 +129,8 @@
     <button class="icon dock-btn" data-act="pan-mode" title="抓手模式：拖任意位置平移画布" aria-label="抓手模式">
       <span class="ico" data-icon="hand" aria-hidden="true"></span>
     </button>
-    <button class="icon dock-btn" data-act="add-wf" title="工作流库：挑一个加到画布" aria-label="工作流库">
-      <span class="ico" data-icon="grid4" aria-hidden="true"></span>
+    <button class="icon dock-btn" data-act="assets" title="资产库：管理生成结果与上传素材" aria-label="资产库">
+      <span class="ico" data-icon="material" aria-hidden="true"></span>
     </button>
     <span class="vsep"></span>
     <button class="icon dock-btn" data-act="all-tools" title="更多功能" aria-label="更多功能">
