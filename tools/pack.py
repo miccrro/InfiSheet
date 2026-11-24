@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -100,9 +101,16 @@ def build(out_dir: Path, with_data: bool) -> list[Path]:
                 rel = p.relative_to(ROOT).as_posix()
                 if rel.endswith(".pyc") or "/.tmp/" in "/" + rel:
                     continue
-                zf.write(p, f"infisheet/{rel}")
+                arc = f"infisheet/{rel}"
+                if rel == "InfiSheet.app/Contents/Info.plist":
+                    info = plistlib.loads(p.read_bytes())
+                    info["CFBundleShortVersionString"] = version
+                    info["CFBundleVersion"] = version
+                    zf.writestr(arc, plistlib.dumps(info))
+                else:
+                    zf.write(p, arc)
                 if needs_exec(rel):
-                    info = zf.getinfo(f"infisheet/{rel}")
+                    info = zf.getinfo(arc)
                     info.create_system = 3
                     info.external_attr = 0o100755 << 16
     written.append(app_zip)

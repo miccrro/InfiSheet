@@ -4211,11 +4211,8 @@
     const rect = el.getBoundingClientRect();
     const width = bar.offsetWidth || 120;
     const height = bar.offsetHeight || 34;
-    const left = clamp(rect.left + rect.width / 2 - width / 2, 10, Math.max(10, window.innerWidth - width - 10));
-    const topBar = document.getElementById('topBar');
-    const floor = (topBar ? topBar.offsetHeight : 44) + 6;
-    const maxTop = Math.max(floor, window.innerHeight - height - 8);
-    const top = clamp(rect.top - height - 8, floor, maxTop);
+    const left = rect.left + rect.width / 2 - width / 2;
+    const top = rect.top - height - 8;
     bar.style.left = `${Math.round(left)}px`;
     bar.style.top = `${Math.round(top)}px`;
   }
@@ -13669,14 +13666,10 @@
     const ref = stageBox && stageBox.width > 1 ? stageBox : nb;
     const w = bar.offsetWidth || 300;
     const h = bar.offsetHeight || 34;
-    const maxL = Math.max(10, window.innerWidth - w - 10);
     // 和节点底部的生成面板一样，功能条固定贴在节点上方居中；不因旁边节点标题
     // 改变锚点位置，避免图片功能条碰到视频节点时突然横移或上跳。
-    const left = clamp(ref.left + ref.width / 2 - w / 2, 10, maxL);
-    const topBar = document.getElementById('topBar');
-    const floor = (topBar ? topBar.offsetHeight : 44) + 6;
-    const maxTop = Math.max(floor, window.innerHeight - h - 8);
-    const top = clamp(ref.top - h - 8, floor, maxTop);
+    const left = ref.left + ref.width / 2 - w / 2;
+    const top = ref.top - h - 8;
     bar.dataset.place = 'above';
     bar.style.left = `${Math.round(left)}px`;
     bar.style.top = `${Math.round(top)}px`;

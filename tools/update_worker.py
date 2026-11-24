@@ -351,7 +351,7 @@ def run(manifest_path: Path) -> None:
         cleanup_dir = True
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         root = ensure_install_root(Path(manifest["root"]), str(manifest.get("current_version") or ""))
-        stage = Path(tempfile.mkdtemp(prefix=".infisheet-update-", dir=root.parent))
+        stage = Path(tempfile.mkdtemp(prefix=".infisheet-update-", dir=root))
         archive = stage / "release.zip"
         phase = "下载更新包"
         write_status(manifest, "downloading", "正在从 GitHub 下载更新包")
