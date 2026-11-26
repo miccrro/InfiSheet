@@ -59,12 +59,18 @@
   }
 
   function snapshotState() {
-    const data = serialize();
+    const data = JSON.parse(canvasSnapshot());
     // 视图/显示偏好不进历史：撤销不该把你甩回上一个缩放位置
     delete data.view;
     delete data.snap;
     delete data.linksHidden;
     delete data.minimapOn;
+    return JSON.stringify(data);
+  }
+
+  function canvasSnapshot() {
+    const data = serialize();
+    delete data.savedAt; // 写入时间是元数据，不是一次画布编辑
     return JSON.stringify(data);
   }
 
@@ -10792,6 +10798,7 @@
   }
 
   let lastSavedSnap = '';
+  let saveInFlight = null;
   // 「本地有还没写进服务端的改动」。和 lastSavedSnap 不同，这个标记不会被 savedAt 搅乱：
   // 外部同步只在它为 false 时自动进行，避免把用户正在打的字冲掉。
   let dirty = false;
@@ -10885,56 +10892,70 @@
     }
   }
 
-  function flushSave() {
+  async function flushSave() {
     clearTimeout(saveTimer);
-    const local = saveLocalDraft();
-    saveToServer();
-    if (local) flash('已保存');
+    saveLocalDraft();
+    if (await saveToServer()) flash('已保存到磁盘');
   }
 
   async function saveToServer() {
-    if (!state.hydrated) return;
-    const snap = JSON.stringify(serialize());
-    if (snap === lastSavedSnap) return;
-    setSaveState('保存中…');
-    try {
-      const url = state.projectId ? '/api/projects/' + encodeURIComponent(state.projectId) : '/api/canvas';
-      const res = await api(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        // baseRev：我是从哪一版改的。服务端对不上就拒绝（画布可能刚被 MCP 改过），
-        // 不带上这个字段的话，一次保存就会把 AI 刚才那一串操作静默抹掉。
-        body: JSON.stringify({ canvas: JSON.parse(snap), baseRev: state.projectId ? state.rev : undefined }),
-      });
-      if (!res.ok) throw new Error(res.error || '保存失败');
-      if (res.stale) {
-        if (res.lastWriter === 'mcp') {
-          // 对方是 MCP：它代表用户主动让 AI 做的操作，这里直接跟上，别把画布卡死在旧版本。
-          // 本地那份会先进撤销栈（见 pullExternal），按 Ctrl+Z 就能拿回来。
-          await pullExternal();
-          return;
-        }
-        // 另一个标签页/旧会话：只提示，不抢——它可能正在等人继续操作
-        if (Date.now() - staleWarnAt > 60000) {
-          staleWarnAt = Date.now();
-          flash('画布在别处被改过：这次改动没保存');
-        }
-        setSaveState('有新版本，未覆盖');
-        return;
-      }
-      if (res.rev) state.rev = res.rev;
-      dirty = false;
-      lastSavedSnap = snap;
-      const d = new Date();
-      const hh = String(d.getHours()).padStart(2, '0');
-      const mm = String(d.getMinutes()).padStart(2, '0');
-      // 状态位只说「已保存」。时间戳放进 tooltip——顶上那一条本来就窄，
-      // 挂个「已保存 04:43」既占位置又每存一次就跳一下，反而看不出「刚存过没有」。
-      setSaveState('已保存');
-      const el = document.getElementById('saveState');
-      if (el) el.title = `上次保存 ${hh}:${mm}`;
-    } catch {
-      setSaveState('保存失败');
+    if (!state.hydrated) return true;
+    if (saveInFlight) {
+      if (!await saveInFlight) return false;
+      return saveToServer();
     }
+    const snap = canvasSnapshot();
+    if (snap === lastSavedSnap) { dirty = false; return true; }
+    const projectId = state.projectId;
+    setSaveState('保存中…');
+    saveInFlight = (async () => {
+      try {
+        const url = projectId ? '/api/projects/' + encodeURIComponent(projectId) : '/api/canvas';
+        const res = await api(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          // baseRev：我是从哪一版改的。服务端对不上就拒绝（画布可能刚被 MCP 改过），
+          // 不带上这个字段的话，一次保存就会把 AI 刚才那一串操作静默抹掉。
+          body: JSON.stringify({ canvas: { ...JSON.parse(snap), savedAt: Date.now() },
+            baseRev: projectId ? state.rev : undefined }),
+        });
+        if (!res.ok) throw new Error(res.error || '保存失败');
+        if (res.stale) {
+          if (res.lastWriter === 'mcp') {
+            // 对方是 MCP：它代表用户主动让 AI 做的操作，这里直接跟上，别把画布卡死在旧版本。
+            // 本地那份会先进撤销栈（见 pullExternal），按 Ctrl+Z 就能拿回来。
+            if (await pullExternal()) return true;
+            setSaveState('同步失败，未保存');
+            return false;
+          }
+          // 另一个标签页/旧会话：只提示，不抢——它可能正在等人继续操作
+          if (Date.now() - staleWarnAt > 60000) {
+            staleWarnAt = Date.now();
+            flash('画布在别处被改过：这次改动没保存');
+          }
+          setSaveState('有新版本，未覆盖');
+          return false;
+        }
+        if (res.rev) state.rev = res.rev;
+        lastSavedSnap = snap;
+        dirty = canvasSnapshot() !== snap;
+        const d = new Date();
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        // 状态位只说「已保存」。时间戳放进 tooltip——顶上那一条本来就窄，
+        // 挂个「已保存 04:43」既占位置又每存一次就跳一下，反而看不出「刚存过没有」。
+        setSaveState(dirty ? '未保存…' : '已保存');
+        const el = document.getElementById('saveState');
+        if (el) el.title = `上次保存 ${hh}:${mm}`;
+        return true;
+      } catch {
+        setSaveState('保存失败');
+        return false;
+      }
+    })();
+    const saved = await saveInFlight;
+    saveInFlight = null;
+    if (!saved) return false;
+    return canvasSnapshot() === lastSavedSnap || saveToServer();
   }
 
   // 把服务端最新那版拉下来替换内存里的画布。
@@ -10953,7 +10974,7 @@
     clearTimeout(saveTimer);
     dirty = false;
     load(res.canvas);
-    lastSavedSnap = '';
+    lastSavedSnap = canvasSnapshot();
     setSaveState('已同步外部改动');
     flash(hadLocal
       ? '画布已被 MCP 更新：你的改动在撤销栈里（Ctrl+Z 可退回）'
@@ -10966,7 +10987,7 @@
   // 有未保存改动时也照样跟上——但不能悄悄丢，所以 pullExternal 会先把本地压进撤销栈。
   async function pollProjectRev() {
     if (state.serverDown) return;                 // 服务已经被关掉：别再往一个空端口发请求
-    if (!state.hydrated || !state.projectId || revPoll.on) return;
+    if (!state.hydrated || !state.projectId || revPoll.on || saveInFlight) return;
     revPoll.on = true;
     try {
       const meta = await api(`/api/projects/${encodeURIComponent(state.projectId)}?meta=1`).catch(() => null);
@@ -12902,7 +12923,7 @@
     if (!home) return;
     const seq = ++navSeq;
     leaveCanvasChrome();                        // 先收浮层：点了立刻有反应，不必等落盘
-    if (state.hydrated) await saveToServer();   // 退出编辑器先落盘，再刷新列表
+    if (state.hydrated && !await saveToServer()) return;   // 保存失败时留在画布
     if (seq !== navSeq) return;                 // 落盘期间已经导航走了，首页不该再亮
     home.classList.remove('hidden');
     await initHome();
@@ -13261,7 +13282,7 @@
       if (state.projectId === id) {
         state.projectId = null;
         clearTimeout(saveTimer);
-        lastSavedSnap = JSON.stringify(serialize());   // 别让排队中的自动保存把删掉的项目又写回去
+        lastSavedSnap = canvasSnapshot();   // 别让排队中的自动保存把删掉的项目又写回去
         try { localStorage.removeItem('infisheet-project'); } catch { /* noop */ }
       }
     }
@@ -13284,7 +13305,7 @@
   }
 
   async function startNewCanvas(workflowId) {
-    await saveToServer();                       // 旧项目先落盘，再开新项目
+    if (!await saveToServer()) return;          // 旧项目没落盘就不能切走
     const res = await createProject('未命名画布');
     if (!res) return;
     state.nodes = []; state.links = []; state.groups = []; state.selected = new Set();
@@ -13303,7 +13324,7 @@
   async function openProject(id) {
     if (!id) return;
     if (id === state.projectId) { showCanvas(); return; }
-    await saveToServer();
+    if (!await saveToServer()) return;
     const r = await api('/api/projects/' + encodeURIComponent(id));
     if (!r.ok || !r.canvas) { flash(r.error || '打开项目失败'); return; }
     state.projectId = id;
@@ -13311,7 +13332,7 @@
     load(r.canvas);
     state.hydrated = true;
     applyView(); renderAll(); renderLinks();
-    seedHistory(); lastSavedSnap = JSON.stringify(serialize()); setSaveState('已保存');
+    seedHistory(); lastSavedSnap = canvasSnapshot(); setSaveState('已保存');
     showCanvas();
     flash('已打开：' + (r.canvas.name || '未命名画布'));
   }
@@ -13331,7 +13352,7 @@
     if (state.projectId === id) {
       state.projectId = null;
       clearTimeout(saveTimer);
-      lastSavedSnap = JSON.stringify(serialize());   // 别让排队中的自动保存把删掉的项目又写回去
+      lastSavedSnap = canvasSnapshot();   // 别让排队中的自动保存把删掉的项目又写回去
       try { localStorage.removeItem('infisheet-project'); } catch { /* noop */ }
     }
     await initHome();
@@ -17431,7 +17452,7 @@
     renderMinimap();
     state.hydrated = true;
     seedHistory();   // 启动后的画布作为撤销栈底
-    lastSavedSnap = JSON.stringify(serialize());
+    lastSavedSnap = canvasSnapshot();
 
     // 老存档里没有 autogrow（这个字段是后加的）：后台补一次，否则旧画布上的工作流节点
     // 永远只认一个图片插槽，多图连接还是连不上。分析不了（ComfyUI 没开）就保持原样降级。
@@ -17445,7 +17466,7 @@
         } catch { /* 离线：保持原样 */ }
       }
       // 补出来的是派生信息，不该把画布标成「未保存」
-      lastSavedSnap = JSON.stringify(serialize());
+      lastSavedSnap = canvasSnapshot();
     })();
 
     // 首页交互
@@ -17481,11 +17502,14 @@
     window.addEventListener('beforeunload', () => {
       if (!state.hydrated || !state.nodes.length) return;   // 没初始化完 / 空画布不覆盖存档
       try { localStorage.setItem(STORE_KEY, JSON.stringify(serialize())); } catch { /* noop */ }
+      const snap = canvasSnapshot();
+      if (snap === lastSavedSnap && !saveInFlight) return;
       const url = state.projectId ? '/api/projects/' + encodeURIComponent(state.projectId) : '/api/canvas';
       fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         // keepalive 这一发同样要带 baseRev：否则「关标签页」就是一次绕过版本检查的强制覆盖
-        body: JSON.stringify({ canvas: serialize(), baseRev: state.projectId ? state.rev : undefined }),
+        body: JSON.stringify({ canvas: { ...JSON.parse(snap), savedAt: Date.now() },
+          baseRev: state.projectId ? state.rev : undefined }),
         keepalive: true,
       }).catch(() => {});
     });

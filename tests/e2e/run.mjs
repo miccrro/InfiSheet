@@ -811,6 +811,77 @@ try {
   check('打开画布：5 节点 / 2 连线', canvas.nodes === 5 && canvas.links === 2, JSON.stringify(canvas));
   check('路由切到 #canvas', canvas.hash === '#canvas' && canvas.homeHidden);
 
+  // 保存的是画布内容；时间戳变化不能让 Ctrl+S 把同一份内容再写一版。
+  const saveProject = await page.evaluate(`localStorage.getItem('infisheet-project')`);
+  const saveMeta = async () => (await (await fetch(server.base + 'api/projects/' + saveProject + '?meta=1')).json()).rev;
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 350)); // 先结算启动时可能排队的首次保存
+  const unchangedRev = await saveMeta();
+  await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 350));
+  check('内容未变时手动保存不增加项目版本', await saveMeta() === unchangedRev,
+    `rev ${unchangedRev} → ${await saveMeta()}`);
+  await page.evaluate(`window.dispatchEvent(new Event('beforeunload'))`);
+  await new Promise((r) => setTimeout(r, 350));
+  check('内容未变时离开页面不重复写项目', await saveMeta() === unchangedRev,
+    `rev ${unchangedRev} → ${await saveMeta()}`);
+
+  // 第二项编辑发生在首个请求在途时，应在首个请求之后保存最新内容。
+  await page.evaluate(`(() => {
+    window.__saveProbe = { active: 0, max: 0, requests: 0 };
+    window.__saveOriginalFetch = window.fetch;
+    const original = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const [url, options] = args;
+      if (String(url).startsWith('/api/projects/') && options?.method === 'POST') {
+        const probe = window.__saveProbe;
+        probe.requests++;
+        probe.active++;
+        probe.max = Math.max(probe.max, probe.active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return await original(...args);
+        } finally { probe.active--; }
+      }
+      return original(...args);
+    };
+    const input = document.getElementById('projectName');
+    window.__saveProbe.oldName = input.value;
+    input.value += ' · 保存测试';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+    input.value += ' 后续';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 850));
+  const saveProbe = await page.evaluate(`(() => ({ ...window.__saveProbe,
+    status: document.getElementById('saveState').textContent }))()`);
+  const savedProject = await (await fetch(server.base + 'api/projects/' + saveProject)).json();
+  check('连续保存同一项目串行，最后一项编辑落盘',
+    saveProbe.max === 1 && saveProbe.requests === 2 && saveProbe.status === '已保存'
+      && savedProject.canvas?.name.endsWith(' 后续'), JSON.stringify(saveProbe));
+  await page.evaluate(`(() => {
+    const original = window.fetch;
+    window.fetch = (url, options) => String(url).startsWith('/api/projects/') && options?.method === 'POST'
+      ? Promise.reject(new Error('模拟服务断开')) : original(url, options);
+    const input = document.getElementById('projectName');
+    input.value += ' 离线';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 150));
+  const failedSave = await page.evaluate(`document.getElementById('saveState').textContent`);
+  check('保存请求失败时明确显示失败', failedSave === '保存失败', failedSave);
+  await page.evaluate(`(() => {
+    window.fetch = window.__saveOriginalFetch;
+    const input = document.getElementById('projectName');
+    input.value = window.__saveProbe.oldName;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+
   // ---- 工具条停靠：底部居中 / 左侧 / 右侧 / 顶部 ----
   const dockState = () => page.evaluate(`(() => {
     const w = document.querySelector('#dockWrap');
