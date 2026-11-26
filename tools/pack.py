@@ -7,7 +7,7 @@
 
 打包规则：
 - 只收白名单（server.py / mcp_server.py / selftest.py / 启动.bat / README.md / 验收报告.md / static /
-  presets / package.json 等工程文件），data/、node_modules、tests/.tmp、__pycache__、dist 一律不进；
+  package.json 等工程文件），data/、node_modules、tests/.tmp、__pycache__、dist 一律不进；
 - zip 内路径统一用 `/`、文件名用 UTF-8 —— Windows 自带压缩会用反斜杠，macOS/Linux 解压会变成怪名字。
 """
 
@@ -39,6 +39,7 @@ INCLUDE_FILES = [
     "验收报告.md",
     "package.json",
     "package-lock.json",
+    "presets-aliases.json",
     ".gitignore",
     ".editorconfig",
     ".prettierrc",
@@ -46,7 +47,7 @@ INCLUDE_FILES = [
     "eslint.config.mjs",
     "pyproject.toml",
 ]
-INCLUDE_DIRS = ["static", "presets", "docs", "tools", "tests", ".github", "InfiSheet.app"]
+INCLUDE_DIRS = ["static", "docs", "tools", "tests", ".github", "InfiSheet.app"]
 EXCLUDE_PARTS = {"node_modules", ".tmp", "__pycache__", "data", "dist", ".git", "shots"}
 
 

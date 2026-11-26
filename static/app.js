@@ -1236,7 +1236,7 @@
     return true;
   }
 
-  // 改一个工作流的标题 / 分类（id 形如 preset:xxx.json 或 lib:名字）
+  // 改一个库中工作流的标题 / 分类（id 形如 lib:名字）
   async function saveWfMeta(id, patch) {
     const res = await api('/api/wf/meta', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -81,7 +81,7 @@ npm run pack         # 打 zip 到 dist/（加 -- --with-data 连 data/ 一起�
 ```
 server.py              # 全部后端（静态 + ComfyUI 代理 + 持久化）
 selftest.py            # 需要 ComfyUI 的接口回归
-static/                # 前端三件套 + icons.js（生成物）+ logos/（模型商标，128px 白色透明底 PNG）
+static/                # 前端三件套 + icons.js（手绘图标集）+ logos/（模型商标，128px 白色透明底 PNG）
 tests/fixtures/workflows/  # 工作流样本（真机导出的 API 图），四套测试共用
 tests/smoke.py         # 无依赖冒烟
 tests/mcp.py           # MCP 协议 / 工具 / rev 锁 / stdio 桥

@@ -131,9 +131,8 @@ npm run pack       # 打 zip 到 dist/
 最近一次代码审查（含函数长度分布、上期 P0 现状、两周改进计划）见
 [`docs/REVIEW-2026-11-12.md`](docs/REVIEW-2026-11-12.md)。
 
-后续计划：[`docs/GEN-ITERATION.md`](docs/GEN-ITERATION.md)（图片生成的迭代方案）·
-[`docs/LLM-NODE-EVAL.md`](docs/LLM-NODE-EVAL.md)（LLM 节点可行性评估）·
-[`docs/ROADMAP.md`](docs/ROADMAP.md)（工程侧）· [`docs/FEATURES.md`](docs/FEATURES.md)（其他新功能）。
+当前实施方案：[`tasks/plan.md`](tasks/plan.md)；执行清单：[`tasks/todo.md`](tasks/todo.md)。
+历史构想与评估保存在 `docs/`，其中部分功能已经实现，以当前代码和实施方案为准。
 
 ## 用 MCP 让 AI 直接操作画布
 
@@ -400,7 +399,7 @@ infisheet/
 │   ├── mcp.py             # MCP 协议与工具回归（协议 / 工具链路 / rev 锁 / stdio 桥）
 │   └── e2e/               # CDP 驱动的浏览器测试（run / walkthrough / probe）
 ├── tools/
-│   ├── icons/gen.cjs      # IconPark → static/icons.js
+│   ├── icons.py           # 从 static/icon.svg 生成平台图标和启动器
 │   ├── import_styles.py   # 风格素材包 → static/styles/（抄 json + 缩 160px 缩略图 + 写 index.json）
 │   ├── check.mjs          # 语法自检
 │   └── pack.py            # 打 zip
@@ -457,10 +456,7 @@ infisheet/
 | GET/PUT/DELETE | `/api/library/{name}` | 工作流库读写（PUT 覆盖时保住已有的标题 / 分类，从画布「存入工作流库」不会把归好的类打回原样） |
 | GET | `/api/library/export?only=名字1\n名字2` | 批量下载：把选中的工作流打成 zip（`api/` API 图 + `original/` 导入原版 + `manifest.json`）；不传 `only` 就是整库 |
 | GET/POST | `/api/wf/categories` | 工作流分类表（用户自己的归类：改名 / 新增 / 删除 / 排序），存在 `data/workflow_categories.json` |
-| POST | `/api/wf/meta` | `{id, title?, group?}` → 改一个工作流的标题 / 分类；`id` 是 `preset:xxx.json` 或 `lib:名字`。**预设改的是 `data/preset_meta.json` 那一层覆盖，不写回 `presets/`**（那个目录随程序分发，升级会整份覆盖） |
-| POST | `/api/presets` | `{title, graph}` → 存成内置预设写进 `presets/`（界面格式会自动转 API 图；重名自动加 `-2`） |
-| DELETE | `/api/presets/{file}` | 删除内置预设（`krea2-文生图.api.json` 这类文件名，非法名 400、越界 403）。**不是 unlink**：只记一条「隐藏」，文件原地不动，随时能恢复 |
-| POST | `/api/presets/{file}/restore` | 恢复出厂：撤掉这个预设在 `data/preset_meta.json` 里的覆盖（改名 / 分类 / 隐藏一起回来） |
+| POST | `/api/wf/meta` | `{id, title?, group?, icon?, video_type?}` → 修改工作流库中 `lib:名字` 对应工作流的元信息 |
 | GET/POST | `/api/projects` | 列出 / 新建项目（多画布） |
 | GET/POST/DELETE | `/api/projects/<id>` | 读取 / 保存 / 删除某个项目。保存时带 `baseRev`：落后的写入回 `{stale:true}` 而不是覆盖（MCP 与浏览器共用一个存档靠它）。`?meta=1` 只回版本号（`rev` / `lastWriter`），前端每 4 秒探一次 |
 | GET | `/api/mcp/setup` | 接入面板的数据：MCP 端点、stdio 命令、四个客户端（WorkBuddy / Claude Desktop / Cursor / Codex）的配置文件路径与 JSON / TOML 片段 |

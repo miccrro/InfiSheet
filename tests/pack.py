@@ -11,6 +11,7 @@ with tempfile.TemporaryDirectory() as directory:
     archive = build(Path(directory), False)[0]
     with zipfile.ZipFile(archive) as package:
         version = json.loads(package.read("infisheet/package.json"))["version"]
+        assert json.loads(package.read("infisheet/presets-aliases.json"))
         plist = package.read("infisheet/InfiSheet.app/Contents/Info.plist").decode()
         assert f"<string>{version}</string>" in plist
         for name in (
