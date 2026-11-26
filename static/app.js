@@ -10904,12 +10904,14 @@
       if (!await saveInFlight) return false;
       return saveToServer();
     }
-    const snap = canvasSnapshot();
-    if (snap === lastSavedSnap) { dirty = false; return true; }
-    const projectId = state.projectId;
     setSaveState('保存中…');
     saveInFlight = (async () => {
       try {
+        // 旧画布或离线导入的图片可能仍是 data:。先落盘，再取快照；失败不能报「已保存」。
+        await persistInlineMedia();
+        const snap = canvasSnapshot();
+        if (snap === lastSavedSnap) { dirty = false; setSaveState('已保存'); return true; }
+        const projectId = state.projectId;
         const url = projectId ? '/api/projects/' + encodeURIComponent(projectId) : '/api/canvas';
         const res = await api(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -10947,8 +10949,9 @@
         const el = document.getElementById('saveState');
         if (el) el.title = `上次保存 ${hh}:${mm}`;
         return true;
-      } catch {
+      } catch (err) {
         setSaveState('保存失败');
+        if (err && err.message && err.message.startsWith('图片未落盘')) flash(err.message);
         return false;
       }
     })();
@@ -10956,6 +10959,50 @@
     saveInFlight = null;
     if (!saved) return false;
     return canvasSnapshot() === lastSavedSnap || saveToServer();
+  }
+
+  async function persistInlineMedia() {
+    const seen = new Map();
+    let changed = false;
+    async function store(url) {
+      if (typeof url !== 'string' || !url.startsWith('data:image/')) return url;
+      if (!seen.has(url)) seen.set(url, (async () => {
+        try {
+          const res = await postJson('/api/edit-image', { data: url });
+          if (res && res.ok && res.url) return res.url;
+          throw new Error((res && res.error) || '写入失败');
+        } catch (err) {
+          throw new Error(`图片未落盘，画布尚未保存：${err.message}`, { cause: err });
+        }
+      })());
+      return seen.get(url);
+    }
+    for (const n of state.nodes) {
+      if (typeof n.dataURL === 'string' && n.dataURL.startsWith('data:image/')) {
+        const oldKey = imgKeyOf(n);
+        n.dataURL = await store(n.dataURL);
+        changed = true;
+        migrateMaskKey(n, oldKey);
+        rerenderNode(n.id, true);
+      }
+      if (n.gen) {
+        for (const item of n.gen.gallery || []) if (item) {
+          const url = await store(item.url);
+          if (url !== item.url) { item.url = url; changed = true; }
+        }
+        for (const run of n.gen.runs || []) {
+          for (const item of run.items || []) if (item) {
+            const url = await store(item.url);
+            if (url !== item.url) { item.url = url; changed = true; }
+          }
+        }
+      }
+      for (const item of n.artifacts || []) if (item) {
+        const url = await store(item.url);
+        if (url !== item.url) { item.url = url; changed = true; }
+      }
+    }
+    if (changed) saveLocalDraft();
   }
 
   // 把服务端最新那版拉下来替换内存里的画布。
@@ -14564,7 +14611,7 @@
   // 编辑产物（旋转 / 调色 / 裁剪）先落盘，节点里只存地址。
   // 以前直接把 dataURL 写进节点：一张几百 KB 到几 MB，存档要进 localStorage（5MB 配额），
   // 撤销栈再乘 40 份。落盘之后同一张图反复保存也只有一个文件（文件名是内容哈希）。
-  // 服务端存不了（比如直接双击打开 HTML）时退回 dataURL——不能因为存不了图就把功能断掉。
+  // 服务端暂时存不了时保留 dataURL 供本地恢复；保存流程会继续尝试，失败则明确报未保存。
   async function persistEditedImage(cv, tag = 'edit') {
     const dataURL = cv.toDataURL('image/png');
     try {

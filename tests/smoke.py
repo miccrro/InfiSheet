@@ -944,16 +944,20 @@ def main() -> int:
         def spawn(port_no: int, extra: list[str], env_extra: dict, quiet: bool = True):
             e = dict(clean_env)
             e.update(env_extra)
+            log_file = None
             if not quiet:
-                e["PYTHONUNBUFFERED"] = "1"  # Windows 直接终止子进程时仍能收齐启动告警
-            return subprocess.Popen(
+                e["PYTHONUNBUFFERED"] = "1"
+                log_file = (multi / f"server-{port_no}.log").open("w+", encoding="utf-8")
+            p = subprocess.Popen(
                 [sys.executable, "-X", "utf8", "server.py", "--port", str(port_no), "--no-browser", *extra],
                 cwd=str(ROOT),
-                stdout=subprocess.DEVNULL if quiet else subprocess.PIPE,
+                stdout=subprocess.DEVNULL if quiet else log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=e,
             )
+            p.startup_log = log_file
+            return p
 
         def stop(p) -> str:
             p.terminate()
@@ -962,6 +966,10 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 p.kill()
                 out, _ = p.communicate()
+            if p.startup_log:
+                p.startup_log.seek(0)
+                out = p.startup_log.read()
+                p.startup_log.close()
             return out or ""
 
         # ① 监听 0.0.0.0 又没给令牌：必须拒绝启动，而不是「警告一句然后裸奔」

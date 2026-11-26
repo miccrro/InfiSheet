@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import io
 import json
@@ -3521,10 +3522,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/edit-image":
             # 编辑产物（旋转 / 调色 / 裁剪）。文件名就是内容哈希，内容永不改 → 长缓存
-            blob = edit_image_bytes((query.get("h") or [""])[0])
-            if blob is None:
+            image = edit_image_bytes((query.get("h") or [""])[0])
+            if image is None:
                 return self.fail("这张图不在了（可能被清理过）", 404)
-            return self._send(200, blob, "image/png",
+            blob, mime = image
+            return self._send(200, blob, mime,
                               {"Cache-Control": "public, max-age=31536000, immutable"})
 
         if path == "/api/assets":
@@ -4365,20 +4367,31 @@ def edits_dir() -> Path:
 
 
 def store_edit_image(data_url) -> str:
-    """把 data: 图落成 edits/<sha1>.png，回一个内容不变的地址。"""
+    """把常见内联图片落到 edits/，保留真实格式，返回稳定地址。"""
     text = str(data_url or "")
-    if not text.startswith("data:image/"):
-        raise ValueError("只收 data:image/ 开头的图")
+    match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)", text)
+    if not match:
+        raise ValueError("只支持 PNG、JPEG、WebP、GIF 的 base64 图片")
     try:
-        blob = base64.b64decode(text.split(",", 1)[1])
-    except Exception as exc:  # noqa: BLE001 —— 半截 base64 要给一句人话，不能 500
+        blob = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, binascii.Error) as exc:
         raise ValueError("图片数据不完整，请重试") from exc
     if not blob:
         raise ValueError("图片是空的")
     if len(blob) > EDIT_MAX_BYTES:
         raise ValueError("图片超过 40MB，没法保存")
+    kind = match.group(1)
+    valid = {
+        "png": blob.startswith(b"\x89PNG\r\n\x1a\n"),
+        "jpeg": blob.startswith(b"\xff\xd8\xff"),
+        "webp": blob.startswith(b"RIFF") and blob[8:12] == b"WEBP",
+        "gif": blob.startswith((b"GIF87a", b"GIF89a")),
+    }
+    if not valid[kind]:
+        raise ValueError("图片内容与格式不匹配")
     h = hashlib.sha1(blob).hexdigest()[:20]
-    f = edits_dir() / f"{h}.png"
+    ext = "jpg" if kind == "jpeg" else kind
+    f = edits_dir() / f"{h}.{ext}"
     if not f.is_file():
         # 先写临时文件再换名：中途失败不会在目录里留下半张坏图
         tmp = f.with_name(f.name + f".{uuid.uuid4().hex[:6]}.tmp")
@@ -4391,10 +4404,12 @@ def edit_image_bytes(name: str):
     """按哈希取回编辑产物；名字不合法或文件不在都返回 None。"""
     if not re.fullmatch(r"[0-9a-f]{20}", str(name or "")):
         return None
-    f = DATA / "edits" / f"{name}.png"
-    if not f.is_file():
-        return None
-    return f.read_bytes()
+    for ext, mime in (("png", "image/png"), ("jpg", "image/jpeg"),
+                      ("webp", "image/webp"), ("gif", "image/gif")):
+        f = DATA / "edits" / f"{name}.{ext}"
+        if f.is_file():
+            return f.read_bytes(), mime
+    return None
 
 
 # ---------- 代抓网页图片 ----------
