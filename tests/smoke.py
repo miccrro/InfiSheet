@@ -944,6 +944,8 @@ def main() -> int:
         def spawn(port_no: int, extra: list[str], env_extra: dict, quiet: bool = True):
             e = dict(clean_env)
             e.update(env_extra)
+            if not quiet:
+                e["PYTHONUNBUFFERED"] = "1"  # Windows 直接终止子进程时仍能收齐启动告警
             return subprocess.Popen(
                 [sys.executable, "-X", "utf8", "server.py", "--port", str(port_no), "--no-browser", *extra],
                 cwd=str(ROOT),
@@ -1098,10 +1100,11 @@ def main() -> int:
         check("非 http(s) 地址直接 400（不写进配置）", status == 400,
               json.loads(raw or b"{}").get("error", ""))
 
-        status, raw = request(base, "/api/comfy", "POST", {"url": "127.0.0.1:8189"})
+        offline_url = f"http://127.0.0.1:{free_port()}"
+        status, raw = request(base, "/api/comfy", "POST", {"url": offline_url.removeprefix("http://")})
         saved = json.loads(raw or b"{}")
         check("手输 host:port 自动补 http://，连不上也照存（先配地址、再去开 ComfyUI）",
-              status == 200 and saved.get("url") == "http://127.0.0.1:8189"
+              status == 200 and saved.get("url") == offline_url
               and saved.get("saved") is True and saved.get("reachable") is False,
               str(saved.get("error", ""))[:60])
         try:
@@ -1109,7 +1112,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             on_disk = {}
         check("地址落进 data/settings.json（不是只放在内存里）",
-              on_disk.get("comfy_url") == "http://127.0.0.1:8189", str(on_disk))
+              on_disk.get("comfy_url") == offline_url, str(on_disk))
 
         # 换个进程读同一个数据目录：证明是「存住了」，不是「这个进程还记得」
         rport = free_port()
@@ -1120,7 +1123,7 @@ def main() -> int:
             status, raw = request(rbase, "/api/comfy")
             again = json.loads(raw or b"{}")
             check("重启后读到的还是上次保存的地址",
-                  again.get("url") == "http://127.0.0.1:8189" and again.get("source") == "设置里保存的",
+                  again.get("url") == offline_url and again.get("source") == "设置里保存的",
                   f"{again.get('url')} · {again.get('source')}")
         finally:
             stop(rproc)
