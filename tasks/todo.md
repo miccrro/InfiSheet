@@ -7,7 +7,9 @@
 - [x] **T1 稳定内容快照与保存队列**。依赖：无。预计：`static/app.js`、`tests/e2e/run.mjs`（M）。验收：无内容变化不新增撤销记录/服务端 rev；连续编辑最多一条保存请求在途，最后一次内容必定落盘；失败后状态不显示“已保存”。验证：新增 4 条浏览器回归通过；全量跑到第 299 项，原有 4 条失败已在干净 `main` 复现。双标签页与旧画布人工检查留在检查点 1。
 - [x] **T2 修复 smoke 的环境依赖并核对保存冲突回归**。依赖：T1。实际：`tests/smoke.py`（S）。验收：Windows 本机 145 项全绿；用空闲临时端口验证离线地址，子进程启动告警不受输出缓冲影响；现有 MCP 回归确认旧 rev 被拒绝。验证：`npm test` 连跑两次均 145/145，`npm run test:mcp` 58 通过、1 项因 ComfyUI 离线跳过。
 - [ ] **检查点 1**：`npm run lint && npm run check && npm test && npm run test:mcp` 全绿；用备份的旧画布打开、编辑、关闭、重开，内容与版本正确。
-- [ ] **T3 统一媒体落盘与内联引用迁移**。依赖：T1。预计：`static/app.js`、`server.py`、`tests/smoke.py`、`tests/e2e/run.mjs`（M）。验收：编辑成功后项目存档不新增大块 `data:image`；旧内联图可读并可迁移；落盘失败明确提示且不报保存成功。验证：`npm test`、`npm run test:e2e`，对旧存档做导入/重开检查。
+- [x] **T3 统一媒体落盘与内联引用迁移**。依赖：T1。实际：`static/app.js`、`server.py`、`tests/media.py`、`tests/e2e/media.mjs`（M）。验收：保存前迁移 PNG/JPEG/WebP/GIF 内联图片；旧画布保存并重开后仍可读取；落盘失败不新增项目版本，也不显示已保存。验证：`npm run test:media`、`npm test`、lint/check。
+
+  进展（`56748c8`）：内联图片在保存前落到 `data/edits/`，失败时保存状态显示失败；旧 PNG 地址继续可读。隔离浏览器回归已覆盖旧画布重开及坏图片拒绝保存。项目包所需的跨源媒体引用核对放在 T8 实现。
 
 ## R2 易维护
 

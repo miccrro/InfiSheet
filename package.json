@@ -19,6 +19,7 @@
     "test": "python tests/smoke.py",
     "test:api": "python selftest.py",
     "test:images": "python tests/images.py",
+    "test:media": "python -m tests.media && node tests/e2e/media.mjs",
     "test:mcp": "python tests/mcp.py",
     "test:e2e": "node tests/e2e/run.mjs",
     "shots": "node tests/e2e/walkthrough.mjs",
