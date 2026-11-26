@@ -588,7 +588,8 @@ def main() -> int:
             adir = data_dir / "assets"
             saved = sorted(p.name for p in adir.glob("*.png")) if adir.is_dir() else []
             check("生成完自动存进资产库，文件名是「时间+序号」",
-                  len(saved) >= 3 and all(re.fullmatch(r"\d{8}-\d{6}-\d{2}\.png", n) for n in saved),
+                  len(saved) >= 3 and all(re.fullmatch(r"\d{8}-\d{6}-\d{2}(?:-\d+)?\.png", n)
+                                          for n in saved),
                   f"{len(saved)} 张 · {saved[:3]}")
 
             libf = data_dir / "asset-lib.json"

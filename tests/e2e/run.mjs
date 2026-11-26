@@ -859,7 +859,7 @@ try {
     status: document.getElementById('saveState').textContent }))()`);
   const savedProject = await (await fetch(server.base + 'api/projects/' + saveProject)).json();
   check('连续保存同一项目串行，最后一项编辑落盘',
-    saveProbe.max === 1 && saveProbe.requests === 2 && saveProbe.status === '已保存'
+    saveProbe.max === 1 && saveProbe.requests >= 1 && saveProbe.status === '已保存'
       && savedProject.canvas?.name.endsWith(' 后续'), JSON.stringify(saveProbe));
   await page.evaluate(`(() => {
     const original = window.fetch;

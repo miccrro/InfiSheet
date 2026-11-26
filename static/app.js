@@ -10601,9 +10601,10 @@
     lbInfo = info || null;
     if (!lbList) $('#lightboxImg').src = url;
     if (lbList) {
-      lbList = lbList.map((item) => ({
+      lbList = lbList.map((item, itemIndex) => ({
         ...item,
-        detailInfo: item.detailInfo || assetImageInfo(item),
+        detailInfo: item.detailInfo || (info && (itemIndex === lbIdx || info.actions?.length)
+          ? info : assetImageInfo(item)),
       }));
     }
     paintLightbox();

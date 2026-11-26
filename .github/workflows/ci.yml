@@ -54,6 +54,7 @@ jobs:
       - name: 确认有 Chrome
         run: google-chrome --version || chromium --version
       - run: npm run test:e2e
+      - run: npm run test:media
       - name: 失败时保留截图
         if: failure()
         uses: actions/upload-artifact@v4
