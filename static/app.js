@@ -1061,6 +1061,9 @@
     { id: 'ltx', name: 'LTX-Video · Lightricks' },
     { id: 'mochi', name: 'Mochi · Genmo' },
     { id: 'tonyon', name: 'Tonyon' },
+    { id: 'minimax', name: 'MiniMax H3' },
+    { id: 'zimage', name: 'Z-Image · 造相（含 Turbo）' },
+    { id: 'ming', name: 'Ming-Image-0.2 · inclusionAI' },
   ];
   const WF_ICON_MAP = {};
   WF_ICONS.forEach((ic) => { WF_ICON_MAP[ic.id] = ic; });
@@ -1070,7 +1073,7 @@
   //
   // 后面挂的 ?v= 是缓存版本号。server.py 给 logos/ 下的是 max-age=86400，
   // 换图后旧 URL 会继续吃一天缓存，界面看着像「改了没生效」。改图就把版本号加一。
-  const WF_LOGO_VER = 2;
+  const WF_LOGO_VER = 4;
   function wfLogoSrc(id) { return `/logos/${id}.png?v=${WF_LOGO_VER}`; }
 
   // 把存的值画成 HTML。只有两种形态，认不出来的（比如手改坏的）当没设。
